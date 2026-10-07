@@ -1,3 +1,4 @@
+pub mod anim;
 pub mod api;
 pub mod edit;
 pub mod engine;

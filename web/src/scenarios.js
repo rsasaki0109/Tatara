@@ -342,4 +342,36 @@ export const vision = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision }
+// Keyframes through the real UI: key a pose, scrub, edit (auto-key), play.
+export const animate = {
+  title: 'Keyframe animation',
+  width: 800,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 1.1, height: 0.08, segments: 64 }, translation: [0, 0.04, 0], color: '#d8d4cb', roughness: 0.7 },
+  ],
+  camera: { azimuth: 24, elevation: 14, distance: 6.2, target: [0, 1.0, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Add a vessel and key its pose at frame 1', hint: 'set_keyframe · K' },
+    { click: '[data-add=vessel]', after: 150 },
+    { type: '0', into: '[data-field=translation][data-i="0"]', cps: 14 },
+    { type: '0.08', into: '[data-field=translation][data-i="1"]', cps: 14, after: 100 },
+    { click: '#key-btn', after: 250 },
+    { caption: 'Scrub, then edit: animated values key themselves', hint: 'auto-key' },
+    { scrub: 36, ms: 700 },
+    { type: '1.3', into: '[data-field=translation][data-i="1"]', cps: 12 },
+    { type: '-25', into: '[data-field=rotation][data-i="2"]', cps: 12, after: 100 },
+    { scrub: 72, ms: 600 },
+    { type: '0.08', into: '[data-field=translation][data-i="1"]', cps: 14 },
+    { type: '0', into: '[data-field=rotation][data-i="2"]', cps: 12 },
+    { click: '[data-glaze^="#2f4f8f"]', after: 250 },
+    { caption: 'Play it back', hint: 'Space' },
+    { cursor: false },
+    { click: '#play-btn', after: 3400 },
+    { caption: 'Exports as a glTF animation, and agents can render any frame', hint: 'GLB · render_view frame' },
+    { wait: 1800 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate }

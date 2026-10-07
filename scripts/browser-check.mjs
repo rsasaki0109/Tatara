@@ -140,6 +140,28 @@ try {
   check(rendered === 514, `agent view renders four tiles (${rendered}px wide)`)
   await page.click('.tabs [data-tab=properties]')
 
+  // Animation: key, scrub, auto-key an edit, play back.
+  await page.click('#outliner li')
+  await page.keyboard.press('k')
+  await page.waitForFunction(() => document.querySelectorAll('#ruler-keys i').length === 1)
+  await page.fill('#frame-input', '48')
+  await page.press('#frame-input', 'Enter')
+  await page.fill('[data-field=translation][data-i="0"]', '2')
+  await page.press('[data-field=translation][data-i="0"]', 'Enter')
+  await page.waitForFunction(() => document.querySelectorAll('#ruler-keys i').length === 2)
+  check(true, 'K keys the pose; editing an animated value auto-keys it')
+  const ctx = await page.evaluate(() => fetch('/api/context?frame=24').then((r) => r.json()))
+  const x24 = ctx.objects[0].pose.transform.translation[0]
+  check(x24 > 0 && x24 < 2, `pose is interpolated between keys (x=${x24.toFixed(3)} at frame 24)`)
+  await page.fill('#frame-input', '1')
+  await page.press('#frame-input', 'Enter')
+  await page.locator('#viewport canvas').focus()
+  await page.keyboard.press('Space')
+  await page.waitForTimeout(700)
+  await page.keyboard.press('Space')
+  const played = await page.evaluate(() => window.__tatara.frame())
+  check(played > 1, `playback advances frames (stopped at ${played})`)
+
   await page.setViewportSize({ width: 390, height: 844 })
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
   check(!overflow, 'phone layout has no horizontal scroll')

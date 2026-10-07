@@ -13,6 +13,7 @@ use glam::{DMat4, DQuat, DVec3, EulerRot};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::anim::{self, Animation, Interpolation, KeyValue, Property, Track};
 use crate::edit;
 use crate::modifiers::{self, Modifier};
 
@@ -95,6 +96,9 @@ pub struct Object {
     /// Non-destructive modifier stack, evaluated in order.
     #[serde(default)]
     pub modifiers: Vec<Modifier>,
+    /// Keyframe tracks; animated properties override the static values.
+    #[serde(default)]
+    pub tracks: Vec<Track>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -102,6 +106,8 @@ pub struct Scene {
     pub objects: Vec<Object>,
     pub next_id: u64,
     pub revision: u64,
+    #[serde(default)]
+    pub animation: Animation,
 }
 
 impl Default for Scene {
@@ -110,6 +116,7 @@ impl Default for Scene {
             objects: Vec::new(),
             next_id: 1,
             revision: 0,
+            animation: Animation::default(),
         }
     }
 }
@@ -385,6 +392,39 @@ pub enum Command {
     ApplyModifiers {
         id: ObjRef,
     },
+    /// Key a property at `frame`. Without `value`, keys the property's
+    /// current value at that frame. Colours take `#rrggbb`.
+    SetKeyframe {
+        id: ObjRef,
+        property: Property,
+        frame: f64,
+        #[serde(default)]
+        value: Option<KeyValue>,
+        #[serde(default)]
+        interpolation: Option<Interpolation>,
+    },
+    /// Remove the keys at `frame` (one property, or all of them).
+    DeleteKeyframe {
+        id: ObjRef,
+        frame: f64,
+        #[serde(default)]
+        property: Option<Property>,
+    },
+    /// Remove an object's animation (one property, or all of it).
+    ClearAnimation {
+        id: ObjRef,
+        #[serde(default)]
+        property: Option<Property>,
+    },
+    /// Set the playback range and frame rate.
+    SetAnimation {
+        #[serde(default)]
+        fps: Option<f64>,
+        #[serde(default)]
+        start: Option<f64>,
+        #[serde(default)]
+        end: Option<f64>,
+    },
     /// Remove every object.
     Clear {},
 }
@@ -658,6 +698,7 @@ fn apply_command(
                 material,
                 mesh,
                 modifiers: Vec::new(),
+                tracks: Vec::new(),
             });
             scene.next_id += 1;
             created.push(id);
@@ -798,6 +839,7 @@ fn apply_command(
                 material,
                 mesh,
                 modifiers: Vec::new(),
+                tracks: Vec::new(),
             });
             scene.next_id += 1;
             created.push(id);
@@ -843,6 +885,58 @@ fn apply_command(
             let o = &mut scene.objects[i];
             o.mesh = modifiers::evaluate(&o.mesh, &o.modifiers)?;
             o.modifiers.clear();
+        }
+        Command::SetKeyframe {
+            id,
+            property,
+            frame,
+            value,
+            interpolation,
+        } => {
+            let i = resolve(scene, id)?;
+            let frame = anim::check_frame(*frame)?;
+            let o = &mut scene.objects[i];
+            let value = match value {
+                Some(v) => anim::key_value(*property, v)?,
+                None => anim::value_at(o, *property, frame),
+            };
+            anim::set_key(
+                o,
+                *property,
+                frame,
+                value,
+                interpolation.unwrap_or_default(),
+            )?;
+        }
+        Command::DeleteKeyframe {
+            id,
+            frame,
+            property,
+        } => {
+            let i = resolve(scene, id)?;
+            if anim::delete_key(&mut scene.objects[i], *property, *frame) == 0 {
+                return err(format!("no keyframe at frame {frame}"));
+            }
+        }
+        Command::ClearAnimation { id, property } => {
+            let i = resolve(scene, id)?;
+            let o = &mut scene.objects[i];
+            o.tracks
+                .retain(|t| property.is_some_and(|p| p != t.property));
+        }
+        Command::SetAnimation { fps, start, end } => {
+            let mut a = scene.animation.clone();
+            if let Some(v) = fps {
+                a.fps = *v;
+            }
+            if let Some(v) = start {
+                a.start = *v;
+            }
+            if let Some(v) = end {
+                a.end = *v;
+            }
+            a.validate()?;
+            scene.animation = a;
         }
         Command::Clear {} => scene.objects.clear(),
     }
@@ -1013,7 +1107,9 @@ fn validate_scene(scene: &Scene) -> Result<(), EngineError> {
         )
         .map_err(ctx)?;
         validate_mesh(&o.mesh).map_err(ctx)?;
+        anim::validate_tracks(o).map_err(ctx)?;
     }
+    scene.animation.validate()?;
     Ok(())
 }
 
@@ -1043,8 +1139,8 @@ pub struct Bounds {
     pub max: Vec3,
 }
 
-pub fn world_bounds(o: &Object, mesh: &Mesh) -> Option<Bounds> {
-    let m = o.transform.matrix();
+pub fn world_bounds(transform: &Transform, mesh: &Mesh) -> Option<Bounds> {
+    let m = transform.matrix();
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     for v in &mesh.vertices {
@@ -1059,6 +1155,12 @@ pub fn world_bounds(o: &Object, mesh: &Mesh) -> Option<Bounds> {
 
 /// Compact scene description without mesh data, for agents and the chat prompt.
 pub fn context(ed: &Editor) -> serde_json::Value {
+    context_at(ed, None)
+}
+
+/// Scene summary; with `frame`, objects also report their animated pose and
+/// bounds are measured at that frame.
+pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
     let scene = ed.scene();
     let mut scene_min = [f64::INFINITY; 3];
     let mut scene_max = [f64::NEG_INFINITY; 3];
@@ -1067,7 +1169,10 @@ pub fn context(ed: &Editor) -> serde_json::Value {
         .iter()
         .map(|o| {
             let mesh = ed.evaluated(o);
-            let bounds = world_bounds(o, mesh);
+            let pose = frame
+                .filter(|_| !o.tracks.is_empty())
+                .map(|f| anim::pose(o, f));
+            let bounds = world_bounds(pose.as_ref().map_or(&o.transform, |p| &p.0), mesh);
             if let Some(b) = &bounds {
                 for k in 0..3 {
                     scene_min[k] = scene_min[k].min(b.min[k]);
@@ -1085,6 +1190,11 @@ pub fn context(ed: &Editor) -> serde_json::Value {
                 "vertex_count": mesh.vertices.len(),
                 "face_count": mesh.faces.len(),
                 "bounds": bounds,
+                "animation": o.tracks.iter().map(|t| serde_json::json!({
+                    "property": t.property,
+                    "frames": t.keys.iter().map(|k| k.frame).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                "pose": pose.map(|(t, m)| serde_json::json!({ "transform": t, "material": m })),
             })
         })
         .collect();
@@ -1096,6 +1206,8 @@ pub fn context(ed: &Editor) -> serde_json::Value {
         "revision": scene.revision,
         "next_id": scene.next_id,
         "units": "meters, Y up, rotations in radians (XYZ euler)",
+        "animation": scene.animation,
+        "frame": frame,
         "bounds": bounds,
         "objects": objects,
     })
@@ -1847,6 +1959,7 @@ mod tests {
             material: Material::default(),
             mesh: cube(1.0),
             modifiers: Vec::new(),
+            tracks: Vec::new(),
         });
         assert!(ed.load(scene.clone()).is_err(), "id must be below next_id");
         scene.next_id = 6;
@@ -1919,6 +2032,68 @@ mod tests {
         let o = &ed.scene().objects[0];
         assert!(o.modifiers.is_empty());
         assert_eq!(o.mesh.faces.len(), 72);
+    }
+
+    #[test]
+    fn keyframe_commands() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "name": "Ball", "primitive": {"kind": "sphere"}, "translation": [0, 1, 0]},
+            {"op": "set_keyframe", "id": "Ball", "property": "translation", "frame": 1},
+            {"op": "set_keyframe", "id": "Ball", "property": "translation", "frame": 25, "value": [2, 1, 0], "interpolation": "linear"},
+            {"op": "set_keyframe", "id": "Ball", "property": "color", "frame": 25, "value": "#FF0000"},
+            {"op": "set_animation", "fps": 30, "end": 48}
+        ]})))
+        .unwrap();
+        let o = &ed.scene().objects[0];
+        assert_eq!(o.tracks.len(), 2);
+        let (t, m) = crate::anim::pose(o, 13.0);
+        assert_eq!(
+            t.translation,
+            [1.0, 1.0, 0.0],
+            "key without a value captures the pose"
+        );
+        assert_eq!(m.color, "#ff0000");
+        assert_eq!(ed.scene().animation.fps, 30.0);
+        let ctx = context_at(&ed, Some(25.0));
+        assert_eq!(
+            ctx["objects"][0]["pose"]["transform"]["translation"][0],
+            2.0
+        );
+        assert_eq!(
+            ctx["objects"][0]["animation"][0]["frames"],
+            serde_json::json!([1.0, 25.0])
+        );
+
+        for bad in [
+            serde_json::json!({"op": "set_keyframe", "id": "Ball", "property": "color", "frame": 1, "value": [1, 0, 0]}),
+            serde_json::json!({"op": "set_keyframe", "id": "Ball", "property": "scale", "frame": -1, "value": [1, 1, 1]}),
+            serde_json::json!({"op": "delete_keyframe", "id": "Ball", "frame": 7}),
+            serde_json::json!({"op": "set_animation", "start": 50, "end": 10}),
+        ] {
+            assert!(
+                ed.apply(&batch(serde_json::json!({"commands": [bad]})))
+                    .is_err()
+            );
+        }
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "delete_keyframe", "id": "Ball", "frame": 25, "property": "color"},
+            {"op": "clear_animation", "id": "Ball", "property": "translation"}
+        ]})))
+        .unwrap();
+        assert!(ed.scene().objects[0].tracks.is_empty());
+
+        // Saved scenes with tracks load back; broken tracks are rejected.
+        let mut saved = ed.scene().clone();
+        saved.objects[0].tracks.push(crate::anim::Track {
+            property: crate::anim::Property::Roughness,
+            keys: vec![crate::anim::Key {
+                frame: 3.0,
+                value: vec![0.2, 0.4],
+                interpolation: Default::default(),
+            }],
+        });
+        assert!(Editor::new().load(saved).is_err());
     }
 
     #[test]

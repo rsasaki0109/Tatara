@@ -43,7 +43,10 @@ pub fn tools() -> Value {
             "description": "Read the shared Tatara scene: object IDs, names, transforms, materials, world bounds, counts and revision. Set include_mesh to also get vertices and polygon indices.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "include_mesh": { "type": "boolean", "default": false } },
+                "properties": {
+                    "include_mesh": { "type": "boolean", "default": false },
+                    "frame": { "type": "number", "description": "Also report each animated object's pose at this frame" }
+                },
                 "additionalProperties": false
             }
         },
@@ -95,7 +98,8 @@ pub fn tools() -> Value {
                         "maxItems": 6
                     },
                     "size": { "type": "integer", "minimum": 64, "maximum": 1024, "default": 512, "description": "Pixel size of each view" },
-                    "object": { "type": "string", "description": "Frame one object (name or numeric id) instead of the whole scene" }
+                    "object": { "type": "string", "description": "Frame one object (name or numeric id) instead of the whole scene" },
+                    "frame": { "type": "number", "description": "Render animated objects as posed at this frame" }
                 },
                 "additionalProperties": false
             }
@@ -200,7 +204,12 @@ async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) 
         "get_scene" if args["include_mesh"].as_bool() == Some(true) => {
             http.get(format!("{base}/api/scene"))
         }
-        "get_scene" => http.get(format!("{base}/api/context")),
+        "get_scene" => match args["frame"].as_f64() {
+            Some(f) => http
+                .get(format!("{base}/api/context"))
+                .query(&[("frame", f.to_string())]),
+            None => http.get(format!("{base}/api/context")),
+        },
         "apply_commands" => http.post(format!("{base}/api/commands")).json(&args),
         "undo" => http.post(format!("{base}/api/undo")),
         "redo" => http.post(format!("{base}/api/redo")),
@@ -248,6 +257,9 @@ async fn render_tool(http: &reqwest::Client, base: &str, args: &Value) -> Value 
         .or_else(|| args["object"].as_u64().map(|v| v.to_string()))
     {
         query.push(("object", object));
+    }
+    if let Some(frame) = args["frame"].as_f64() {
+        query.push(("frame", frame.to_string()));
     }
     let resp = match http
         .get(format!("{base}/api/render"))

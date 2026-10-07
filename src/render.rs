@@ -51,6 +51,8 @@ pub struct RenderOptions {
     pub size: u32,
     /// Frame this object instead of the whole scene.
     pub focus: Option<u64>,
+    /// Pose animated objects at this frame (static pose when `None`).
+    pub frame: Option<f64>,
 }
 
 impl Default for RenderOptions {
@@ -59,6 +61,7 @@ impl Default for RenderOptions {
             views: vec![View::preset("iso").unwrap()],
             size: 512,
             focus: None,
+            frame: None,
         }
     }
 }
@@ -112,20 +115,24 @@ fn tonemap(c: DVec3) -> DVec3 {
     DVec3::new(f(c.x), f(c.y), f(c.z))
 }
 
-fn prepare(ed: &Editor, focus: Option<u64>) -> Result<Prepared, EngineError> {
+fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepared, EngineError> {
     let mut tris = Vec::new();
     let mut materials = Vec::new();
     let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
     let (mut flo, mut fhi) = (lo, hi);
     for o in &ed.scene().objects {
-        let m = o.transform.matrix();
+        let (transform, material) = match frame {
+            Some(f) => crate::anim::pose(o, f),
+            None => (o.transform.clone(), o.material.clone()),
+        };
+        let m = transform.matrix();
         let normal_m = m.inverse().transpose();
         let shaded = crate::gltf::shade(ed.evaluated(o));
         let index = materials.len() as u32;
         materials.push(Shading {
-            color: hex(&o.material.color),
-            roughness: o.material.roughness,
-            metalness: o.material.metalness,
+            color: hex(&material.color),
+            roughness: material.roughness,
+            metalness: material.metalness,
         });
         let world: Vec<DVec3> = shaded
             .positions
@@ -579,7 +586,7 @@ pub fn render_png(ed: &Editor, opts: &RenderOptions) -> Result<Vec<u8>, EngineEr
     if !(64..=1024).contains(&opts.size) {
         return Err(EngineError::new("size must be between 64 and 1024"));
     }
-    let prep = prepare(ed, opts.focus)?;
+    let prep = prepare(ed, opts.focus, opts.frame)?;
     let shadow = ShadowMap::build(&prep);
     let size = opts.size as usize;
     let cols = if opts.views.len() == 1 { 1 } else { 2 };
@@ -665,6 +672,7 @@ mod tests {
             views: parse_views("front").unwrap(),
             size: 96,
             focus: None,
+            frame: None,
         };
         let (w, h, px) = decode(&render_png(&ed, &opts).unwrap());
         assert_eq!((w, h), (96, 96));
@@ -682,6 +690,7 @@ mod tests {
             views: parse_views("front, right, top, 45:30").unwrap(),
             size: 64,
             focus: None,
+            frame: None,
         };
         let (w, h, _) = decode(&render_png(&ed, &opts).unwrap());
         assert_eq!((w, h), (130, 130));
@@ -700,12 +709,44 @@ mod tests {
     }
 
     #[test]
+    fn renders_animated_poses() {
+        let mut ed = scene();
+        let batch: CommandBatch = serde_json::from_value(serde_json::json!({"commands": [
+            {"op": "set_keyframe", "id": "Red", "property": "translation", "frame": 1, "value": [-0.8, 0.5, 0]},
+            {"op": "set_keyframe", "id": "Red", "property": "translation", "frame": 10, "value": [0.8, 0.5, 2.0]},
+            {"op": "set_keyframe", "id": "Blue", "property": "color", "frame": 10, "value": "#20c040"}
+        ]}))
+        .unwrap();
+        ed.apply(&batch).unwrap();
+        let top = |frame| {
+            let opts = RenderOptions {
+                views: parse_views("top").unwrap(),
+                size: 96,
+                focus: None,
+                frame,
+            };
+            decode(&render_png(&ed, &opts).unwrap()).2
+        };
+        assert_ne!(
+            top(Some(1.0)),
+            top(Some(10.0)),
+            "the pose changes between frames"
+        );
+        assert_eq!(
+            top(Some(10.0)),
+            top(Some(50.0)),
+            "poses hold after the last key"
+        );
+    }
+
+    #[test]
     fn focus_frames_one_object_and_empty_scenes_render() {
         let ed = scene();
         let opts = RenderOptions {
             views: parse_views("front").unwrap(),
             size: 64,
             focus: Some(1),
+            frame: None,
         };
         let (_, _, px) = decode(&render_png(&ed, &opts).unwrap());
         let c = &px[(32 * 64 + 32) * 3..(32 * 64 + 32) * 3 + 3];

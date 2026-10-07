@@ -4,6 +4,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js'
 import { ease } from './clock.js'
+import { isAnimated, pose } from './anim.js'
 
 const CREASE = THREE.MathUtils.degToRad(38)
 const SELECT = 0xff8a4c
@@ -92,6 +93,8 @@ export class Viewport {
     this.face = null
     this.wireframe = false
     this.spinRate = 0
+    // Current animation frame; animated objects are posed at it.
+    this.currentFrame = 1
     this.showGizmo = true
     this.lastFrame = clock.now()
 
@@ -289,8 +292,9 @@ export class Viewport {
     this.root.add(group)
     const node = { id: o.id, group, mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges, data: o, key: null, cageKey: null, triFace: [] }
     this.nodes.set(o.id, node)
-    this.setTransform(node.group, o.transform)
-    this.setMaterial(node, o.material)
+    const posed = pose(o, this.currentFrame)
+    this.setTransform(node.group, posed.transform)
+    this.setMaterial(node, posed.material)
     this.setMesh(node, displayMesh(o))
     this.setCage(node, o.mesh)
     if (animate) {
@@ -324,13 +328,15 @@ export class Viewport {
       }
     }
     if (meshKey(o.mesh) !== node.cageKey && !this.anim.has(`mesh:${o.id}`)) this.setCage(node, o.mesh)
-    const tf = o.transform
+    const posed = pose(o, this.currentFrame)
+    const tf = posed.transform
+    const animated = isAnimated(o)
     const g = node.group
     const same =
       g.position.distanceTo(new THREE.Vector3(...tf.translation)) < 1e-6 &&
       g.scale.distanceTo(new THREE.Vector3(...tf.scale)) < 1e-6 &&
       new THREE.Vector3(g.rotation.x, g.rotation.y, g.rotation.z).distanceTo(new THREE.Vector3(...tf.rotation)) < 1e-6
-    if (!same && animate) {
+    if (!same && animate && !animated) {
       const p0 = g.position.clone()
       const s0 = g.scale.clone()
       const q0 = g.quaternion.clone()
@@ -346,14 +352,14 @@ export class Viewport {
     } else if (!same) {
       this.setTransform(g, tf)
     }
-    if (JSON.stringify(prev.material) !== JSON.stringify(o.material)) {
-      if (animate) {
+    if (JSON.stringify(pose(prev, this.currentFrame).material) !== JSON.stringify(posed.material)) {
+      if (animate && !animated) {
         const m = node.mesh.material
         const c0 = m.color.clone()
         const r0 = m.roughness
         const m0 = m.metalness
         const target = new THREE.MeshPhysicalMaterial()
-        this.applyMaterial(target, o.material)
+        this.applyMaterial(target, posed.material)
         this.anim.add(`mat:${o.id}`, 420, (t) => {
           m.color.lerpColors(c0, target.color, t)
           m.roughness = r0 + (target.roughness - r0) * t
@@ -361,7 +367,7 @@ export class Viewport {
           m.clearcoat = Math.max(0, 0.65 - m.roughness)
           if (t === 1) target.dispose()
         })
-      } else this.setMaterial(node, o.material)
+      } else this.setMaterial(node, posed.material)
     }
   }
 
@@ -607,6 +613,18 @@ export class Viewport {
     return { x: rect.left + ((q.x + 1) / 2) * rect.width, y: rect.top + ((1 - q.y) / 2) * rect.height }
   }
 
+  /** Pose every animated object at `frame`. */
+  setFrame(frame) {
+    this.currentFrame = frame
+    for (const node of this.nodes.values()) {
+      if (!isAnimated(node.data) || this.anim.has(`tf:${node.id}`)) continue
+      const p = pose(node.data, frame)
+      this.setTransform(node.group, p.transform)
+      this.setMaterial(node, p.material)
+    }
+    if (this.edit.active && !this.gizmo.dragging) this.placeGizmo()
+  }
+
   setGizmoMode(mode) {
     this.gizmo.setMode(mode)
   }
@@ -678,7 +696,7 @@ export class Viewport {
   sceneBounds() {
     const box = new THREE.Box3()
     for (const node of this.nodes.values()) {
-      const tf = node.data.transform
+      const tf = pose(node.data, this.currentFrame).transform
       const m = new THREE.Matrix4().compose(
         new THREE.Vector3(...tf.translation),
         new THREE.Quaternion().setFromEuler(new THREE.Euler(...tf.rotation, 'XYZ')),

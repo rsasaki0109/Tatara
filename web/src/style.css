@@ -927,6 +927,125 @@ input[type='range'] {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* ---- timeline ------------------------------------------------------------ */
+
+.timeline {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: rgba(16, 17, 20, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(6px);
+  font-size: 12px;
+}
+
+.timeline button {
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.timeline button.on,
+#key-btn:hover {
+  background: rgba(255, 122, 61, 0.22);
+  color: var(--accent-2);
+}
+
+.timeline button.pressed {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+#key-btn {
+  color: #ffd08a;
+}
+
+#frame-input {
+  width: 46px;
+  height: 24px;
+  text-align: center;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+
+.ruler {
+  position: relative;
+  flex: 1;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: ew-resize;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.ruler .ticks span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.09);
+  font-size: 9px;
+  color: var(--muted);
+  padding: 1px 0 0 3px;
+}
+
+.ruler .keys i {
+  position: absolute;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  transform: rotate(45deg);
+  background: #ffc46b;
+  border: 1px solid #1a1009;
+}
+
+.ruler .keys i.faint {
+  background: rgba(255, 196, 107, 0.35);
+  border-color: transparent;
+}
+
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(255, 122, 61, 0.8);
+}
+
+.viewport .axes {
+  bottom: 54px;
+}
+
+.viewport .caption {
+  bottom: 58px;
+}
+
+#outliner .keyed {
+  color: #ffc46b;
+  font-size: 9px;
+}
+
 /* ---- modifiers ---------------------------------------------------------- */
 
 .mod {

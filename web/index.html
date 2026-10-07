@@ -39,6 +39,13 @@
           <button id="frame-btn" title="Frame scene (F)"></button>
         </div>
         <div class="axes" id="axes"></div>
+        <div class="timeline" id="timeline">
+          <button id="play-btn" title="Play / pause (Space)"></button>
+          <input id="frame-input" type="text" inputmode="decimal" aria-label="Current frame" spellcheck="false">
+          <div class="ruler" id="ruler"><div class="ticks" id="ruler-ticks"></div><div class="keys" id="ruler-keys"></div><div class="playhead" id="playhead"></div></div>
+          <span class="range muted" id="range-label"></span>
+          <button id="key-btn" title="Key every property of the selection at this frame (K)">◆ Key</button>
+        </div>
         <div class="caption" id="caption"><span class="caption-step" id="caption-step"></span><span id="caption-text"></span><code id="caption-hint"></code></div>
         <div class="terminal" id="terminal"><div class="terminal-bar"><i></i><i></i><i></i><span>agent ⇄ tatara --mcp</span></div><pre id="terminal-body"></pre></div>
         <div class="cursor" id="cursor"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 1.6L10 19z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg><span class="ripple"></span></div>

@@ -121,7 +121,23 @@ fn render(ed: &Editor, query: &str) -> Result<Response, Response> {
             )
         }
     };
-    let png = crate::render::render_png(ed, &crate::render::RenderOptions { views, size, focus })?;
+    let frame = match query_param(query, "frame").filter(|s| !s.is_empty()) {
+        Some(f) => {
+            Some(crate::anim::check_frame(f.parse().map_err(|_| {
+                Response::error(400, "frame must be a number")
+            })?)?)
+        }
+        None => None,
+    };
+    let png = crate::render::render_png(
+        ed,
+        &crate::render::RenderOptions {
+            views,
+            size,
+            focus,
+            frame,
+        },
+    )?;
     Ok(Response {
         status: 200,
         content_type: "image/png",
@@ -139,7 +155,17 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
     let result: Result<Response, Response> = (|| match (method, path) {
         ("GET", "/state") => Ok(Response::json(200, state(ed, ai))),
         ("GET", "/scene") => Ok(Response::json(200, json!(ed.scene()))),
-        ("GET", "/context") => Ok(Response::json(200, engine::context(ed))),
+        ("GET", "/context") => {
+            let frame = match query_param(query, "frame").filter(|s| !s.is_empty()) {
+                Some(f) => {
+                    Some(crate::anim::check_frame(f.parse().map_err(|_| {
+                        Response::error(400, "frame must be a number")
+                    })?)?)
+                }
+                None => None,
+            };
+            Ok(Response::json(200, engine::context_at(ed, frame)))
+        }
         ("GET", "/schema") => Ok(Response::json(200, engine::command_schema())),
         ("GET", "/ai") => Ok(Response::json(200, json!({ "enabled": ai }))),
         ("POST", "/commands") => {
