@@ -61,6 +61,26 @@ pub fn tools() -> Value {
             "name": "redo",
             "description": "Redo the last undone change in the shared scene.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "import_gltf",
+            "description": "Import a local .glb (or .gltf with embedded buffers) file into the shared scene as one undoable step. Triangles are welded and merged back into quads.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "path": { "type": "string", "description": "Path to a .glb or .gltf file" } },
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "export_gltf",
+            "description": "Write the shared scene, with modifiers applied, to a local binary glTF (.glb) file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "path": { "type": "string", "description": "Destination path ending in .glb" } },
+                "required": ["path"],
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -97,7 +117,64 @@ async fn handle(http: &reqwest::Client, base: &str, msg: Value) -> Option<Value>
     })
 }
 
+fn has_extension(path: &str, allowed: &[&str]) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| allowed.iter().any(|a| e.eq_ignore_ascii_case(a)))
+}
+
+async fn file_tool(http: &reqwest::Client, base: &str, name: &str, args: &Value) -> Value {
+    let Some(path) = args["path"].as_str().filter(|p| !p.is_empty()) else {
+        return tool_result("path is required".into(), true);
+    };
+    let unreachable = |e: reqwest::Error| {
+        tool_result(
+            format!("Tatara editor is not reachable at {base} ({e})."),
+            true,
+        )
+    };
+    if name == "import_gltf" {
+        if !has_extension(path, &["glb", "gltf"]) {
+            return tool_result("path must end in .glb or .gltf".into(), true);
+        }
+        let bytes = match tokio::fs::read(path).await {
+            Ok(b) => b,
+            Err(e) => return tool_result(format!("cannot read {path}: {e}"), true),
+        };
+        return match http
+            .post(format!("{base}/api/import"))
+            .body(bytes)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let ok = resp.status().is_success();
+                tool_result(resp.text().await.unwrap_or_default(), !ok)
+            }
+            Err(e) => unreachable(e),
+        };
+    }
+    if !has_extension(path, &["glb"]) {
+        return tool_result("path must end in .glb".into(), true);
+    }
+    let bytes = match http.get(format!("{base}/api/export/glb")).send().await {
+        Ok(resp) => match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => return unreachable(e),
+        },
+        Err(e) => return unreachable(e),
+    };
+    match tokio::fs::write(path, &bytes).await {
+        Ok(()) => tool_result(format!("wrote {} bytes to {path}", bytes.len()), false),
+        Err(e) => tool_result(format!("cannot write {path}: {e}"), true),
+    }
+}
+
 async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) -> Value {
+    if name == "import_gltf" || name == "export_gltf" {
+        return file_tool(http, base, name, &args).await;
+    }
     let request = match name {
         "get_scene" if args["include_mesh"].as_bool() == Some(true) => {
             http.get(format!("{base}/api/scene"))

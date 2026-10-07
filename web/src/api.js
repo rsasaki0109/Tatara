@@ -29,5 +29,13 @@ export function createApi(clock) {
     redo: () => request('POST', '/redo'),
     reset: () => request('POST', '/reset'),
     chat: (prompt) => request('POST', '/chat', { prompt }),
+    importModel: (bytes) =>
+      clock.track(
+        fetch('/api/import', { method: 'POST', body: bytes }).then(async (res) => {
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok) throw new ApiError(data.error || res.statusText, res.status, data)
+          return data
+        }),
+      ),
   }
 }

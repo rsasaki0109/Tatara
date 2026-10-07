@@ -9,6 +9,7 @@ repository = "https://github.com/rsasaki0109/Tatara"
 [dependencies]
 anyhow = "1.0.104"
 axum = "0.8"
+base64 = "0.23.1"
 futures-util = "0.3.34"
 glam = "0.34.1"
 reqwest = { version = "0.13.5", features = ["json"] }

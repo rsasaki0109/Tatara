@@ -56,7 +56,7 @@ cargo run --release
 
 Open **http://127.0.0.1:3000** and click **Build a vessel study**, or add a primitive from the toolbar.
 
-The Rust process owns the scene and keeps it in memory. Use **Save** to download a `.tatara.json` file, **Open** to restore one and **OBJ** to export geometry.
+The Rust process owns the scene and keeps it in memory. Use **Save** to download a `.tatara.json` file and **Open** to restore one. **Open** also imports `.glb` / `.gltf` models into the current scene, and **GLB** / **OBJ** export the scene for other tools.
 
 ## What works today
 
@@ -66,7 +66,8 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **Edit mode (Tab):** vertex, edge and face selection with Shift+click and select all; move a selection with the gizmo; loop cut; bevel selected edges or every edge; extrude and inset several faces at once.
 - **Modifier stack:** non-destructive Mirror, Subdivision, Array, Twist and Taper, evaluated in Rust in order. The base mesh stays editable and is drawn as an orange cage. **Apply** bakes the stack into the base mesh.
 - **History:** each batch is one undo step, and an invalid batch changes nothing.
-- **Files:** validated JSON scene save/open, plus OBJ export with transforms applied.
+- **Files:** validated JSON scene save/open, and OBJ export with transforms applied.
+- **glTF 2.0:** export a binary `.glb` with one node, mesh and PBR material per object, modifiers applied and normals split at creases; it passes the Khronos glTF Validator with no issues. Import `.glb` or `.gltf` with embedded buffers through the node hierarchy. Split vertices are welded and coplanar triangle pairs become quads again, so imported models stay editable. The whole import is one undo step.
 - **Agents:** a stdio MCP bridge, generated command schemas, scene bounds and optional full mesh reads.
 - **Chat (optional):** an OpenAI-compatible Chat Completions endpoint translates requests into validated commands.
 
@@ -104,6 +105,7 @@ You can also build once and point the client at `target/release/tatara` with `ar
 | `get_scene` | IDs, names, transforms, materials, world bounds, counts and revision. Pass `include_mesh: true` for vertices and polygons. |
 | `apply_commands` | Apply a validated, atomic batch. Pass `expected_revision` to reject stale edits. |
 | `undo` / `redo` | Step the shared history. |
+| `import_gltf` / `export_gltf` | Read a local `.glb`/`.gltf` into the scene, or write the scene to a `.glb`. |
 
 Example request for your agent:
 
@@ -133,6 +135,7 @@ curl http://127.0.0.1:3000/api/commands \
 | `loop_cut` | `id`, `edge` `[a, b]`, optional `fraction` |
 | `add_modifier` / `set_modifier` / `remove_modifier` | `id`, `modifier` (`mirror`, `subdivision`, `array`, `twist`, `taper`), `index` |
 | `apply_modifiers` | `id`: bake the stack into the base mesh |
+| `add_mesh` | explicit `vertices` and `faces` (CCW loops), plus the optional fields of `add` |
 | `subdivide` | `id`, `levels` (1–4) |
 | `delete` / `clear` | `id` / nothing |
 
@@ -148,7 +151,7 @@ curl http://127.0.0.1:3000/api/commands \
 ]}
 ```
 
-Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj` and `GET /api/events`. The last is a server-sent event stream of revisions.
+Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj`, `GET /api/export/glb`, `POST /api/import` (raw `.glb`/`.gltf` body) and `GET /api/events`. The last is a server-sent event stream of revisions.
 
 ## Optional in-editor chat
 
@@ -185,6 +188,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Part | Implementation |
 | --- | --- |
 | Geometry, commands, validation, history, OBJ | Rust: `src/engine.rs` |
+| glTF export and import | Rust: `src/gltf.rs` |
 | Modifier stack evaluation | Rust: `src/modifiers.rs` |
 | Bevel, loop cut, vertex moves | Rust: `src/edit.rs` |
 | HTTP API, live events, chat provider | Rust: `src/server.rs` (axum) |
@@ -212,12 +216,12 @@ node scripts/browser-check.mjs   # real-browser editing, history, files, layout 
 The aim is a creation suite that surpasses Blender for human and agent collaboration, taken one verifiable step at a time:
 
 1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓; next: multi-segment bevel, knife, merge and dissolve, booleans, and solidify/bevel/boolean modifiers.
-2. **Interchange:** glTF import and export, and a browser-only Rust/WASM engine.
+2. **Interchange:** ~~glTF import and export~~ ✓; next: UVs and textures in glTF, and a browser-only Rust/WASM engine.
 3. **Look development:** a node-based material system, UVs and textures, and a path-traced preview.
 4. **Motion:** keyframes, curves, constraints, then rigging.
 5. **Agents:** visual feedback for agents (renders and measurements as tool results), reviewable change proposals and multi-user sessions.
 
-Not yet available: `.blend` compatibility, UV editing, animation and a production renderer. Extrusion moves a face along its normal and does not repair self-intersections. OBJ carries geometry only; save the native scene to keep materials.
+Not yet available: `.blend` compatibility, UV editing, animation and a production renderer. Extrusion moves a face along its normal and does not repair self-intersections. OBJ carries geometry only. glTF carries geometry, transforms and base PBR factors, but no textures, UVs or animation yet. Importing a sheared node hierarchy bakes the transform into the vertices. Save the native scene to keep modifiers and edit history.
 
 ## License
 

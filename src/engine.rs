@@ -18,7 +18,7 @@ use crate::modifiers::{self, Modifier};
 
 pub type Vec3 = [f64; 3];
 
-const MAX_OBJECTS: usize = 2_000;
+pub const MAX_OBJECTS: usize = 2_000;
 pub const MAX_FACES: usize = 250_000;
 const MAX_NAME: usize = 80;
 const HISTORY_LIMIT: usize = 200;
@@ -322,6 +322,26 @@ pub enum Command {
         id: ObjRef,
         face: usize,
         fraction: f64,
+    },
+    /// Create an object from explicit geometry (used by glTF import).
+    /// `faces` are counter-clockwise vertex loops with outward normals.
+    AddMesh {
+        #[serde(default)]
+        name: Option<String>,
+        vertices: Vec<Vec3>,
+        faces: Vec<Vec<u32>>,
+        #[serde(default)]
+        translation: Option<Vec3>,
+        #[serde(default)]
+        rotation: Option<Vec3>,
+        #[serde(default)]
+        scale: Option<Vec3>,
+        #[serde(default)]
+        color: Option<String>,
+        #[serde(default)]
+        roughness: Option<f64>,
+        #[serde(default)]
+        metalness: Option<f64>,
     },
     /// Move base-mesh vertices by `offset` (object space).
     MoveVertices {
@@ -738,6 +758,49 @@ fn apply_command(
         Command::LoopCut { id, edge, fraction } => {
             let i = resolve(scene, id)?;
             edit::loop_cut(&mut scene.objects[i].mesh, *edge, *fraction)?;
+        }
+        Command::AddMesh {
+            name,
+            vertices,
+            faces,
+            translation,
+            rotation,
+            scale,
+            color,
+            roughness,
+            metalness,
+        } => {
+            if scene.objects.len() >= MAX_OBJECTS {
+                return err(format!("scene is limited to {MAX_OBJECTS} objects"));
+            }
+            let mesh = Mesh {
+                vertices: vertices.clone(),
+                faces: faces.clone(),
+            };
+            if mesh.faces.is_empty() {
+                return err("a mesh needs at least one face");
+            }
+            validate_mesh(&mesh)?;
+            let id = scene.next_id;
+            let name = match name {
+                Some(n) => check_name(n)?,
+                None => unique_name(scene, "Mesh"),
+            };
+            let mut transform = Transform::default();
+            set_transform(&mut transform, translation, rotation, scale)?;
+            let mut material = Material::default();
+            set_material(&mut material, color, roughness, metalness)?;
+            scene.objects.push(Object {
+                id,
+                name,
+                kind: "mesh".into(),
+                transform,
+                material,
+                mesh,
+                modifiers: Vec::new(),
+            });
+            scene.next_id += 1;
+            created.push(id);
         }
         Command::AddModifier {
             id,
