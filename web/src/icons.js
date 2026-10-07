@@ -31,6 +31,8 @@ const P = {
   'sel-vertex': '<rect x="2.5" y="2.5" width="11" height="11" rx="1" opacity=".45"/><circle cx="2.5" cy="2.5" r="1.8" fill="currentColor"/><circle cx="13.5" cy="13.5" r="1.8" fill="currentColor"/>',
   'sel-edge': '<rect x="2.5" y="2.5" width="11" height="11" rx="1" opacity=".45"/><path d="M2.5 13.5h11" stroke-width="2.6"/>',
   'sel-face': '<rect x="2.5" y="2.5" width="11" height="11" rx="1" fill="currentColor" fill-opacity=".45"/>',
+  play: '<path d="M4.5 2.8v10.4L13 8z" fill="currentColor"/>',
+  pause: '<path d="M4.5 3v10M11.5 3v10" stroke-width="2.4"/>',
   cursor: '<path d="M3.5 2.5 12.5 8l-4 1-2 4.5z"/>',
 }
 

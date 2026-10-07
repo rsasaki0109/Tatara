@@ -1,0 +1,368 @@
+//! Keyframe animation: per-object tracks of transform and material values.
+//!
+//! A track holds keys sorted by frame. Each key's interpolation decides how
+//! the value travels to the next key (like Blender, the left key owns the
+//! segment). Objects keep their static transform and material; a property
+//! with a track is driven by it, and every other property stays static.
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::engine::{EngineError, Material, Object, Transform, check_color};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Property {
+    Translation,
+    /// Euler XYZ, radians.
+    Rotation,
+    Scale,
+    /// sRGB colour; key it with `#rrggbb`.
+    Color,
+    Roughness,
+    Metalness,
+}
+
+impl Property {
+    pub fn width(self) -> usize {
+        match self {
+            Property::Roughness | Property::Metalness => 1,
+            _ => 3,
+        }
+    }
+
+    pub fn all() -> [Property; 6] {
+        use Property::*;
+        [Translation, Rotation, Scale, Color, Roughness, Metalness]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Interpolation {
+    /// Smooth ease in and out (the default).
+    #[default]
+    Ease,
+    Linear,
+    /// Hold the value until the next key.
+    Step,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Key {
+    pub frame: f64,
+    /// 3 numbers for vectors and colours (sRGB 0..1), 1 for scalars.
+    pub value: Vec<f64>,
+    #[serde(default)]
+    pub interpolation: Interpolation,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Track {
+    pub property: Property,
+    /// Sorted by frame, at most one key per frame.
+    pub keys: Vec<Key>,
+}
+
+fn d_fps() -> f64 {
+    24.0
+}
+fn d_start() -> f64 {
+    1.0
+}
+fn d_end() -> f64 {
+    96.0
+}
+
+/// Playback range and rate for the scene.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Animation {
+    #[serde(default = "d_fps")]
+    pub fps: f64,
+    #[serde(default = "d_start")]
+    pub start: f64,
+    #[serde(default = "d_end")]
+    pub end: f64,
+}
+
+impl Default for Animation {
+    fn default() -> Self {
+        Self {
+            fps: d_fps(),
+            start: d_start(),
+            end: d_end(),
+        }
+    }
+}
+
+impl Animation {
+    pub fn validate(&self) -> Result<(), EngineError> {
+        let ok = self.fps.is_finite()
+            && (1.0..=240.0).contains(&self.fps)
+            && check_frame(self.start).is_ok()
+            && check_frame(self.end).is_ok()
+            && self.end > self.start;
+        if ok {
+            Ok(())
+        } else {
+            Err(EngineError::new(
+                "animation needs 1-240 fps and start < end within 0-100000",
+            ))
+        }
+    }
+}
+
+/// A keyframe value in a command: a number, a vector or a `#rrggbb` colour.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum KeyValue {
+    Scalar(f64),
+    Vector([f64; 3]),
+    Color(String),
+}
+
+pub fn check_frame(frame: f64) -> Result<f64, EngineError> {
+    if frame.is_finite() && (0.0..=100_000.0).contains(&frame) {
+        Ok(frame)
+    } else {
+        Err(EngineError::new("frame must be between 0 and 100000"))
+    }
+}
+
+pub fn hex_to_rgb(hex: &str) -> [f64; 3] {
+    let ch = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0) as f64 / 255.0;
+    [ch(1), ch(3), ch(5)]
+}
+
+pub fn rgb_to_hex(rgb: [f64; 3]) -> String {
+    let b = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", b(rgb[0]), b(rgb[1]), b(rgb[2]))
+}
+
+/// Check a command value against the property and convert it to numbers.
+pub fn key_value(property: Property, value: &KeyValue) -> Result<Vec<f64>, EngineError> {
+    let bad = |what: &str| {
+        Err(EngineError::new(
+            format!("{property:?} keys need {what}").to_lowercase(),
+        ))
+    };
+    let v = match (property, value) {
+        (Property::Color, KeyValue::Color(c)) => hex_to_rgb(&check_color(c)?).to_vec(),
+        (Property::Color, _) => return bad("a #rrggbb colour"),
+        (Property::Roughness | Property::Metalness, KeyValue::Scalar(x)) => {
+            if !(0.0..=1.0).contains(x) {
+                return bad("a value between 0 and 1");
+            }
+            vec![*x]
+        }
+        (Property::Roughness | Property::Metalness, _) => return bad("a number"),
+        (_, KeyValue::Vector(v)) => {
+            if v.iter().any(|x| !x.is_finite() || x.abs() > 1e6) {
+                return bad("finite numbers");
+            }
+            if property == Property::Scale && v.iter().any(|x| x.abs() < 1e-6) {
+                return bad("non-zero scale");
+            }
+            v.to_vec()
+        }
+        _ => return bad("[x, y, z]"),
+    };
+    Ok(v)
+}
+
+/// The static (unanimated) value of a property.
+pub fn rest_value(o: &Object, property: Property) -> Vec<f64> {
+    match property {
+        Property::Translation => o.transform.translation.to_vec(),
+        Property::Rotation => o.transform.rotation.to_vec(),
+        Property::Scale => o.transform.scale.to_vec(),
+        Property::Color => hex_to_rgb(&o.material.color).to_vec(),
+        Property::Roughness => vec![o.material.roughness],
+        Property::Metalness => vec![o.material.metalness],
+    }
+}
+
+pub fn sample_track(track: &Track, frame: f64) -> Vec<f64> {
+    let keys = &track.keys;
+    let (first, last) = (&keys[0], &keys[keys.len() - 1]);
+    if frame <= first.frame {
+        return first.value.clone();
+    }
+    if frame >= last.frame {
+        return last.value.clone();
+    }
+    let i = keys.partition_point(|k| k.frame <= frame) - 1;
+    let (a, b) = (&keys[i], &keys[i + 1]);
+    let t = (frame - a.frame) / (b.frame - a.frame);
+    let t = match a.interpolation {
+        Interpolation::Step => 0.0,
+        Interpolation::Linear => t,
+        Interpolation::Ease => t * t * (3.0 - 2.0 * t),
+    };
+    a.value
+        .iter()
+        .zip(&b.value)
+        .map(|(x, y)| x + (y - x) * t)
+        .collect()
+}
+
+/// A property's value at `frame`: from its track, or the static value.
+pub fn value_at(o: &Object, property: Property, frame: f64) -> Vec<f64> {
+    match o
+        .tracks
+        .iter()
+        .find(|t| t.property == property && !t.keys.is_empty())
+    {
+        Some(track) => sample_track(track, frame),
+        None => rest_value(o, property),
+    }
+}
+
+/// Transform and material of an object at `frame`.
+pub fn pose(o: &Object, frame: f64) -> (Transform, Material) {
+    if o.tracks.is_empty() {
+        return (o.transform.clone(), o.material.clone());
+    }
+    let v3 = |p| {
+        let v = value_at(o, p, frame);
+        [v[0], v[1], v[2]]
+    };
+    let transform = Transform {
+        translation: v3(Property::Translation),
+        rotation: v3(Property::Rotation),
+        scale: v3(Property::Scale),
+    };
+    let material = Material {
+        color: rgb_to_hex(v3(Property::Color)),
+        roughness: value_at(o, Property::Roughness, frame)[0].clamp(0.0, 1.0),
+        metalness: value_at(o, Property::Metalness, frame)[0].clamp(0.0, 1.0),
+    };
+    (transform, material)
+}
+
+/// Insert or replace the key at `frame`, keeping the track sorted.
+pub fn set_key(
+    o: &mut Object,
+    property: Property,
+    frame: f64,
+    value: Vec<f64>,
+    interpolation: Interpolation,
+) -> Result<(), EngineError> {
+    let track = match o.tracks.iter_mut().position(|t| t.property == property) {
+        Some(i) => &mut o.tracks[i],
+        None => {
+            o.tracks.push(Track {
+                property,
+                keys: Vec::new(),
+            });
+            o.tracks.last_mut().unwrap()
+        }
+    };
+    if track.keys.len() >= 10_000 {
+        return Err(EngineError::new("a track can hold at most 10000 keys"));
+    }
+    let key = Key {
+        frame,
+        value,
+        interpolation,
+    };
+    match track
+        .keys
+        .iter()
+        .position(|k| (k.frame - frame).abs() < 1e-9)
+    {
+        Some(i) => track.keys[i] = key,
+        None => {
+            let at = track.keys.partition_point(|k| k.frame < frame);
+            track.keys.insert(at, key);
+        }
+    }
+    Ok(())
+}
+
+/// Remove keys at `frame` (from one property or all); returns how many.
+pub fn delete_key(o: &mut Object, property: Option<Property>, frame: f64) -> usize {
+    let mut removed = 0;
+    for t in o
+        .tracks
+        .iter_mut()
+        .filter(|t| property.is_none_or(|p| p == t.property))
+    {
+        let before = t.keys.len();
+        t.keys.retain(|k| (k.frame - frame).abs() >= 1e-9);
+        removed += before - t.keys.len();
+    }
+    o.tracks.retain(|t| !t.keys.is_empty());
+    removed
+}
+
+pub fn validate_tracks(o: &Object) -> Result<(), EngineError> {
+    for t in &o.tracks {
+        if t.keys.is_empty() {
+            return Err(EngineError::new("a track needs at least one key"));
+        }
+        for (i, k) in t.keys.iter().enumerate() {
+            check_frame(k.frame)?;
+            if k.value.len() != t.property.width() || k.value.iter().any(|v| !v.is_finite()) {
+                return Err(EngineError::new(format!(
+                    "{:?} key at frame {} has the wrong value",
+                    t.property, k.frame
+                )));
+            }
+            if i > 0 && k.frame <= t.keys[i - 1].frame {
+                return Err(EngineError::new("track keys must be sorted by frame"));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(interp: Interpolation) -> Track {
+        Track {
+            property: Property::Translation,
+            keys: vec![
+                Key {
+                    frame: 0.0,
+                    value: vec![0.0, 0.0, 0.0],
+                    interpolation: interp,
+                },
+                Key {
+                    frame: 10.0,
+                    value: vec![10.0, 0.0, -10.0],
+                    interpolation: interp,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn interpolation_modes() {
+        assert_eq!(
+            sample_track(&track(Interpolation::Linear), 2.5),
+            vec![2.5, 0.0, -2.5]
+        );
+        assert_eq!(
+            sample_track(&track(Interpolation::Step), 9.9),
+            vec![0.0, 0.0, 0.0]
+        );
+        let e = sample_track(&track(Interpolation::Ease), 2.5)[0];
+        assert!(e > 0.0 && e < 2.5, "ease starts slow: {e}");
+        assert_eq!(sample_track(&track(Interpolation::Ease), 5.0)[0], 5.0);
+        // Clamped outside the keyed range.
+        assert_eq!(sample_track(&track(Interpolation::Linear), -3.0)[0], 0.0);
+        assert_eq!(sample_track(&track(Interpolation::Linear), 99.0)[0], 10.0);
+    }
+
+    #[test]
+    fn values_are_checked_per_property() {
+        assert!(key_value(Property::Color, &KeyValue::Color("#ff0000".into())).is_ok());
+        assert!(key_value(Property::Color, &KeyValue::Scalar(1.0)).is_err());
+        assert!(key_value(Property::Roughness, &KeyValue::Scalar(1.5)).is_err());
+        assert!(key_value(Property::Scale, &KeyValue::Vector([1.0, 0.0, 1.0])).is_err());
+        assert_eq!(rgb_to_hex(hex_to_rgb("#8fb9a0")), "#8fb9a0");
+    }
+}

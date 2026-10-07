@@ -10,6 +10,7 @@ use base64::Engine as _;
 use glam::{DMat4, DQuat, DVec3, EulerRot};
 use serde_json::{Value, json};
 
+use crate::anim::{Property, sample_track};
 use crate::engine::{Command, Editor, EngineError, MAX_FACES, MAX_OBJECTS, Mesh, Vec3};
 
 const CREASE_DEGREES: f64 = 38.0;
@@ -120,11 +121,18 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     let mut meshes = Vec::new();
     let mut materials = Vec::new();
     let mut nodes = Vec::new();
+    let mut channels = Vec::new();
+    let mut samplers = Vec::new();
+    let fps = ed.scene().animation.fps;
     let mut push_view = |bin: &mut Vec<u8>, bytes: &[u8], target: u32| -> usize {
         while !bin.len().is_multiple_of(4) {
             bin.push(0);
         }
-        views.push(json!({ "buffer": 0, "byteOffset": bin.len(), "byteLength": bytes.len(), "target": target }));
+        let mut view = json!({ "buffer": 0, "byteOffset": bin.len(), "byteLength": bytes.len() });
+        if target != 0 {
+            view["target"] = json!(target);
+        }
+        views.push(view);
         bin.extend_from_slice(bytes);
         views.len() - 1
     };
@@ -187,6 +195,49 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
             "rotation": [q.x, q.y, q.z, q.w],
             "scale": t.scale,
         }));
+
+        // Transform tracks become glTF animation channels, baked once per
+        // frame (and at every key) so eased and stepped keys look the same.
+        let node = nodes.len() - 1;
+        for track in &o.tracks {
+            let path = match track.property {
+                Property::Translation => "translation",
+                Property::Rotation => "rotation",
+                Property::Scale => "scale",
+                _ => continue,
+            };
+            let (first, last) = (track.keys[0].frame, track.keys[track.keys.len() - 1].frame);
+            let mut frames: Vec<f64> = (first.ceil() as i64..=last.floor() as i64)
+                .map(|f| f as f64)
+                .collect();
+            frames.extend(track.keys.iter().map(|k| k.frame));
+            frames.sort_by(f64::total_cmp);
+            frames.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+            let times: Vec<f32> = frames.iter().map(|f| (f / fps) as f32).collect();
+            let values: Vec<f32> = frames
+                .iter()
+                .flat_map(|&f| {
+                    let v = sample_track(track, f);
+                    if track.property == Property::Rotation {
+                        let q = DQuat::from_euler(EulerRot::XYZ, v[0], v[1], v[2]);
+                        vec![q.x as f32, q.y as f32, q.z as f32, q.w as f32]
+                    } else {
+                        v.iter().map(|&x| x as f32).collect()
+                    }
+                })
+                .collect();
+            let time_bytes: Vec<u8> = times.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let value_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let tv = push_view(&mut bin, &time_bytes, 0);
+            let vv = push_view(&mut bin, &value_bytes, 0);
+            let a = accessors.len();
+            accessors.push(json!({ "bufferView": tv, "componentType": 5126, "count": times.len(), "type": "SCALAR", "min": [times[0]], "max": [times[times.len() - 1]] }));
+            accessors.push(json!({ "bufferView": vv, "componentType": 5126, "count": times.len(), "type": if track.property == Property::Rotation { "VEC4" } else { "VEC3" } }));
+            samplers.push(json!({ "input": a, "output": a + 1, "interpolation": "LINEAR" }));
+            channels.push(
+                json!({ "sampler": samplers.len() - 1, "target": { "node": node, "path": path } }),
+            );
+        }
     }
     while !bin.len().is_multiple_of(4) {
         bin.push(0);
@@ -203,6 +254,10 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     });
     if !bin.is_empty() {
         doc["buffers"] = json!([{ "byteLength": bin.len() }]);
+    }
+    if !channels.is_empty() {
+        doc["animations"] =
+            json!([{ "name": "Tatara", "channels": channels, "samplers": samplers }]);
     }
     let mut json_bytes = serde_json::to_vec(&doc).expect("json serializes");
     while !json_bytes.len().is_multiple_of(4) {
@@ -785,6 +840,47 @@ mod tests {
             assert_eq!(faces.len(), 10, "face {face}");
             assert!(faces.iter().all(|f| f.len() == 4));
         }
+    }
+
+    #[test]
+    fn transform_tracks_export_as_animation_channels() {
+        let ed = editor_with(json!([
+            {"op": "add", "name": "Box", "primitive": {"kind": "cube"}},
+            {"op": "set_keyframe", "id": "Box", "property": "translation", "frame": 0, "value": [0, 0, 0]},
+            {"op": "set_keyframe", "id": "Box", "property": "translation", "frame": 24, "value": [2, 0, 0]},
+            {"op": "set_keyframe", "id": "Box", "property": "rotation", "frame": 12, "value": [0, 1.0, 0]},
+            {"op": "set_keyframe", "id": "Box", "property": "color", "frame": 12, "value": "#ff0000"}
+        ]));
+        let (doc, bin) = parse_glb(&export_glb(&ed)).unwrap();
+        let anim = &doc["animations"][0];
+        assert_eq!(
+            anim["channels"].as_array().unwrap().len(),
+            2,
+            "colour is not a glTF channel"
+        );
+        assert_eq!(anim["channels"][0]["target"]["path"], "translation");
+        let input = &doc["accessors"][anim["samplers"][0]["input"].as_u64().unwrap() as usize];
+        assert_eq!(input["count"], 25);
+        assert_eq!(input["max"][0], 1.0, "24 frames at 24 fps is one second");
+        let buffers = load_buffers(&doc, bin).unwrap();
+        let (out, width) = read_accessor(
+            &doc,
+            &buffers,
+            anim["samplers"][0]["output"].as_u64().unwrap() as usize,
+        )
+        .unwrap();
+        assert_eq!(width, 3);
+        assert!((out[out.len() - 3] - 2.0).abs() < 1e-6);
+        let (rot, w) = read_accessor(
+            &doc,
+            &buffers,
+            anim["samplers"][1]["output"].as_u64().unwrap() as usize,
+        )
+        .unwrap();
+        assert_eq!((w, rot.len()), (4, 4), "a single key gives one quaternion");
+        // Static scenes have no animations block.
+        let still = editor_with(json!([{"op": "add", "primitive": {"kind": "cube"}}]));
+        assert!(parse_glb(&export_glb(&still)).unwrap().0["animations"].is_null());
     }
 
     #[test]

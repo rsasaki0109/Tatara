@@ -34,6 +34,9 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Stack</b> — non-destructive modifiers; edit the base and every layer follows.</td>
     <td><b>Ask</b> — chat turns into an atomic, undoable command batch.</td>
   </tr>
+  <tr>
+    <td colspan="2"><img src="docs/media/animate.gif" width="50%" alt="A vessel is keyed at frame 1, the timeline is scrubbed to frames 36 and 72 where edits auto-key a lift, a tilt and a cobalt glaze, then the animation plays back"><br><b>Animate</b> — key a pose, scrub, edit (auto-key), play; exports as a glTF animation.</td>
+  </tr>
 </table>
 
 Every GIF above is a deterministic recording of the real editor: real toolbar clicks and face picks, real Rust mesh operations and a real `tatara --mcp` process. The chat clip replays a fixed command batch, so it needs no API key. In the *See* clip the agent's decisions are scripted, but every tool call, including the images it gets back, comes from a real `tatara --mcp` process. Regenerate them all with `node scripts/record-demo.mjs`.
@@ -75,6 +78,7 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **Geometry (Rust):** cube, plane, UV sphere, cylinder or cone, torus, and hollow **vessels** revolved from a smoothed cross section.
 - **Modeling:** transform, glaze presets and PBR material, rename, duplicate, array, delete, per-face inset and extrusion, and Catmull-Clark subdivision.
 - **Edit mode (Tab):** vertex, edge and face selection with Shift+click and select all; move a selection with the gizmo; loop cut; bevel selected edges or every edge; extrude and inset several faces at once.
+- **Animation:** keyframes for location, rotation, scale, colour, roughness and metalness, with ease, linear or step interpolation. The timeline plays back, scrubs and marks keys with diamonds. **K** keys every property, and editing a value that already has keys adds a key at the current frame (auto-key). Transform tracks export as glTF animation channels, which pass the Khronos validator. Agents can read a pose (`get_scene` with `frame`) and render any frame (`render_view` with `frame`).
 - **Modifier stack:** non-destructive Mirror, Subdivision, Array, Twist and Taper, evaluated in Rust in order. The base mesh stays editable and is drawn as an orange cage. **Apply** bakes the stack into the base mesh.
 - **History:** each batch is one undo step, and an invalid batch changes nothing.
 - **Files:** validated JSON scene save/open, and OBJ export with transforms applied.
@@ -89,6 +93,8 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 | F | Frame scene | X / Delete | Delete |
 | W | Wireframe | Ctrl/Cmd + Z | Undo (add Shift to redo) |
 | Tab | Edit mode | 1 / 2 / 3 | Vertex / edge / face select (edit mode) |
+| Space | Play / pause | K | Key the selection at this frame |
+| ← / → | Previous / next frame | | |
 | A | Select all (edit mode) | Ctrl + B / Ctrl + R | Bevel / loop cut |
 | Esc | Leave edit mode or deselect | Ctrl/Cmd + S | Save |
 
@@ -117,7 +123,7 @@ You can also build once and point the client at `target/release/tatara` with `ar
 | `apply_commands` | Apply a validated, atomic batch. Pass `expected_revision` to reject stale edits. |
 | `undo` / `redo` | Step the shared history. |
 | `import_gltf` / `export_gltf` | Read a local `.glb`/`.gltf` into the scene, or write the scene to a `.glb`. |
-| `render_view` | **Look at the scene.** Returns a PNG of up to six labelled views (`front`, `back`, `left`, `right`, `top`, `bottom`, `iso` or `azimuth:elevation`). It has shadows, outlines and a 1 m ground grid. Pass `object` to frame one object. |
+| `render_view` | **Look at the scene.** Returns a PNG of up to six labelled views (`front`, `back`, `left`, `right`, `top`, `bottom`, `iso` or `azimuth:elevation`). It has shadows, outlines and a 1 m ground grid. Pass `object` to frame one object, and `frame` to pose animation at that frame. |
 
 Example request for your agent:
 
@@ -145,6 +151,9 @@ curl http://127.0.0.1:3000/api/commands \
 | `move_vertices` | `id`, `vertices` (indices), `offset` |
 | `bevel` | `id`, `width`, optional `edges` as `[[a, b], …]` (all edges when omitted) |
 | `loop_cut` | `id`, `edge` `[a, b]`, optional `fraction` |
+| `set_keyframe` | `id`, `property` (`translation`, `rotation`, `scale`, `color`, `roughness`, `metalness`), `frame`, optional `value` (current value if omitted; colours as `#rrggbb`) and `interpolation` (`ease`, `linear`, `step`) |
+| `delete_keyframe` / `clear_animation` | `id`, `frame` / optional `property` |
+| `set_animation` | `fps`, `start`, `end` |
 | `add_modifier` / `set_modifier` / `remove_modifier` | `id`, `modifier` (`mirror`, `subdivision`, `array`, `twist`, `taper`), `index` |
 | `apply_modifiers` | `id`: bake the stack into the base mesh |
 | `add_mesh` | explicit `vertices` and `faces` (CCW loops), plus the optional fields of `add` |
@@ -163,7 +172,7 @@ curl http://127.0.0.1:3000/api/commands \
 ]}
 ```
 
-Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj`, `GET /api/export/glb`, `POST /api/import` (raw `.glb`/`.gltf` body), `GET /api/render?views=front,top&size=512&object=Vase` (PNG) and `GET /api/events`. The last is a server-sent event stream of revisions.
+Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj`, `GET /api/export/glb`, `POST /api/import` (raw `.glb`/`.gltf` body), `GET /api/render?views=front,top&size=512&object=Vase&frame=24` (PNG), `GET /api/context?frame=24` (poses at a frame) and `GET /api/events`. The last is a server-sent event stream of revisions.
 
 ## Optional in-editor chat
 
@@ -208,6 +217,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 The native server and the WebAssembly build answer `/api` through the same `api::handle` router. In the browser build, `backend.js` sends the editor's `/api` requests into the module, so the UI is identical in both. Build the static site with `node scripts/build-static.mjs` (output in `web/dist-static/`), and check it with `node scripts/static-check.mjs`. The `Pages` workflow publishes it on every push to `main`.
 | Modifier stack evaluation | Rust: `src/modifiers.rs` |
 | Bevel, loop cut, vertex moves | Rust: `src/edit.rs` |
+| Keyframes and sampling | Rust: `src/anim.rs` (mirrored for playback in `web/src/anim.js`) |
 | HTTP API, live events, chat provider | Rust: `src/server.rs` (axum) |
 | Stdio MCP bridge | Rust: `src/mcp.rs` |
 | Editor UI and WebGL presentation | JavaScript + Three.js: `web/src` |
@@ -238,10 +248,10 @@ The aim is a creation suite that surpasses Blender for human and agent collabora
 1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓; next: multi-segment bevel, knife, merge and dissolve, booleans, and solidify/bevel/boolean modifiers.
 2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓; next: UVs and textures in glTF, and opening `.tatara.json` links directly in the web build.
 3. **Look development:** a node-based material system, UVs and textures, and a path-traced preview.
-4. **Motion:** keyframes, curves, constraints, then rigging.
+4. **Motion:** ~~keyframes and timeline~~ ✓; next: a graph editor for curves, animating modifier parameters, constraints, then rigging.
 5. **Agents:** ~~visual feedback (`render_view`)~~ ✓; next: measurements and collision reports as tool results, reviewable change proposals and multi-user sessions.
 
-Not yet available: `.blend` compatibility, UV editing, animation and a production renderer. Extrusion moves a face along its normal and does not repair self-intersections. OBJ carries geometry only. glTF carries geometry, transforms and base PBR factors, but no textures, UVs or animation yet. Importing a sheared node hierarchy bakes the transform into the vertices. Save the native scene to keep modifiers and edit history.
+Not yet available: `.blend` compatibility, UV editing, rigging and a production renderer. Extrusion moves a face along its normal and does not repair self-intersections. OBJ carries geometry only. glTF carries geometry, transforms and base PBR factors, and transform animation, but no textures, UVs or material animation yet. Importing a sheared node hierarchy bakes the transform into the vertices. Save the native scene to keep modifiers and edit history.
 
 ## License
 

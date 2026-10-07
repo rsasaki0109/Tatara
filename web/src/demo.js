@@ -53,6 +53,8 @@ export class DemoRunner {
       await app.refresh(false)
       const vp = app.viewport
       vp.spinRate = 0
+      if (app.playing) app.togglePlay(false)
+      app.setFrame(app.scene.animation?.start ?? 1)
       vp.showGizmo = scenario.gizmo ?? true
       if (scenario.camera) vp.setOrbit(scenario.camera)
       const rect = document.body.getBoundingClientRect()
@@ -106,6 +108,7 @@ export class DemoRunner {
       return s.after ? this.sleep(s.after) : undefined
     }
     if (s.slide) return this.slide(s)
+    if (s.scrub !== undefined) return this.scrub(s)
     if (s.chat) return this.chat(s)
     if (s.mcp) return this.mcp(s)
     if (s.terminal !== undefined) return this.fade($('terminal'), s.terminal ? 1 : 0, 300)
@@ -229,6 +232,25 @@ export class DemoRunner {
       await this.sleep(1000 / cps)
     }
     el.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+
+  /** Drag the timeline playhead to frame `s.scrub`. */
+  async scrub(s) {
+    const { app } = this
+    const ruler = $('ruler')
+    const r = ruler.getBoundingClientRect()
+    const x = (f) => r.left + (app.frameToX(f) / 100) * r.width
+    const y = r.top + r.height / 2
+    const from = app.frame
+    await this.moveTo(x(from), y)
+    this.press()
+    await app.animator.add('scrub', s.ms ?? 700, (t) => {
+      const f = Math.round(from + (s.scrub - from) * t)
+      app.setFrame(f)
+      this.pos = { x: x(f), y }
+      this.placeCursor()
+    })
+    if (s.after) await this.sleep(s.after)
   }
 
   /** Drag a range input's thumb to `to`, then commit it like a mouse release. */

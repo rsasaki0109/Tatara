@@ -6,6 +6,7 @@ import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
 import { installWasmBackend } from './backend.js'
+import { PROPERTIES, isAnimated, keyFrames, pose, track as trackOf } from './anim.js'
 
 const params = new URLSearchParams(location.search)
 const capture = params.has('capture')
@@ -64,6 +65,10 @@ const app = {
   extrudeDistance: 0.3,
   insetFraction: 0.3,
   bevelWidth: 0.1,
+  // Animation playback.
+  frame: 1,
+  playing: false,
+  playFrom: null,
   // Edit mode works on the selected object's base mesh.
   mode: 'object',
   selectMode: 'face',
@@ -78,7 +83,7 @@ const viewport = new Viewport($('viewport'), clock, animator, {
     if (e.altKey) select(hit.id, hit.face)
     else select(hit.id)
   },
-  onTransform: (id, tf) => run([{ op: 'transform', id, ...tf }], 'Gizmo').catch(() => {}),
+  onTransform: (id, tf) => run(editCommands(id, tf), 'Gizmo').catch(() => {}),
   onMoveVertices: (id, vertices, offset) =>
     run([{ op: 'move_vertices', id, vertices, offset: offset.map((v) => Math.round(v * 1e6) / 1e6) }], 'Gizmo').catch(() => {}),
 })
@@ -503,6 +508,7 @@ function renderModeBar() {
 
 function render() {
   renderModeBar()
+  renderTimeline()
   const { objects } = app.scene
   const faces = objects.reduce((n, o) => n + displayMesh(o).faces.length, 0)
   $('object-count').textContent = objects.length ? String(objects.length) : ''
@@ -510,7 +516,7 @@ function render() {
   $('outliner').innerHTML = objects
     .map(
       (o) =>
-        `<li data-id="${o.id}" class="${o.id === app.selected ? 'selected' : ''}">${icon(KIND_ICON[o.kind] || 'cube')}<span class="name">${escapeHtml(o.name)}</span><span class="swatch" style="background:${o.material.color}"></span></li>`,
+        `<li data-id="${o.id}" class="${o.id === app.selected ? 'selected' : ''}">${icon(KIND_ICON[o.kind] || 'cube')}<span class="name">${escapeHtml(o.name)}</span>${isAnimated(o) ? '<span class="keyed" title="Animated">◆</span>' : ''}<span class="swatch" style="background:${pose(o, app.frame).material.color}"></span></li>`,
     )
     .join('')
   $('status-rev').textContent = `Revision ${app.scene.revision}`
@@ -546,7 +552,7 @@ let renderedKey = ''
 function renderProperties(o) {
   const el = $('properties')
   const key = o
-    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.mesh.faces.length, displayMesh(o).faces.length, o.modifiers, app.face, app.mode, app.selectMode, app.sel])
+    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, o.modifiers, app.face, app.mode, app.selectMode, app.sel])
     : 'none'
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -555,14 +561,17 @@ function renderProperties(o) {
     el.innerHTML = `<div class="empty-props">${icon('cursor')}<p>Select an object in the viewport or outliner.</p><p class="muted">Alt+click selects a single face for extrusion.</p></div>`
     return
   }
-  const t = o.transform
+  // Animated properties show their value at the current frame, marked ◆.
+  const shown = pose(o, app.frame)
+  const t = shown.transform
+  const keyed = (p) => (trackOf(o, p) ? ' <span class="keyed" title="Animated: edits key this frame">◆</span>' : '')
   const vec = (field, values, step, conv = (x) => x) =>
     values
       .map((v, i) => `<label class="axis axis-${'xyz'[i]}"><i>${'XYZ'[i]}</i><input type="number" step="${step}" data-field="${field}" data-i="${i}" value="${fmt(conv(v), 3)}"></label>`)
       .join('')
   const glazes = GLAZES.map(
     ([name, color, rough, metal = 0]) =>
-      `<button class="glaze ${o.material.color === color ? 'on' : ''}" data-glaze="${color},${rough},${metal}" title="${name}" style="--c:${color}"></button>`,
+      `<button class="glaze ${shown.material.color === color ? 'on' : ''}" data-glaze="${color},${rough},${metal}" title="${name}" style="--c:${color}"></button>`,
   ).join('')
   el.innerHTML = `
     <div class="card">
@@ -572,16 +581,16 @@ function renderProperties(o) {
     </div>
     <div class="card">
       <div class="card-title">Transform</div>
-      <div class="vec-row"><span>Location</span>${vec('translation', t.translation, 0.1)}</div>
-      <div class="vec-row"><span>Rotation°</span>${vec('rotation', t.rotation, 5, (r) => (r * 180) / Math.PI)}</div>
-      <div class="vec-row"><span>Scale</span>${vec('scale', t.scale, 0.1)}</div>
+      <div class="vec-row"><span>Location${keyed('translation')}</span>${vec('translation', t.translation, 0.1)}</div>
+      <div class="vec-row"><span>Rotation°${keyed('rotation')}</span>${vec('rotation', t.rotation, 5, (r) => (r * 180) / Math.PI)}</div>
+      <div class="vec-row"><span>Scale${keyed('scale')}</span>${vec('scale', t.scale, 0.1)}</div>
     </div>
     <div class="card">
-      <div class="card-title">Material</div>
+      <div class="card-title">Material${keyed('color')}</div>
       <div class="glazes">${glazes}</div>
-      <div class="row"><input type="color" id="p-color" value="${o.material.color}"><code class="muted">${o.material.color}</code></div>
-      <label class="slider"><span>Roughness</span><input type="range" min="0" max="1" step="0.01" id="p-rough" value="${o.material.roughness}"><b>${fmt(o.material.roughness)}</b></label>
-      <label class="slider"><span>Metalness</span><input type="range" min="0" max="1" step="0.01" id="p-metal" value="${o.material.metalness}"><b>${fmt(o.material.metalness)}</b></label>
+      <div class="row"><input type="color" id="p-color" value="${shown.material.color}"><code class="muted">${shown.material.color}</code></div>
+      <label class="slider"><span>Roughness</span><input type="range" min="0" max="1" step="0.01" id="p-rough" value="${shown.material.roughness}"><b>${fmt(shown.material.roughness)}</b></label>
+      <label class="slider"><span>Metalness</span><input type="range" min="0" max="1" step="0.01" id="p-metal" value="${shown.material.metalness}"><b>${fmt(shown.material.metalness)}</b></label>
     </div>
     <div class="card">
       <div class="card-title">Mesh</div>
@@ -704,17 +713,17 @@ $('properties').addEventListener('change', (e) => {
     if (!next) return render()
     return actions.setModifier(i, next).catch(() => {})
   }
-  if (target.id === 'p-color') return run([{ op: 'material', id: o.id, color: target.value }]).catch(() => {})
-  if (target.id === 'p-rough') return run([{ op: 'material', id: o.id, roughness: Number(target.value) }]).catch(() => {})
-  if (target.id === 'p-metal') return run([{ op: 'material', id: o.id, metalness: Number(target.value) }]).catch(() => {})
+  if (target.id === 'p-color') return run(editCommands(o.id, { color: target.value })).catch(() => {})
+  if (target.id === 'p-rough') return run(editCommands(o.id, { roughness: Number(target.value) })).catch(() => {})
+  if (target.id === 'p-metal') return run(editCommands(o.id, { metalness: Number(target.value) })).catch(() => {})
   const field = target.dataset.field
   if (field) {
-    const values = [...o.transform[field]]
+    const values = [...pose(o, app.frame).transform[field]]
     let v = Number(target.value)
     if (!Number.isFinite(v)) return render()
     if (field === 'rotation') v = (v * Math.PI) / 180
     values[Number(target.dataset.i)] = v
-    run([{ op: 'transform', id: o.id, [field]: values }]).catch(() => {})
+    run(editCommands(o.id, { [field]: values })).catch(() => {})
   }
 })
 $('properties').addEventListener('click', (e) => {
@@ -735,7 +744,7 @@ $('properties').addEventListener('click', (e) => {
   const o = objectById(app.selected)
   if (!g || !o) return
   const [color, roughness, metalness] = g.dataset.glaze.split(',')
-  run([{ op: 'material', id: o.id, color, roughness: Number(roughness), metalness: Number(metalness) }]).catch(() => {})
+  run(editCommands(o.id, { color, roughness: Number(roughness), metalness: Number(metalness) })).catch(() => {})
 })
 
 function renderActivity() {
@@ -762,7 +771,7 @@ $('batch-apply').addEventListener('click', async () => {
 })
 $('chat-send').addEventListener('click', sendChat)
 $('render-btn').addEventListener('click', async () => {
-  const res = await fetch('/api/render?views=iso,front,right,top&size=256')
+  const res = await fetch(`/api/render?views=iso,front,right,top&size=256&frame=${Math.round(app.frame)}`)
   if (!res.ok) return toast('Render failed', 'error')
   const img = new Image()
   img.alt = 'Front, right, top and iso views rendered by the Rust engine'
@@ -826,6 +835,15 @@ document.addEventListener('keydown', (e) => {
     return actions.save()
   }
   if (mod) return
+  if (k === ' ') {
+    e.preventDefault()
+    return togglePlay()
+  }
+  if (k === 'k') return keyAll()?.catch?.(() => {})
+  if (k === 'arrowright' || k === 'arrowleft') {
+    e.preventDefault()
+    return setFrame(Math.round(app.frame) + (k === 'arrowright' ? 1 : -1))
+  }
   if (k === 'tab') {
     e.preventDefault()
     return actions.editMode()
@@ -864,9 +882,132 @@ $('demo-btn').addEventListener('click', async () => {
   }
 })
 
-function loop() {
+// ---------------------------------------------------------------------------
+// Animation: timeline, playback and auto-key
+// ---------------------------------------------------------------------------
+
+const animRange = () => app.scene.animation || { start: 1, end: 96, fps: 24 }
+
+/**
+ * Commands for editing transform/material values. Properties that already
+ * have a track are keyed at the current frame instead (auto-key), so edits on
+ * animated objects change the animation rather than a hidden static value.
+ */
+function editCommands(id, changes) {
+  const o = objectById(id)
+  const frame = Math.round(app.frame * 100) / 100
+  const commands = []
+  const transform = {}
+  const material = {}
+  for (const [p, v] of Object.entries(changes)) {
+    if (v === undefined) continue
+    if (o && trackOf(o, p)) commands.push({ op: 'set_keyframe', id, property: p, frame, value: v })
+    else if (['translation', 'rotation', 'scale'].includes(p)) transform[p] = v
+    else material[p] = v
+  }
+  if (Object.keys(transform).length) commands.unshift({ op: 'transform', id, ...transform })
+  if (Object.keys(material).length) commands.unshift({ op: 'material', id, ...material })
+  return commands
+}
+
+function setFrame(f, { fromPlayback = false } = {}) {
+  const { start, end } = animRange()
+  app.frame = Math.min(end, Math.max(start, f))
+  if (!fromPlayback) app.playFrom = app.playing ? { t: clock.now(), f: app.frame } : null
+  viewport.setFrame(app.frame)
+  renderTimeline()
+  if (!app.playing) render()
+}
+
+function togglePlay(on = !app.playing) {
+  app.playing = on
+  app.playFrom = on ? { t: clock.now(), f: app.frame } : null
+  if (!on) setFrame(Math.round(app.frame))
+  render()
+}
+
+function advancePlayback() {
+  if (!app.playing || !app.playFrom) return
+  const { start, end, fps } = animRange()
+  const span = end - start
+  const f = app.playFrom.f - start + ((clock.now() - app.playFrom.t) / 1000) * fps
+  setFrame(start + (((f % span) + span) % span), { fromPlayback: true })
+}
+
+function frameToX(f) {
+  const { start, end } = animRange()
+  return ((f - start) / (end - start)) * 100
+}
+
+let ticksFor = ''
+function renderTimeline() {
+  const { start, end, fps } = animRange()
+  const key = `${start}:${end}`
+  if (key !== ticksFor) {
+    ticksFor = key
+    const step = end - start > 200 ? 48 : end - start > 60 ? 12 : 6
+    const ticks = []
+    for (let f = Math.ceil(start / step) * step; f <= end; f += step) ticks.push(`<span style="left:${frameToX(f)}%">${f}</span>`)
+    $('ruler-ticks').innerHTML = ticks.join('')
+  }
+  $('playhead').style.left = `${frameToX(app.frame)}%`
+  if (document.activeElement !== $('frame-input')) $('frame-input').value = String(Math.round(app.frame))
+  $('play-btn').innerHTML = icon(app.playing ? 'pause' : 'play')
+  $('play-btn').classList.toggle('on', app.playing)
+  $('range-label').textContent = `${start}–${end} · ${fps} fps`
+  const sel = objectById(app.selected)
+  const keys = sel
+    ? keyFrames(sel).map((f) => `<i style="left:${frameToX(f)}%"></i>`)
+    : [...new Set(app.scene.objects.flatMap(keyFrames))].map((f) => `<i class="faint" style="left:${frameToX(f)}%"></i>`)
+  const html = keys.join('')
+  if ($('ruler-keys').innerHTML !== html) $('ruler-keys').innerHTML = html
+  $('key-btn').disabled = !sel
+}
+
+function keyAll() {
+  const o = objectById(app.selected)
+  if (!o) return toast('Select an object to key')
+  const frame = Math.round(app.frame)
+  return run(PROPERTIES.map((property) => ({ op: 'set_keyframe', id: o.id, property, frame })), 'UI')
+}
+
+$('play-btn').addEventListener('click', () => togglePlay())
+$('key-btn').addEventListener('click', () => keyAll()?.catch?.(() => {}))
+$('frame-input').addEventListener('change', (e) => {
+  const f = Number(e.target.value)
+  if (Number.isFinite(f)) setFrame(f)
+  e.target.blur()
+})
+{
+  let scrubbing = false
+  const scrub = (e) => {
+    const r = $('ruler').getBoundingClientRect()
+    const { start, end } = animRange()
+    setFrame(Math.round(start + ((e.clientX - r.left) / r.width) * (end - start)))
+  }
+  $('ruler').addEventListener('pointerdown', (e) => {
+    scrubbing = true
+    $('ruler').setPointerCapture(e.pointerId)
+    if (app.playing) togglePlay(false)
+    scrub(e)
+  })
+  $('ruler').addEventListener('pointermove', (e) => scrubbing && scrub(e))
+  $('ruler').addEventListener('pointerup', () => (scrubbing = false))
+}
+app.setFrame = setFrame
+app.togglePlay = togglePlay
+app.frameToX = frameToX
+app.keyAll = keyAll
+
+/** One display frame: tweens, animation playback, then draw. */
+function stepFrame() {
   animator.step()
+  advancePlayback()
   viewport.frame()
+}
+
+function loop() {
+  stepFrame()
   requestAnimationFrame(loop)
 }
 
@@ -877,9 +1018,9 @@ const ready = (async () => {
     $('status-hint').dataset.static = '1'
   }
   await refresh(false)
+  setFrame(app.scene.animation?.start ?? 1)
   if (app.scene.objects.length) viewport.frameAll(0)
-  animator.step()
-  viewport.frame()
+  stepFrame()
   if (!capture) requestAnimationFrame(loop)
   if (!capture && !browserOnly) {
     const events = new EventSource('/api/events')
@@ -896,6 +1037,8 @@ window.__tatara = {
   ready,
   scenarios: Object.keys(SCENARIOS),
   selection: () => ({ id: app.selected, face: app.face }),
+  frame: () => app.frame,
+  position: (id) => viewport.nodes.get(id)?.group.position.toArray(),
   meta: (id) => {
     const s = SCENARIOS[id]
     return s && { id, title: s.title, width: s.width || 800, external: Boolean(s.external) }
@@ -916,8 +1059,7 @@ window.__tatara = {
   async tick(ms) {
     clock.advance(ms)
     await clock.settle()
-    animator.step()
-    viewport.frame()
+    stepFrame()
     return { done: status.done, error: status.error, time: clock.now() }
   },
   /** Start a tick without returning a promise; poll `tickResult` for completion. */
