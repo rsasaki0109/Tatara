@@ -23,6 +23,13 @@ const P = {
   'mod-array': '<rect x="1.6" y="9.6" width="4" height="4" rx=".8"/><rect x="6" y="5.8" width="4" height="4" rx=".8"/><rect x="10.4" y="2" width="4" height="4" rx=".8"/>',
   'mod-twist': '<path d="M4 2c5 2 3 4 8 4M4 6c5 2 3 4 8 4M4 10c5 2 3 4 8 4"/>',
   'mod-taper': '<path d="M3 14h10L10 2H6z"/>',
+  bevel: '<path d="M2 14V6l4-4h8"/><path d="M2 6h4V2" opacity=".55"/>',
+  loopcut: '<rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M8 2v12" stroke-dasharray="2 1.6"/>',
+  object: '<path d="M8 1.8 13.6 5v6L8 14.2 2.4 11V5z"/>',
+  edit: '<path d="M8 1.8 13.6 5v6L8 14.2 2.4 11V5z" opacity=".5"/><circle cx="8" cy="1.8" r="1.2" fill="currentColor"/><circle cx="13.6" cy="5" r="1.2" fill="currentColor"/><circle cx="2.4" cy="5" r="1.2" fill="currentColor"/><circle cx="8" cy="8.2" r="1.2" fill="currentColor"/>',
+  'sel-vertex': '<rect x="2.5" y="2.5" width="11" height="11" rx="1" opacity=".45"/><circle cx="2.5" cy="2.5" r="1.8" fill="currentColor"/><circle cx="13.5" cy="13.5" r="1.8" fill="currentColor"/>',
+  'sel-edge': '<rect x="2.5" y="2.5" width="11" height="11" rx="1" opacity=".45"/><path d="M2.5 13.5h11" stroke-width="2.6"/>',
+  'sel-face': '<rect x="2.5" y="2.5" width="11" height="11" rx="1" fill="currentColor" fill-opacity=".45"/>',
   cursor: '<path d="M3.5 2.5 12.5 8l-4 1-2 4.5z"/>',
 }
 

@@ -13,6 +13,7 @@ use glam::{DMat4, DQuat, DVec3, EulerRot};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::edit;
 use crate::modifiers::{self, Modifier};
 
 pub type Vec3 = [f64; 3];
@@ -160,6 +161,9 @@ fn d_vessel_seg() -> u32 {
 }
 fn d_levels() -> u32 {
     1
+}
+fn d_half() -> f64 {
+    0.5
 }
 fn d_true() -> bool {
     true
@@ -317,6 +321,27 @@ pub enum Command {
     Inset {
         id: ObjRef,
         face: usize,
+        fraction: f64,
+    },
+    /// Move base-mesh vertices by `offset` (object space).
+    MoveVertices {
+        id: ObjRef,
+        vertices: Vec<u32>,
+        offset: Vec3,
+    },
+    /// Chamfer edges given as `[a, b]` vertex pairs, or every edge when
+    /// `edges` is omitted. Each touched edge must be longer than `2 * width`.
+    Bevel {
+        id: ObjRef,
+        #[serde(default)]
+        edges: Option<Vec<[u32; 2]>>,
+        width: f64,
+    },
+    /// Cut a new edge loop through the ring of quads crossing `edge`.
+    LoopCut {
+        id: ObjRef,
+        edge: [u32; 2],
+        #[serde(default = "d_half")]
         fraction: f64,
     },
     /// Append a modifier, or insert it at `index`.
@@ -697,6 +722,22 @@ fn apply_command(
                 return err("fraction must be between 0 and 1 (exclusive)");
             }
             inset(&mut scene.objects[i].mesh, *face, *fraction)?;
+        }
+        Command::MoveVertices {
+            id,
+            vertices,
+            offset,
+        } => {
+            let i = resolve(scene, id)?;
+            edit::move_vertices(&mut scene.objects[i].mesh, vertices, *offset)?;
+        }
+        Command::Bevel { id, edges, width } => {
+            let i = resolve(scene, id)?;
+            edit::bevel(&mut scene.objects[i].mesh, edges.as_deref(), *width)?;
+        }
+        Command::LoopCut { id, edge, fraction } => {
+            let i = resolve(scene, id)?;
+            edit::loop_cut(&mut scene.objects[i].mesh, *edge, *fraction)?;
         }
         Command::AddModifier {
             id,

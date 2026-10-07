@@ -376,7 +376,7 @@ button.primary:disabled {
 .terminal {
   position: absolute;
   left: 14px;
-  top: 42px;
+  top: 72px;
   width: min(470px, calc(100% - 28px));
   display: none;
   opacity: 0;
@@ -852,6 +852,57 @@ input[type='range'] {
 #activity .rev {
   font: 10.5px var(--mono);
   color: var(--muted);
+}
+
+/* ---- mode bar ------------------------------------------------------------ */
+
+.mode-bar {
+  position: absolute;
+  top: 34px;
+  left: 10px;
+  display: flex;
+  gap: 6px;
+}
+
+.mode-group {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: rgba(20, 21, 24, 0.6);
+  backdrop-filter: blur(6px);
+}
+
+.mode-group button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mode-group button.icon-btn {
+  padding: 0 6px;
+}
+
+.mode-group button.on {
+  background: rgba(255, 122, 61, 0.22);
+  color: var(--accent-2);
+}
+
+.mode-group button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mode-group button.pressed {
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 /* ---- modifiers ---------------------------------------------------------- */

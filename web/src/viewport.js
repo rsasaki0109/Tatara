@@ -57,23 +57,36 @@ function polygonEdges(vertices, faces) {
   return g
 }
 
-function faceGeometry(vertices, face) {
+function segmentDistance(p, a, b) {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len = dx * dx + dy * dy
+  const t = len ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len)) : 0
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+}
+
+function facesGeometry(vertices, faces) {
   const pos = []
-  const a = vertices[face[0]]
-  for (let k = 1; k < face.length - 1; k++) pos.push(...a, ...vertices[face[k]], ...vertices[face[k + 1]])
+  for (const face of faces) {
+    const a = vertices[face[0]]
+    for (let k = 1; k < face.length - 1; k++) pos.push(...a, ...vertices[face[k]], ...vertices[face[k + 1]])
+  }
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
   return g
 }
 
 export class Viewport {
-  constructor(el, clock, animator, { capture, onPick, onTransform }) {
+  constructor(el, clock, animator, { capture, onPick, onTransform, onMoveVertices }) {
     this.el = el
     this.clock = clock
     this.anim = animator
     this.capture = capture
     this.onPick = onPick
     this.onTransform = onTransform
+    this.onMoveVertices = onMoveVertices
+    // Edit mode: which components of the selected object are selected.
+    this.edit = { active: false, mode: 'face', verts: [], edges: [], faces: [] }
     this.nodes = new Map()
     this.selected = null
     this.face = null
@@ -130,8 +143,21 @@ export class Viewport {
 
     this.gizmo = new TransformControls(cam, r.domElement)
     this.gizmo.setSize(0.85)
+    this.pivot = new THREE.Object3D()
+    scene.add(this.pivot)
+    this.gizmo.addEventListener('objectChange', () => {
+      if (this.gizmo.object === this.pivot && this.gizmo.dragging) this.previewMove()
+    })
     this.gizmo.addEventListener('dragging-changed', (e) => {
       this.controls.enabled = !e.value
+      if (this.gizmo.object === this.pivot) {
+        if (e.value) this.pivotStart = this.pivot.position.clone()
+        else {
+          const delta = this.localDelta()
+          if (delta.some((v) => Math.abs(v) > 1e-9)) this.onMoveVertices(this.selected, this.editVertices(), delta)
+        }
+        return
+      }
       if (!e.value && this.gizmo.object) {
         const g = this.gizmo.object
         this.onTransform(g.userData.id, {
@@ -154,6 +180,10 @@ export class Viewport {
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y)
       down = null
       if (moved > 4) return
+      if (this.edit.active && this.selected != null) {
+        this.onPick({ component: this.pickComponent(e.clientX, e.clientY, this.edit.mode) }, e)
+        return
+      }
       const hit = this.pick(e.clientX, e.clientY)
       this.onPick(hit, e)
     })
@@ -235,14 +265,29 @@ export class Viewport {
       new THREE.BufferGeometry(),
       new THREE.LineBasicMaterial({ color: SELECT, transparent: true, opacity: 0.7, depthTest: false }),
     )
-    for (const x of [wire, outline, faceMark, cageLines]) {
+    const points = new THREE.Points(
+      new THREE.BufferGeometry(),
+      new THREE.PointsMaterial({ color: 0x15171a, size: 5, sizeAttenuation: false, depthTest: false }),
+    )
+    const selPoints = new THREE.Points(
+      new THREE.BufferGeometry(),
+      new THREE.PointsMaterial({ color: SELECT, size: 8, sizeAttenuation: false, depthTest: false }),
+    )
+    const selEdges = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color: 0xffd0a8, depthTest: false }),
+    )
+    for (const x of [wire, outline, faceMark, cageLines, points, selPoints, selEdges]) {
       x.visible = false
       x.renderOrder = 2
     }
     cageLines.renderOrder = 3
-    group.add(mesh, wire, outline, faceMark, cage, cageLines)
+    points.renderOrder = 4
+    selEdges.renderOrder = 4
+    selPoints.renderOrder = 5
+    group.add(mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges)
     this.root.add(group)
-    const node = { id: o.id, group, mesh, wire, outline, faceMark, cage, cageLines, data: o, key: null, cageKey: null, triFace: [] }
+    const node = { id: o.id, group, mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges, data: o, key: null, cageKey: null, triFace: [] }
     this.nodes.set(o.id, node)
     this.setTransform(node.group, o.transform)
     this.setMaterial(node, o.material)
@@ -260,7 +305,7 @@ export class Viewport {
     const plain = !o.display && !prev.display
     const key = meshKey(displayMesh(o))
     if (key !== node.key) {
-      const morph = animate && plain && this.morphStart(prev.mesh, o.mesh)
+      const morph = animate && plain && (this.morphStart(prev.mesh, o.mesh) || this.sameTopology(prev.mesh, o.mesh))
       if (morph) {
         const end = o.mesh.vertices
         const verts = end.map((v) => v.slice())
@@ -318,6 +363,19 @@ export class Viewport {
         })
       } else this.setMaterial(node, o.material)
     }
+  }
+
+  /** Start positions when only vertex positions changed (moves, undo of moves). */
+  sameTopology(before, after) {
+    if (before.vertices.length !== after.vertices.length || before.faces.length !== after.faces.length) return null
+    if (after.faces.length > 20000) return null
+    for (let i = 0; i < after.faces.length; i++) {
+      const a = before.faces[i]
+      const b = after.faces[i]
+      if (a.length !== b.length) return null
+      for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return null
+    }
+    return before.vertices
   }
 
   /** Start positions for an extrusion-like change: new vertices grow out of their nearest old ones. */
@@ -385,6 +443,8 @@ export class Viewport {
     node.triFace = triFace
     node.cageLines.geometry.dispose()
     node.cageLines.geometry = polygonEdges(base.vertices, base.faces)
+    node.points.geometry.dispose()
+    node.points.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(base.vertices.flat(), 3))
     node.baseMesh = base
     if (key) node.cageKey = key
     if (this.selected === node.id) this.setSelection(node.id, this.face)
@@ -393,21 +453,158 @@ export class Viewport {
   setSelection(id, face) {
     this.selected = this.nodes.has(id) ? id : null
     this.face = this.selected != null ? face : null
+    const ed = this.edit
     for (const node of this.nodes.values()) {
       const on = node.id === this.selected
-      node.outline.visible = on
-      node.cageLines.visible = on && Boolean(node.data.display)
+      const editing = on && ed.active
       const mesh = node.baseMesh
-      const showFace = on && this.face != null && this.face < mesh.faces.length
-      node.faceMark.visible = showFace
-      if (showFace) {
+      node.outline.visible = on && !editing
+      node.cageLines.visible = editing || (on && Boolean(node.data.display))
+      node.cageLines.material.opacity = editing ? 0.9 : 0.7
+      node.cageLines.material.color.set(editing ? 0x111316 : SELECT)
+      node.points.visible = editing && ed.mode === 'vertex'
+      const faces = (editing ? (ed.mode === 'face' ? ed.faces : []) : this.face != null ? [this.face] : []).filter((f) => on && f < mesh.faces.length)
+      node.faceMark.visible = faces.length > 0
+      if (faces.length) {
         node.faceMark.geometry.dispose()
-        node.faceMark.geometry = faceGeometry(mesh.vertices, mesh.faces[this.face])
+        node.faceMark.geometry = facesGeometry(mesh.vertices, faces.map((f) => mesh.faces[f]))
+      }
+      const verts = editing && ed.mode === 'vertex' ? ed.verts.filter((v) => v < mesh.vertices.length) : []
+      node.selPoints.visible = verts.length > 0
+      if (verts.length) {
+        node.selPoints.geometry.dispose()
+        node.selPoints.geometry = new THREE.BufferGeometry().setAttribute(
+          'position',
+          new THREE.Float32BufferAttribute(verts.flatMap((v) => mesh.vertices[v]), 3),
+        )
+      }
+      const edges = editing && ed.mode === 'edge' ? ed.edges.filter(([a, b]) => a < mesh.vertices.length && b < mesh.vertices.length) : []
+      node.selEdges.visible = edges.length > 0
+      if (edges.length) {
+        node.selEdges.geometry.dispose()
+        node.selEdges.geometry = new THREE.BufferGeometry().setAttribute(
+          'position',
+          new THREE.Float32BufferAttribute(edges.flatMap(([a, b]) => [...mesh.vertices[a], ...mesh.vertices[b]]), 3),
+        )
       }
     }
-    const node = this.showGizmo ? this.nodes.get(this.selected) : null
+    this.placeGizmo()
+  }
+
+  setEditState(state) {
+    this.edit = state
+    this.setSelection(this.selected, this.face)
+  }
+
+  /** Base-mesh vertex indices covered by the edit selection. */
+  editVertices() {
+    const ed = this.edit
+    const node = this.nodes.get(this.selected)
+    if (!ed.active || !node) return []
+    const set = new Set()
+    if (ed.mode === 'vertex') ed.verts.forEach((v) => set.add(v))
+    if (ed.mode === 'edge') ed.edges.forEach(([a, b]) => (set.add(a), set.add(b)))
+    if (ed.mode === 'face') ed.faces.forEach((f) => node.baseMesh.faces[f]?.forEach((v) => set.add(v)))
+    return [...set].filter((v) => v < node.baseMesh.vertices.length)
+  }
+
+  placeGizmo() {
+    // showGizmo: true, false, or 'edit' (only for component moves in edit mode).
+    const allowed = this.showGizmo === true || (this.showGizmo === 'edit' && this.edit.active)
+    const node = allowed ? this.nodes.get(this.selected) : null
+    if (node && this.edit.active) {
+      const verts = this.editVertices()
+      if (!verts.length) {
+        if (this.gizmo.object) this.gizmo.detach()
+        return
+      }
+      if (this.gizmo.dragging) return
+      node.group.updateMatrixWorld(true)
+      const c = new THREE.Vector3()
+      for (const v of verts) c.add(new THREE.Vector3(...node.baseMesh.vertices[v]))
+      c.multiplyScalar(1 / verts.length).applyMatrix4(node.group.matrixWorld)
+      this.pivot.position.copy(c)
+      this.pivot.quaternion.identity()
+      this.pivot.scale.set(1, 1, 1)
+      this.pivot.updateMatrixWorld(true)
+      if (this.gizmo.object !== this.pivot) this.gizmo.attach(this.pivot)
+      this.gizmo.setMode('translate')
+      return
+    }
     if (node && this.gizmo.object !== node.group) this.gizmo.attach(node.group)
     if (!node && this.gizmo.object) this.gizmo.detach()
+  }
+
+  /** The gizmo's movement since the drag began, in the object's local space. */
+  localDelta() {
+    const node = this.nodes.get(this.selected)
+    if (!node || !this.pivotStart) return [0, 0, 0]
+    const inv = node.group.matrixWorld.clone().invert()
+    const a = this.pivotStart.clone().applyMatrix4(inv)
+    const b = this.pivot.position.clone().applyMatrix4(inv)
+    return b.sub(a).toArray()
+  }
+
+  previewMove() {
+    const node = this.nodes.get(this.selected)
+    if (!node) return
+    const d = this.localDelta()
+    const moved = new Set(this.editVertices())
+    const base = node.data.mesh
+    const preview = {
+      vertices: base.vertices.map((v, i) => (moved.has(i) ? [v[0] + d[0], v[1] + d[1], v[2] + d[2]] : v)),
+      faces: base.faces,
+    }
+    this.setCage(node, preview)
+    if (!node.data.display) this.setMesh(node, preview)
+  }
+
+  /** Nearest vertex or edge of the selected object under the cursor, or a face. */
+  pickComponent(clientX, clientY, mode) {
+    const node = this.nodes.get(this.selected)
+    if (!node) return null
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1)
+    this.raycaster.setFromCamera(ndc, this.camera)
+    const hit = this.raycaster.intersectObject(node.cage, false)[0]
+    if (mode === 'face') return hit ? { face: node.triFace[hit.faceIndex] } : null
+    node.group.updateMatrixWorld(true)
+    const mesh = node.baseMesh
+    const world = mesh.vertices.map((v) => new THREE.Vector3(...v).applyMatrix4(node.group.matrixWorld))
+    const screen = world.map((p) => this.toClient(p, rect))
+    // Hidden components are skipped: they must not be behind the surface hit.
+    const limit = hit ? hit.distance + 0.02 * hit.distance + 1e-3 : Infinity
+    const visible = (p) => this.camera.position.distanceTo(p) <= limit
+    const mouse = { x: clientX, y: clientY }
+    if (mode === 'vertex') {
+      let best = null
+      world.forEach((p, i) => {
+        const d = Math.hypot(screen[i].x - mouse.x, screen[i].y - mouse.y)
+        if (d < 14 && visible(p) && (!best || d < best.d)) best = { d, vertex: i }
+      })
+      return best
+    }
+    let best = null
+    const seen = new Set()
+    for (const f of mesh.faces) {
+      for (let k = 0; k < f.length; k++) {
+        const a = f[k]
+        const b = f[(k + 1) % f.length]
+        const id = a < b ? `${a},${b}` : `${b},${a}`
+        if (seen.has(id)) continue
+        seen.add(id)
+        const mid = world[a].clone().add(world[b]).multiplyScalar(0.5)
+        if (!visible(mid)) continue
+        const d = segmentDistance(mouse, screen[a], screen[b])
+        if (d < 10 && (!best || d < best.d)) best = { d, edge: [a, b] }
+      }
+    }
+    return best
+  }
+
+  toClient(p, rect) {
+    const q = p.clone().project(this.camera)
+    return { x: rect.left + ((q.x + 1) / 2) * rect.width, y: rect.top + ((1 - q.y) / 2) * rect.height }
   }
 
   setGizmoMode(mode) {
@@ -504,6 +701,16 @@ export class Viewport {
   worldToScreen(v) {
     const p = v.clone().project(this.camera)
     return { x: ((p.x + 1) / 2) * this.el.clientWidth, y: ((1 - p.y) / 2) * this.el.clientHeight }
+  }
+
+  /** World-space position of a base-mesh vertex or the midpoint of an edge. */
+  anchorComponent(id, { vertex, edge }) {
+    const node = this.nodes.get(id)
+    if (!node) return null
+    node.group.updateMatrixWorld(true)
+    const v = node.baseMesh.vertices
+    const local = vertex !== undefined ? new THREE.Vector3(...v[vertex]) : new THREE.Vector3(...v[edge[0]]).add(new THREE.Vector3(...v[edge[1]])).multiplyScalar(0.5)
+    return local.applyMatrix4(node.group.matrixWorld)
   }
 
   /** World-space centre of an object, or of one of its faces. */
