@@ -82,6 +82,8 @@ pub fn router(state: Shared, web_dir: PathBuf) -> Router {
         .route("/redo", post(post_redo))
         .route("/reset", post(post_reset))
         .route("/export/obj", get(get_obj))
+        .route("/export/glb", get(get_glb))
+        .route("/import", post(post_import))
         .route("/events", get(get_events))
         .route("/ai", get(get_ai))
         .route("/chat", post(post_chat))
@@ -224,6 +226,35 @@ async fn post_reset(State(s): State<Shared>) -> ApiResult {
     changed(&s, revision);
     Ok(Json(
         json!({ "revision": revision, "history": history(&ed) }),
+    ))
+}
+
+async fn get_glb(State(s): State<Shared>) -> Response {
+    let glb = crate::gltf::export_glb(&*s.editor.lock().await);
+    (
+        [
+            (header::CONTENT_TYPE, "model/gltf-binary"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"scene.glb\"",
+            ),
+        ],
+        glb,
+    )
+        .into_response()
+}
+
+/// Import a `.glb` or `.gltf` (embedded buffers) as one undoable batch.
+async fn post_import(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResult {
+    let commands = crate::gltf::import(&body)?;
+    let mut ed = s.editor.lock().await;
+    let result = ed.apply(&CommandBatch {
+        commands,
+        expected_revision: None,
+    })?;
+    changed(&s, result.revision);
+    Ok(Json(
+        json!({ "revision": result.revision, "created": result.created, "history": history(&ed) }),
     ))
 }
 

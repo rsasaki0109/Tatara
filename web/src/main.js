@@ -356,6 +356,9 @@ const actions = {
   exportObj() {
     download('/api/export/obj', 'scene.obj')
   },
+  exportGlb() {
+    download('/api/export/glb', 'scene.glb')
+  },
   wireframe(on = !app.wireframe) {
     app.wireframe = on
     viewport.setWireframe(on)
@@ -388,6 +391,17 @@ $('open-input').addEventListener('change', async (e) => {
   e.target.value = ''
   if (!file) return
   try {
+    if (/\.(glb|gltf)$/i.test(file.name)) {
+      // glTF is merged into the current scene as one undoable step.
+      await track(async () => {
+        const r = await api.importModel(await file.arrayBuffer())
+        await refresh(true)
+        if (r.created.length) select(r.created.at(-1))
+        viewport.frameAll()
+        log('UI', `import ${file.name} · ${r.created.length} object${r.created.length === 1 ? '' : 's'}`, r.revision)
+      })
+      return
+    }
     const scene = JSON.parse(await file.text())
     await track(async () => {
       await api.putScene(scene)
@@ -423,7 +437,7 @@ $('edit-group').innerHTML =
 $('history-group').innerHTML =
   button('undo', '', 'Undo (Ctrl+Z)', 'icon-only') + button('redo', '', 'Redo (Ctrl+Shift+Z)', 'icon-only')
 $('file-group').innerHTML =
-  button('open', 'Open', 'Open .tatara.json') + button('save', 'Save', 'Save (Ctrl+S)') + button('exportObj', 'OBJ', 'Export OBJ')
+  button('open', 'Open', 'Open a .tatara.json scene, or import .glb / .gltf') + button('save', 'Save', 'Save (Ctrl+S)') + button('exportGlb', 'GLB', 'Export glTF (.glb)') + button('exportObj', 'OBJ', 'Export OBJ')
 $('wire-btn').innerHTML = icon('wire')
 $('frame-btn').innerHTML = icon('frame')
 

@@ -188,7 +188,7 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let init = call(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "tatara");
     let tools = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 6);
     let r = call(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "apply_commands", "arguments": {"commands": [{"op": "add", "primitive": {"kind": "torus"}}]}}})).await;
     assert_eq!(r["result"]["isError"], false, "{r}");
     let r = call(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "get_scene", "arguments": {}}})).await;
@@ -202,5 +202,27 @@ async fn mcp_bridge_edits_the_shared_scene() {
     assert_eq!(r["result"]["isError"], false);
     let r = call(json!({"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "undo", "arguments": {}}})).await;
     assert_eq!(r["result"]["isError"], true);
+
+    // Files: export the (empty) scene, add a torus, export, then import it back.
+    let dir = std::env::temp_dir().join(format!("tatara-mcp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("scene.glb");
+    let path = path.to_str().unwrap();
+    call(json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "redo", "arguments": {}}})).await;
+    let r = call(json!({"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "export_gltf", "arguments": {"path": path}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "import_gltf", "arguments": {"path": path}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "import_gltf", "arguments": {"path": "/etc/passwd"}}})).await;
+    assert_eq!(r["result"]["isError"], true);
+    let r = call(json!({"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "get_scene", "arguments": {}}})).await;
+    let ctx: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(ctx["objects"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        ctx["objects"][0]["face_count"],
+        ctx["objects"][1]["face_count"]
+    );
+    std::fs::remove_dir_all(dir).ok();
     child.kill().await.unwrap();
 }
