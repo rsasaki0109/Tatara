@@ -1,0 +1,131 @@
+//! Stdio MCP bridge. It forwards tool calls to the running editor, so an
+//! agent edits the same scene that is open in the browser.
+
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+use crate::engine;
+
+const PROTOCOL_VERSION: &str = "2025-06-18";
+
+pub async fn run(base_url: String) -> anyhow::Result<()> {
+    let http = reqwest::Client::new();
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut stdout = tokio::io::stdout();
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let reply = match serde_json::from_str::<Value>(&line) {
+            Ok(msg) => handle(&http, &base_url, msg).await,
+            Err(e) => Some(json!({
+                "jsonrpc": "2.0", "id": null,
+                "error": { "code": -32700, "message": format!("parse error: {e}") }
+            })),
+        };
+        if let Some(reply) = reply {
+            stdout.write_all(format!("{reply}\n").as_bytes()).await?;
+            stdout.flush().await?;
+        }
+    }
+    Ok(())
+}
+
+pub fn tools() -> Value {
+    let mut batch_schema = engine::command_schema();
+    if let Some(obj) = batch_schema.as_object_mut() {
+        obj.remove("$schema");
+        obj.remove("title");
+    }
+    json!([
+        {
+            "name": "get_scene",
+            "description": "Read the shared Tatara scene: object IDs, names, transforms, materials, world bounds, counts and revision. Set include_mesh to also get vertices and polygon indices.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "include_mesh": { "type": "boolean", "default": false } },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "apply_commands",
+            "description": "Apply an atomic batch of modeling commands to the shared scene (one undo step). Pass expected_revision from get_scene to reject stale edits. Units are meters, Y up, rotations in radians.",
+            "inputSchema": batch_schema
+        },
+        {
+            "name": "undo",
+            "description": "Undo the last change in the shared scene.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "redo",
+            "description": "Redo the last undone change in the shared scene.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }
+    ])
+}
+
+async fn handle(http: &reqwest::Client, base: &str, msg: Value) -> Option<Value> {
+    let id = msg.get("id").cloned();
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    // Notifications carry no id and get no reply.
+    let id = id?;
+    let result = match method {
+        "initialize" => {
+            let version = msg["params"]["protocolVersion"]
+                .as_str()
+                .unwrap_or(PROTOCOL_VERSION);
+            Ok(json!({
+                "protocolVersion": version,
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "tatara", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": "Tatara is a 3D editor. Call get_scene first, then apply_commands. Edits appear live in the user's browser and are undoable."
+            }))
+        }
+        "ping" => Ok(json!({})),
+        "tools/list" => Ok(json!({ "tools": tools() })),
+        "tools/call" => {
+            let name = msg["params"]["name"].as_str().unwrap_or("");
+            let args = msg["params"].get("arguments").cloned().unwrap_or(json!({}));
+            Ok(call_tool(http, base, name, args).await)
+        }
+        _ => Err(json!({ "code": -32601, "message": format!("method not found: {method}") })),
+    };
+    Some(match result {
+        Ok(r) => json!({ "jsonrpc": "2.0", "id": id, "result": r }),
+        Err(e) => json!({ "jsonrpc": "2.0", "id": id, "error": e }),
+    })
+}
+
+async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) -> Value {
+    let request = match name {
+        "get_scene" if args["include_mesh"].as_bool() == Some(true) => {
+            http.get(format!("{base}/api/scene"))
+        }
+        "get_scene" => http.get(format!("{base}/api/context")),
+        "apply_commands" => http.post(format!("{base}/api/commands")).json(&args),
+        "undo" => http.post(format!("{base}/api/undo")),
+        "redo" => http.post(format!("{base}/api/redo")),
+        _ => return tool_result(format!("unknown tool: {name}"), true),
+    };
+    match request.send().await {
+        Ok(resp) => {
+            let ok = resp.status().is_success();
+            let text = resp.text().await.unwrap_or_default();
+            let pretty = serde_json::from_str::<Value>(&text)
+                .map(|v| serde_json::to_string_pretty(&v).unwrap_or(text.clone()))
+                .unwrap_or(text);
+            tool_result(pretty, !ok)
+        }
+        Err(e) => tool_result(
+            format!(
+                "Tatara editor is not reachable at {base} ({e}). Start it with `cargo run --release`, or set TATARA_URL."
+            ),
+            true,
+        ),
+    }
+}
+
+fn tool_result(text: String, is_error: bool) -> Value {
+    json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
+}
