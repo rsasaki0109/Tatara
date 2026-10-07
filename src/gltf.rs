@@ -4,14 +4,14 @@
 //! `add_mesh` command, welding split vertices and restoring planar quads so
 //! the result is editable.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use base64::Engine as _;
 use glam::{DMat4, DQuat, DVec3, EulerRot};
 use serde_json::{Value, json};
 
 use crate::anim::{Property, sample_track};
-use crate::engine::{Command, Editor, EngineError, MAX_FACES, MAX_OBJECTS, Mesh, Vec3};
+use crate::engine::{Command, Editor, EngineError, MAX_FACES, MAX_OBJECTS, Material, Mesh, Vec3};
 
 const CREASE_DEGREES: f64 = 38.0;
 const GLB_MAGIC: &[u8; 4] = b"glTF";
@@ -113,6 +113,45 @@ pub(crate) fn shade(mesh: &Mesh) -> Shaded {
     out
 }
 
+/// A glTF PBR material, with the KHR extensions it needs added to `used`.
+fn material_json(name: &str, m: &Material, used: &mut BTreeSet<String>) -> Value {
+    let [r, g, b] = hex_to_linear(&m.color);
+    let mut out = json!({
+        "name": name,
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [r, g, b, m.opacity],
+            "metallicFactor": m.metalness,
+            "roughnessFactor": m.roughness,
+        },
+    });
+    let mut ext = serde_json::Map::new();
+    let emissive = hex_to_linear(&m.emissive);
+    if m.emissive_strength > 0.0 && emissive.iter().any(|&c| c > 0.0) {
+        let scale = m.emissive_strength.min(1.0);
+        out["emissiveFactor"] = json!(emissive.map(|c| c * scale));
+        if m.emissive_strength > 1.0 {
+            ext.insert(
+                "KHR_materials_emissive_strength".into(),
+                json!({ "emissiveStrength": m.emissive_strength }),
+            );
+        }
+    }
+    if m.opacity < 1.0 {
+        out["alphaMode"] = json!("BLEND");
+    }
+    if m.transmission > 0.0 {
+        ext.insert(
+            "KHR_materials_transmission".into(),
+            json!({ "transmissionFactor": m.transmission }),
+        );
+    }
+    if !ext.is_empty() {
+        used.extend(ext.keys().cloned());
+        out["extensions"] = Value::Object(ext);
+    }
+    out
+}
+
 /// Binary glTF of the scene as displayed (modifiers applied).
 pub fn export_glb(ed: &Editor) -> Vec<u8> {
     let mut bin: Vec<u8> = Vec::new();
@@ -123,6 +162,7 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     let mut nodes = Vec::new();
     let mut channels = Vec::new();
     let mut samplers = Vec::new();
+    let mut extensions = BTreeSet::new();
     let fps = ed.scene().animation.fps;
     let mut push_view = |bin: &mut Vec<u8>, bytes: &[u8], target: u32| -> usize {
         while !bin.len().is_multiple_of(4) {
@@ -172,15 +212,7 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         accessors.push(json!({ "bufferView": pv, "componentType": 5126, "count": shaded.positions.len(), "type": "VEC3", "min": min, "max": max }));
         accessors.push(json!({ "bufferView": nv, "componentType": 5126, "count": shaded.normals.len(), "type": "VEC3" }));
         accessors.push(json!({ "bufferView": iv, "componentType": 5125, "count": shaded.indices.len(), "type": "SCALAR" }));
-        let [r, g, b] = hex_to_linear(&o.material.color);
-        materials.push(json!({
-            "name": o.name,
-            "pbrMetallicRoughness": {
-                "baseColorFactor": [r, g, b, 1.0],
-                "metallicFactor": o.material.metalness,
-                "roughnessFactor": o.material.roughness,
-            },
-        }));
+        materials.push(material_json(&o.name, &o.material, &mut extensions));
         meshes.push(json!({
             "name": o.name,
             "primitives": [{ "attributes": { "POSITION": a, "NORMAL": a + 1 }, "indices": a + 2, "material": materials.len() - 1, "mode": 4 }],
@@ -255,6 +287,9 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     if !bin.is_empty() {
         doc["buffers"] = json!([{ "byteLength": bin.len() }]);
     }
+    if !extensions.is_empty() {
+        doc["extensionsUsed"] = json!(extensions);
+    }
     if !channels.is_empty() {
         doc["animations"] =
             json!([{ "name": "Tatara", "channels": channels, "samplers": samplers }]);
@@ -282,6 +317,45 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 // Import
 // ---------------------------------------------------------------------------
+
+/// Read a glTF material into ours (defaults follow the glTF spec).
+fn imported_material(m: Option<&Value>) -> Option<Material> {
+    let m = m?;
+    let pbr = &m["pbrMetallicRoughness"];
+    let num = |v: &Value, default: f64| v.as_f64().unwrap_or(default);
+    let factor = |v: &Value, k: usize, default: f64| {
+        v.as_array()
+            .and_then(|f| f.get(k))
+            .and_then(Value::as_f64)
+            .unwrap_or(default)
+            .max(0.0)
+    };
+    let base = &pbr["baseColorFactor"];
+    let emissive = &m["emissiveFactor"];
+    let ext = &m["extensions"];
+    let blend = m["alphaMode"].as_str() == Some("BLEND");
+    Some(Material {
+        color: linear_to_hex([0, 1, 2].map(|k| factor(base, k, 1.0))),
+        roughness: num(&pbr["roughnessFactor"], 1.0).clamp(0.0, 1.0),
+        metalness: num(&pbr["metallicFactor"], 1.0).clamp(0.0, 1.0),
+        emissive: linear_to_hex([0, 1, 2].map(|k| factor(emissive, k, 0.0))),
+        emissive_strength: num(
+            &ext["KHR_materials_emissive_strength"]["emissiveStrength"],
+            1.0,
+        )
+        .clamp(0.0, 20.0),
+        opacity: if blend {
+            factor(base, 3, 1.0).clamp(0.0, 1.0)
+        } else {
+            1.0
+        },
+        transmission: num(
+            &ext["KHR_materials_transmission"]["transmissionFactor"],
+            0.0,
+        )
+        .clamp(0.0, 1.0),
+    })
+}
 
 fn parse_glb(bytes: &[u8]) -> Result<(Value, Option<Vec<u8>>), EngineError> {
     let u32_at = |i: usize| -> Result<u32, EngineError> {
@@ -670,33 +744,7 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
             let material = prim["material"]
                 .as_u64()
                 .map(|m| &doc["materials"][m as usize]);
-            let (color, roughness, metalness) = match material {
-                Some(m) if !m.is_null() => {
-                    let pbr = &m["pbrMetallicRoughness"];
-                    let f = pbr["baseColorFactor"].as_array();
-                    let c = |k: usize| {
-                        f.and_then(|f| f.get(k))
-                            .and_then(Value::as_f64)
-                            .unwrap_or(1.0)
-                    };
-                    (
-                        Some(linear_to_hex([c(0), c(1), c(2)])),
-                        Some(
-                            pbr["roughnessFactor"]
-                                .as_f64()
-                                .unwrap_or(1.0)
-                                .clamp(0.0, 1.0),
-                        ),
-                        Some(
-                            pbr["metallicFactor"]
-                                .as_f64()
-                                .unwrap_or(1.0)
-                                .clamp(0.0, 1.0),
-                        ),
-                    )
-                }
-                _ => (None, None, None),
-            };
+            let m = imported_material(material.filter(|m| !m.is_null()));
             let base = clean_name(node["name"].as_str().or(mesh["name"].as_str()), "Mesh");
             let base = if prims.len() > 1 {
                 format!("{base}.{pi}")
@@ -713,9 +761,14 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
                 translation: Some(translation),
                 rotation: Some(rotation),
                 scale: Some(scale),
-                color,
-                roughness,
-                metalness,
+                color: m.as_ref().map(|m| m.color.clone()),
+                roughness: m.as_ref().map(|m| m.roughness),
+                metalness: m.as_ref().map(|m| m.metalness),
+                emissive: m.as_ref().map(|m| m.emissive.clone()),
+                emissive_strength: m.as_ref().map(|m| m.emissive_strength),
+                opacity: m.as_ref().map(|m| m.opacity),
+                transmission: m.as_ref().map(|m| m.transmission),
+                preset: None,
             });
             if commands.len() > MAX_OBJECTS {
                 return err(format!("a scene is limited to {MAX_OBJECTS} objects"));
@@ -749,6 +802,37 @@ mod tests {
         })
         .unwrap();
         ed
+    }
+
+    #[test]
+    fn glb_round_trip_keeps_glow_glass_and_opacity() {
+        let ed = editor_with(json!([
+            {"op": "add", "name": "Sign", "primitive": {"kind": "torus"}, "preset": "neon", "color": "#30e0ff"},
+            {"op": "add", "name": "Vase", "primitive": {"kind": "cube"}, "preset": "glass"},
+            {"op": "add", "name": "Ghost", "primitive": {"kind": "cube"}, "opacity": 0.4},
+            {"op": "add", "name": "Plain", "primitive": {"kind": "cube"}}
+        ]));
+        let glb = export_glb(&ed);
+        let len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let doc: Value = serde_json::from_slice(&glb[20..20 + len]).unwrap();
+        assert_eq!(
+            doc["extensionsUsed"],
+            json!([
+                "KHR_materials_emissive_strength",
+                "KHR_materials_transmission"
+            ])
+        );
+        assert_eq!(doc["materials"][2]["alphaMode"], "BLEND");
+        assert!(doc["materials"][3].get("extensions").is_none());
+        assert!(doc["materials"][3].get("emissiveFactor").is_none());
+
+        let back = reimport(&glb);
+        let m = |i: usize| back.scene().objects[i].material.clone();
+        assert_eq!(m(0).emissive, "#30e0ff");
+        assert_eq!(m(0).emissive_strength, 2.0);
+        assert_eq!(m(1).transmission, 1.0);
+        assert!((m(2).opacity - 0.4).abs() < 1e-9);
+        assert_eq!(m(3), crate::engine::Material::default());
     }
 
     #[test]

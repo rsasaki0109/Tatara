@@ -71,6 +71,25 @@ pub struct Material {
     pub color: String,
     pub roughness: f64,
     pub metalness: f64,
+    /// Emitted light colour as `#rrggbb` (`#000000` = none).
+    #[serde(default = "d_emissive")]
+    pub emissive: String,
+    /// Multiplier for `emissive`, 0-20. Above 1 the surface glows.
+    #[serde(default = "d_one")]
+    pub emissive_strength: f64,
+    /// Alpha, 0 (invisible) to 1 (opaque).
+    #[serde(default = "d_one")]
+    pub opacity: f64,
+    /// How much light passes through, 0-1 (1 = clear glass).
+    #[serde(default)]
+    pub transmission: f64,
+}
+
+fn d_emissive() -> String {
+    "#000000".into()
+}
+fn d_one() -> f64 {
+    1.0
 }
 
 impl Default for Material {
@@ -79,8 +98,89 @@ impl Default for Material {
             color: "#c9c3b8".into(),
             roughness: 0.55,
             metalness: 0.0,
+            emissive: d_emissive(),
+            emissive_strength: 1.0,
+            opacity: 1.0,
+            transmission: 0.0,
         }
     }
+}
+
+/// A starting point for a material; any field given alongside it wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MaterialPreset {
+    /// Glazed white stoneware.
+    Ceramic,
+    /// Matte unfired clay.
+    Clay,
+    /// Satin plastic.
+    Plastic,
+    /// Soft black rubber.
+    Rubber,
+    /// Clear glass.
+    Glass,
+    /// Frosted glass.
+    Frosted,
+    Gold,
+    Copper,
+    Chrome,
+    /// Brushed steel.
+    Steel,
+    /// Polished green stone.
+    Jade,
+    /// Glowing tube light; its glow follows `color` unless `emissive` is set.
+    Neon,
+}
+
+impl MaterialPreset {
+    pub fn material(self) -> Material {
+        use MaterialPreset::*;
+        let (color, roughness, metalness) = match self {
+            Ceramic => ("#ece6da", 0.18, 0.0),
+            Clay => ("#b8714f", 0.92, 0.0),
+            Plastic => ("#3f7fd8", 0.38, 0.0),
+            Rubber => ("#26272b", 0.85, 0.0),
+            Glass => ("#f4f8fb", 0.04, 0.0),
+            Frosted => ("#eef3f6", 0.42, 0.0),
+            Gold => ("#e8b04a", 0.22, 1.0),
+            Copper => ("#d9825b", 0.3, 1.0),
+            Chrome => ("#e9ecef", 0.04, 1.0),
+            Steel => ("#a9adb3", 0.42, 1.0),
+            Jade => ("#4f9d7a", 0.16, 0.0),
+            Neon => ("#ff4fd8", 0.3, 0.0),
+        };
+        let mut m = Material {
+            color: color.into(),
+            roughness,
+            metalness,
+            ..Material::default()
+        };
+        match self {
+            Glass => m.transmission = 1.0,
+            Frosted => m.transmission = 0.85,
+            Jade => m.transmission = 0.25,
+            Neon => {
+                m.emissive = m.color.clone();
+                m.emissive_strength = 2.0;
+            }
+            _ => {}
+        }
+        m
+    }
+}
+
+/// Material fields of a command; unset ones keep their current value.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MaterialEdit<'a> {
+    pub preset: Option<MaterialPreset>,
+    pub color: Option<&'a str>,
+    pub roughness: Option<f64>,
+    pub metalness: Option<f64>,
+    pub emissive: Option<&'a str>,
+    pub emissive_strength: Option<f64>,
+    pub opacity: Option<f64>,
+    pub transmission: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -269,6 +369,18 @@ pub enum Command {
         roughness: Option<f64>,
         #[serde(default)]
         metalness: Option<f64>,
+        /// `#rrggbb` light the surface emits.
+        #[serde(default)]
+        emissive: Option<String>,
+        #[serde(default)]
+        emissive_strength: Option<f64>,
+        #[serde(default)]
+        opacity: Option<f64>,
+        #[serde(default)]
+        transmission: Option<f64>,
+        /// Start from a preset; other material fields override it.
+        #[serde(default)]
+        preset: Option<MaterialPreset>,
     },
     /// Set any of translation, rotation (radians) or scale.
     Transform {
@@ -280,7 +392,7 @@ pub enum Command {
         #[serde(default)]
         scale: Option<Vec3>,
     },
-    /// Set any of the material properties.
+    /// Set any of the material properties, optionally starting from a preset.
     Material {
         id: ObjRef,
         #[serde(default)]
@@ -289,6 +401,18 @@ pub enum Command {
         roughness: Option<f64>,
         #[serde(default)]
         metalness: Option<f64>,
+        /// `#rrggbb` light the surface emits.
+        #[serde(default)]
+        emissive: Option<String>,
+        #[serde(default)]
+        emissive_strength: Option<f64>,
+        #[serde(default)]
+        opacity: Option<f64>,
+        #[serde(default)]
+        transmission: Option<f64>,
+        /// Start from a preset; other material fields override it.
+        #[serde(default)]
+        preset: Option<MaterialPreset>,
     },
     Rename {
         id: ObjRef,
@@ -349,6 +473,18 @@ pub enum Command {
         roughness: Option<f64>,
         #[serde(default)]
         metalness: Option<f64>,
+        /// `#rrggbb` light the surface emits.
+        #[serde(default)]
+        emissive: Option<String>,
+        #[serde(default)]
+        emissive_strength: Option<f64>,
+        #[serde(default)]
+        opacity: Option<f64>,
+        #[serde(default)]
+        transmission: Option<f64>,
+        /// Start from a preset; other material fields override it.
+        #[serde(default)]
+        preset: Option<MaterialPreset>,
     },
     /// Move base-mesh vertices by `offset` (object space).
     MoveVertices {
@@ -675,7 +811,22 @@ fn apply_command(
             color,
             roughness,
             metalness,
+            emissive,
+            emissive_strength,
+            opacity,
+            transmission,
+            preset,
         } => {
+            let edit = MaterialEdit {
+                preset: *preset,
+                color: color.as_deref(),
+                roughness: *roughness,
+                metalness: *metalness,
+                emissive: emissive.as_deref(),
+                emissive_strength: *emissive_strength,
+                opacity: *opacity,
+                transmission: *transmission,
+            };
             if scene.objects.len() >= MAX_OBJECTS {
                 return err(format!("scene is limited to {MAX_OBJECTS} objects"));
             }
@@ -689,7 +840,7 @@ fn apply_command(
             let mut transform = Transform::default();
             set_transform(&mut transform, translation, rotation, scale)?;
             let mut material = Material::default();
-            set_material(&mut material, color, roughness, metalness)?;
+            set_material(&mut material, &edit)?;
             scene.objects.push(Object {
                 id,
                 name,
@@ -722,9 +873,24 @@ fn apply_command(
             color,
             roughness,
             metalness,
+            emissive,
+            emissive_strength,
+            opacity,
+            transmission,
+            preset,
         } => {
+            let edit = MaterialEdit {
+                preset: *preset,
+                color: color.as_deref(),
+                roughness: *roughness,
+                metalness: *metalness,
+                emissive: emissive.as_deref(),
+                emissive_strength: *emissive_strength,
+                opacity: *opacity,
+                transmission: *transmission,
+            };
             let i = resolve(scene, id)?;
-            set_material(&mut scene.objects[i].material, color, roughness, metalness)?;
+            set_material(&mut scene.objects[i].material, &edit)?;
         }
         Command::Rename { id, name } => {
             let i = resolve(scene, id)?;
@@ -810,7 +976,22 @@ fn apply_command(
             color,
             roughness,
             metalness,
+            emissive,
+            emissive_strength,
+            opacity,
+            transmission,
+            preset,
         } => {
+            let edit = MaterialEdit {
+                preset: *preset,
+                color: color.as_deref(),
+                roughness: *roughness,
+                metalness: *metalness,
+                emissive: emissive.as_deref(),
+                emissive_strength: *emissive_strength,
+                opacity: *opacity,
+                transmission: *transmission,
+            };
             if scene.objects.len() >= MAX_OBJECTS {
                 return err(format!("scene is limited to {MAX_OBJECTS} objects"));
             }
@@ -830,7 +1011,7 @@ fn apply_command(
             let mut transform = Transform::default();
             set_transform(&mut transform, translation, rotation, scale)?;
             let mut material = Material::default();
-            set_material(&mut material, color, roughness, metalness)?;
+            set_material(&mut material, &edit)?;
             scene.objects.push(Object {
                 id,
                 name,
@@ -1041,24 +1222,35 @@ fn set_transform(
     Ok(())
 }
 
-fn set_material(
-    m: &mut Material,
-    color: &Option<String>,
-    rough: &Option<f64>,
-    metal: &Option<f64>,
-) -> Result<(), EngineError> {
-    if let Some(c) = color {
+pub fn set_material(m: &mut Material, e: &MaterialEdit) -> Result<(), EngineError> {
+    if let Some(p) = e.preset {
+        *m = p.material();
+    }
+    if let Some(c) = e.color {
         m.color = check_color(c)?;
     }
-    for (value, slot, what) in [
-        (rough, &mut m.roughness, "roughness"),
-        (metal, &mut m.metalness, "metalness"),
+    if let Some(c) = e.emissive {
+        m.emissive = check_color(c)?;
+    } else if e.preset == Some(MaterialPreset::Neon) {
+        m.emissive = m.color.clone();
+    }
+    for (value, slot, what, max) in [
+        (e.roughness, &mut m.roughness, "roughness", 1.0),
+        (e.metalness, &mut m.metalness, "metalness", 1.0),
+        (
+            e.emissive_strength,
+            &mut m.emissive_strength,
+            "emissive_strength",
+            20.0,
+        ),
+        (e.opacity, &mut m.opacity, "opacity", 1.0),
+        (e.transmission, &mut m.transmission, "transmission", 1.0),
     ] {
         if let Some(v) = value {
-            if !(0.0..=1.0).contains(v) {
-                return err(format!("{what} must be between 0 and 1"));
+            if !(0.0..=max).contains(&v) {
+                return err(format!("{what} must be between 0 and {max}"));
             }
-            *slot = *v;
+            *slot = v;
         }
     }
     Ok(())
@@ -1101,9 +1293,16 @@ fn validate_scene(scene: &Scene) -> Result<(), EngineError> {
         let m = &o.material;
         set_material(
             &mut Material::default(),
-            &Some(m.color.clone()),
-            &Some(m.roughness),
-            &Some(m.metalness),
+            &MaterialEdit {
+                color: Some(&m.color),
+                roughness: Some(m.roughness),
+                metalness: Some(m.metalness),
+                emissive: Some(&m.emissive),
+                emissive_strength: Some(m.emissive_strength),
+                opacity: Some(m.opacity),
+                transmission: Some(m.transmission),
+                preset: None,
+            },
         )
         .map_err(ctx)?;
         validate_mesh(&o.mesh).map_err(ctx)?;
@@ -2097,6 +2296,60 @@ mod tests {
     }
 
     #[test]
+    fn material_presets_and_fields() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "name": "Vase", "primitive": {"kind": "cube"}, "preset": "glass"},
+            {"op": "add", "name": "Sign", "primitive": {"kind": "torus"}, "preset": "neon", "color": "#30E0FF"},
+            {"op": "add", "name": "Cup", "primitive": {"kind": "cube"}, "preset": "gold", "roughness": 0.5},
+            {"op": "material", "id": "Cup", "opacity": 0.4, "emissive": "#ff8800", "emissive_strength": 3}
+        ]})))
+        .unwrap();
+        let m = |i: usize| ed.scene().objects[i].material.clone();
+        assert_eq!(m(0).transmission, 1.0);
+        assert_eq!(
+            (m(1).color.as_str(), m(1).emissive.as_str()),
+            ("#30e0ff", "#30e0ff"),
+            "neon glows in its colour"
+        );
+        assert!(m(1).emissive_strength > 1.0);
+        assert_eq!((m(2).metalness, m(2).roughness), (1.0, 0.5));
+        assert_eq!((m(2).opacity, m(2).emissive_strength), (0.4, 3.0));
+        // A preset replaces the whole material, then explicit fields apply.
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "material", "id": "Cup", "preset": "clay"}
+        ]})))
+        .unwrap();
+        assert_eq!(
+            ed.scene().objects[2].material,
+            MaterialPreset::Clay.material()
+        );
+
+        for bad in [
+            serde_json::json!({"op": "material", "id": "Cup", "opacity": 1.5}),
+            serde_json::json!({"op": "material", "id": "Cup", "emissive_strength": 25}),
+            serde_json::json!({"op": "material", "id": "Cup", "emissive": "orange"}),
+        ] {
+            assert!(
+                ed.apply(&batch(serde_json::json!({"commands": [bad]})))
+                    .is_err()
+            );
+        }
+
+        // Scenes saved before these fields existed still load.
+        let mut old = serde_json::to_value(ed.scene()).unwrap();
+        for o in old["objects"].as_array_mut().unwrap() {
+            let mat = o["material"].as_object_mut().unwrap();
+            for k in ["emissive", "emissive_strength", "opacity", "transmission"] {
+                mat.remove(k);
+            }
+        }
+        let old: Scene = serde_json::from_value(old).unwrap();
+        assert_eq!(old.objects[0].material.opacity, 1.0);
+        assert!(Editor::new().load(old).is_ok());
+    }
+
+    #[test]
     fn schema_lists_operations() {
         let s = command_schema().to_string();
         for op in [
@@ -2107,6 +2360,8 @@ mod tests {
             "inset",
             "add_modifier",
             "twist",
+            "emissive_strength",
+            "neon",
         ] {
             assert!(s.contains(op));
         }

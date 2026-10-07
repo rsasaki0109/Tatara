@@ -1,7 +1,9 @@
 // Keyframe sampling for the viewport. Mirrors src/anim.rs so playback in the
 // browser matches what the Rust renderer and glTF export produce.
 
-export const PROPERTIES = ['translation', 'rotation', 'scale', 'color', 'roughness', 'metalness']
+export const PROPERTIES = ['translation', 'rotation', 'scale', 'color', 'roughness', 'metalness', 'emissive', 'emissive_strength', 'opacity']
+const COLORS = ['color', 'emissive']
+const RANGE = { emissive_strength: 20 }
 
 function hexToRgb(hex) {
   return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
@@ -33,7 +35,8 @@ export function restValue(o, property) {
     case 'scale':
       return o.transform[property]
     case 'color':
-      return hexToRgb(o.material.color)
+    case 'emissive':
+      return hexToRgb(o.material[property] || '#000000')
     default:
       return [o.material[property]]
   }
@@ -48,12 +51,14 @@ export function valueAt(o, property, frame) {
   return t ? sampleTrack(t, frame) : restValue(o, property)
 }
 
+export const isColor = (p) => COLORS.includes(p)
+
 export const isAnimated = (o) => (o.tracks || []).length > 0
 
 /** Transform and material at `frame` (the static ones when not animated). */
 export function pose(o, frame) {
   if (!isAnimated(o)) return { transform: o.transform, material: o.material }
-  const clamp = (x) => Math.min(1, Math.max(0, x))
+  const scalar = (p) => Math.min(RANGE[p] ?? 1, Math.max(0, valueAt(o, p, frame)[0]))
   return {
     transform: {
       translation: valueAt(o, 'translation', frame),
@@ -61,9 +66,13 @@ export function pose(o, frame) {
       scale: valueAt(o, 'scale', frame),
     },
     material: {
+      ...o.material,
       color: rgbToHex(valueAt(o, 'color', frame)),
-      roughness: clamp(valueAt(o, 'roughness', frame)[0]),
-      metalness: clamp(valueAt(o, 'metalness', frame)[0]),
+      roughness: scalar('roughness'),
+      metalness: scalar('metalness'),
+      emissive: rgbToHex(valueAt(o, 'emissive', frame)),
+      emissive_strength: scalar('emissive_strength'),
+      opacity: scalar('opacity'),
     },
   }
 }

@@ -3,6 +3,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js'
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
 import { ease } from './clock.js'
 import { isAnimated, pose } from './anim.js'
 
@@ -200,6 +205,8 @@ export class Viewport {
     const h = this.el.clientHeight
     if (!w || !h) return
     this.renderer.setSize(w, h, false)
+    this.composer?.setSize(w, h)
+    this.glowComposer?.setSize(w, h)
     this.renderer.domElement.style.width = `${w}px`
     this.renderer.domElement.style.height = `${h}px`
     this.camera.aspect = w / h
@@ -223,6 +230,7 @@ export class Viewport {
       const done = () => {
         this.root.remove(node.group)
         node.mesh.geometry.dispose()
+        node.glowMat?.dispose()
       }
       if (animate) {
         const s = node.group.scale.clone()
@@ -355,17 +363,13 @@ export class Viewport {
     if (JSON.stringify(pose(prev, this.currentFrame).material) !== JSON.stringify(posed.material)) {
       if (animate && !animated) {
         const m = node.mesh.material
-        const c0 = m.color.clone()
-        const r0 = m.roughness
-        const m0 = m.metalness
-        const target = new THREE.MeshPhysicalMaterial()
-        this.applyMaterial(target, posed.material)
+        const from = this.materialState(m)
+        this.applyMaterial(m, posed.material)
+        const to = this.materialState(m)
         this.anim.add(`mat:${o.id}`, 420, (t) => {
-          m.color.lerpColors(c0, target.color, t)
-          m.roughness = r0 + (target.roughness - r0) * t
-          m.metalness = m0 + (target.metalness - m0) * t
-          m.clearcoat = Math.max(0, 0.65 - m.roughness)
-          if (t === 1) target.dispose()
+          m.color.lerpColors(from.color, to.color, t)
+          m.emissive.lerpColors(from.emissive, to.emissive, t)
+          for (const k of ['roughness', 'metalness', 'clearcoat', 'emissiveIntensity', 'opacity', 'transmission']) m[k] = from[k] + (to[k] - from[k]) * t
         })
       } else this.setMaterial(node, posed.material)
     }
@@ -424,7 +428,92 @@ export class Viewport {
     m.color.set(mat.color)
     m.roughness = mat.roughness
     m.metalness = mat.metalness
-    m.clearcoat = Math.max(0, 0.65 - mat.roughness)
+    // Glass has its own reflections; a clearcoat on top only clouds it.
+    m.clearcoat = mat.transmission ? 0 : Math.max(0, 0.65 - mat.roughness)
+    m.emissive.set(mat.emissive || '#000000')
+    m.emissiveIntensity = mat.emissive_strength ?? 1
+    m.userData.glow = m.emissiveIntensity > 0 && m.emissive.r + m.emissive.g + m.emissive.b > 0.02
+    m.opacity = mat.opacity ?? 1
+    const transparent = m.opacity < 0.999
+    if (m.transparent !== transparent) {
+      m.transparent = transparent
+      m.depthWrite = !transparent
+      m.needsUpdate = true
+    }
+    m.transmission = mat.transmission || 0
+    m.thickness = m.transmission ? 0.1 : 0
+    m.ior = 1.5
+  }
+
+  materialState(m) {
+    const { roughness, metalness, clearcoat, emissiveIntensity, opacity, transmission } = m
+    return { color: m.color.clone(), emissive: m.emissive.clone(), roughness, metalness, clearcoat, emissiveIntensity, opacity, transmission }
+  }
+
+  /** Whether any object emits light (and the bloom pass is needed). */
+  glowing() {
+    for (const node of this.nodes.values()) if (node.mesh.material.userData.glow) return true
+    return false
+  }
+
+  /**
+   * Selective bloom: a second render where only emitting surfaces show (the
+   * rest is black so it still occludes), blurred and added over the scene.
+   */
+  bloom() {
+    if (!this.composer) {
+      const w = this.el.clientWidth
+      const h = this.el.clientHeight
+      const glow = (this.glowComposer = new EffectComposer(this.renderer))
+      glow.renderToScreen = false
+      glow.addPass(new RenderPass(this.scene, this.camera))
+      const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 1.2, 0, 0)
+      // Weight the blur toward the sharp mips: a tight halo, not a fog.
+      bloom.compositeMaterial.uniforms.bloomFactors.value = [1, 0.5, 0.15, 0.03, 0]
+      glow.addPass(bloom)
+      const mix = new ShaderPass(
+        new THREE.ShaderMaterial({
+          uniforms: { baseTexture: { value: null }, glowTexture: { value: glow.renderTarget2.texture } },
+          vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+          // Alpha stays the scene's, so glow over the transparent canvas adds
+          // to the page background (the canvas is premultiplied).
+          fragmentShader:
+            'uniform sampler2D baseTexture; uniform sampler2D glowTexture; varying vec2 vUv; void main() { vec4 b = texture2D(baseTexture, vUv); gl_FragColor = vec4(b.rgb + texture2D(glowTexture, vUv).rgb, b.a); }',
+        }),
+        'baseTexture',
+      )
+      const composer = (this.composer = new EffectComposer(this.renderer))
+      composer.addPass(new RenderPass(this.scene, this.camera))
+      composer.addPass(mix)
+      composer.addPass(new OutputPass())
+      this.black = new THREE.MeshBasicMaterial({ color: 0x000000 })
+      for (const c of [glow, composer]) c.setSize(w, h)
+    }
+    return this.composer
+  }
+
+  renderGlow() {
+    const hidden = []
+    const swapped = []
+    this.scene.traverseVisible((obj) => {
+      const node = obj.userData.id != null && obj.isMesh && this.nodes.get(obj.userData.id)
+      if (node && node.mesh === obj) {
+        const m = obj.material
+        let glowMat = this.black
+        if (m.userData.glow) {
+          glowMat = node.glowMat ||= new THREE.MeshBasicMaterial()
+          glowMat.color.copy(m.emissive).multiplyScalar(m.emissiveIntensity * 0.7)
+        }
+        swapped.push([obj, m])
+        obj.material = glowMat
+      } else if (obj.isMesh || obj.isLine || obj.isPoints || obj.isSprite) {
+        hidden.push(obj)
+        obj.visible = false
+      }
+    })
+    this.glowComposer.render()
+    for (const [obj, m] of swapped) obj.material = m
+    for (const obj of hidden) obj.visible = true
   }
 
   setMaterial(node, mat) {
@@ -761,7 +850,11 @@ export class Viewport {
       this.setOrbit({ ...o, azimuth: o.azimuth + (this.spinRate * dt) / 1000 })
     }
     this.controls.update()
-    this.renderer.render(this.scene, this.camera)
+    if (this.glowing()) {
+      this.bloom()
+      this.renderGlow()
+      this.composer.render()
+    } else this.renderer.render(this.scene, this.camera)
     this.drawAxes()
   }
 

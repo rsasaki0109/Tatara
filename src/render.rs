@@ -76,6 +76,22 @@ struct Shading {
     color: DVec3,
     roughness: f64,
     metalness: f64,
+    /// Linear emitted light, strength applied.
+    emissive: DVec3,
+    opacity: f64,
+    transmission: f64,
+}
+
+impl Shading {
+    /// Drawn in the blended pass instead of the opaque one.
+    fn transparent(&self) -> bool {
+        self.opacity < 0.999 || self.transmission > 0.0
+    }
+
+    /// Mostly-see-through surfaces cast no shadow.
+    fn casts_shadow(&self) -> bool {
+        self.opacity * (1.0 - 0.9 * self.transmission) >= 0.5
+    }
 }
 
 struct Prepared {
@@ -133,6 +149,9 @@ fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepar
             color: hex(&material.color),
             roughness: material.roughness,
             metalness: material.metalness,
+            emissive: hex(&material.emissive) * material.emissive_strength,
+            opacity: material.opacity,
+            transmission: material.transmission,
         });
         let world: Vec<DVec3> = shaded
             .positions
@@ -319,6 +338,9 @@ impl ShadowMap {
         let vp = proj * view;
         let mut depth = vec![1.0f32; SHADOW_SIZE * SHADOW_SIZE];
         for t in &prep.tris {
+            if !prep.materials[t.object as usize].casts_shadow() {
+                continue;
+            }
             let clip = t.p.map(|p| vp * p.extend(1.0));
             raster(clip, SHADOW_SIZE, SHADOW_SIZE, |x, y, z, _| {
                 let d = &mut depth[y * SHADOW_SIZE + x];
@@ -400,14 +422,15 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
         draw([ground[0], ground[2], ground[1]], [DVec3::Y; 3], GROUND);
         draw([ground[0], ground[3], ground[2]], [DVec3::Y; 3], GROUND);
     }
-    for t in &prep.tris {
-        draw(t.p, t.n, t.object);
+    for t in prep.tris.iter() {
+        if !prep.materials[t.object as usize].transparent() {
+            draw(t.p, t.n, t.object);
+        }
     }
 
     let bg_top = hex("#4a4c53");
     let bg_bottom = hex("#1d1e22");
     let ground_col = hex("#34363c");
-    let rim = DVec3::new(-5.0, 4.0, -6.0).normalize();
     let mut color = vec![DVec3::ZERO; n * n];
     for y in 0..n {
         let t = y as f64 / n as f64;
@@ -432,32 +455,8 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
                 }
                 o => {
                     let m = &prep.materials[o as usize];
-                    let p = world[i];
-                    let v = (eye - p).normalize();
-                    let mut nn = normal[i];
-                    if nn.dot(v) < 0.0 {
-                        nn = -nn;
-                    }
-                    let l = shadow.light;
-                    let lit = shadow.lit(p, nn);
-                    let diffuse_col = m.color * (1.0 - m.metalness * 0.85);
-                    let hemi = DVec3::new(0.30, 0.31, 0.34)
-                        .lerp(DVec3::new(0.62, 0.64, 0.70), 0.5 + 0.5 * nn.y);
-                    let key = nn.dot(l).max(0.0) * lit * 2.0;
-                    let fill = nn.dot(rim).max(0.0) * 0.55;
-                    let h = (l + v).normalize();
-                    let shininess = (2.0 / m.roughness.max(0.05).powi(4) - 2.0).clamp(2.0, 2048.0);
-                    let spec_strength = (1.0 - m.roughness).powi(2) * 0.9 + 0.04;
-                    let spec_col = DVec3::splat(1.0).lerp(m.color, m.metalness);
-                    let spec = nn.dot(h).max(0.0).powf(shininess)
-                        * spec_strength
-                        * lit
-                        * 2.3
-                        * (shininess + 8.0)
-                        / 64.0;
-                    let fresnel = (1.0 - nn.dot(v).max(0.0)).powi(5) * 0.25;
-                    diffuse_col * (hemi * 0.9 + DVec3::splat(key + fill))
-                        + spec_col * (spec + fresnel)
+                    let (diffuse, gloss) = surface(m, world[i], normal[i], eye, shadow);
+                    diffuse + gloss + m.emissive
                 }
             };
         }
@@ -490,6 +489,56 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
         }
     }
 
+    // Glass and translucent surfaces, back to front over the opaque image.
+    let mut blended: Vec<&Tri> = prep
+        .tris
+        .iter()
+        .filter(|t| prep.materials[t.object as usize].transparent())
+        .collect();
+    let far = |t: &Tri| (t.p[0] + t.p[1] + t.p[2]).distance_squared(eye * 3.0);
+    blended.sort_by(|a, b| far(b).total_cmp(&far(a)));
+    for t in blended {
+        let m = &prep.materials[t.object as usize];
+        let clip = t.p.map(|q| vp * q.extend(1.0));
+        raster(clip, n, n, |x, y, z, b| {
+            let i = y * n + x;
+            if z as f32 >= depth[i] {
+                return;
+            }
+            let p = t.p[0] * b[0] + t.p[1] * b[1] + t.p[2] * b[2];
+            let nn = (t.n[0] * b[0] + t.n[1] * b[1] + t.n[2] * b[2]).normalize_or_zero();
+            let (diffuse, gloss) = surface(m, p, nn, eye, shadow);
+            let facing = nn.dot((eye - p).normalize()).abs();
+            let reflect = (1.0 - facing).powi(3);
+            let tint = DVec3::ONE.lerp(m.color, 0.55) * m.transmission * (1.0 - reflect);
+            let pass = DVec3::splat(1.0 - m.opacity) + tint * m.opacity;
+            out[i] =
+                out[i] * pass + (diffuse * (1.0 - m.transmission) + gloss + m.emissive) * m.opacity;
+        });
+    }
+
+    // Bloom: emissive surfaces bleed light into their surroundings.
+    let mut glow = vec![DVec3::ZERO; n * n];
+    let mut glowing = false;
+    for i in 0..n * n {
+        if id[i] != EMPTY && id[i] != GROUND {
+            let e = prep.materials[id[i] as usize].emissive;
+            if e != DVec3::ZERO {
+                glow[i] = e;
+                glowing = true;
+            }
+        }
+    }
+    if glowing {
+        let radius = (n / 48).max(2);
+        for _ in 0..3 {
+            box_blur(&mut glow, n, radius);
+        }
+        for (o, g) in out.iter_mut().zip(&glow) {
+            *o += *g * 0.45;
+        }
+    }
+
     let mut pixels = vec![[0u8; 3]; size * size];
     for y in 0..size {
         for x in 0..size {
@@ -506,6 +555,61 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
     }
     draw_text(&mut pixels, size, &view.name.to_uppercase(), 10, 10, 2);
     pixels
+}
+
+/// Separable box blur of a square image, in place.
+fn box_blur(img: &mut [DVec3], n: usize, r: usize) {
+    let mut line = vec![DVec3::ZERO; n];
+    let width = (2 * r + 1) as f64;
+    for pass in 0..2 {
+        for a in 0..n {
+            let at = |b: usize| if pass == 0 { a * n + b } else { b * n + a };
+            let mut sum = DVec3::ZERO;
+            for b in 0..=r.min(n - 1) {
+                sum += img[at(b)];
+            }
+            for (b, slot) in line.iter_mut().enumerate() {
+                *slot = sum / width;
+                if b + r + 1 < n {
+                    sum += img[at(b + r + 1)];
+                }
+                if b >= r {
+                    sum -= img[at(b - r)];
+                }
+            }
+            for (b, v) in line.iter().enumerate() {
+                img[at(b)] = *v;
+            }
+        }
+    }
+}
+
+/// Diffuse and glossy light leaving a surface point toward the eye.
+fn surface(m: &Shading, p: DVec3, n: DVec3, eye: DVec3, shadow: &ShadowMap) -> (DVec3, DVec3) {
+    let v = (eye - p).normalize();
+    let nn = if n.dot(v) < 0.0 { -n } else { n };
+    let l = shadow.light;
+    let rim = DVec3::new(-5.0, 4.0, -6.0).normalize();
+    let lit = shadow.lit(p, nn);
+    let diffuse_col = m.color * (1.0 - m.metalness * 0.85);
+    let hemi = DVec3::new(0.30, 0.31, 0.34).lerp(DVec3::new(0.62, 0.64, 0.70), 0.5 + 0.5 * nn.y);
+    let key = nn.dot(l).max(0.0) * lit * 2.0;
+    let fill = nn.dot(rim).max(0.0) * 0.55;
+    let h = (l + v).normalize();
+    let shininess = (2.0 / m.roughness.max(0.05).powi(4) - 2.0).clamp(2.0, 2048.0);
+    let spec_strength = (1.0 - m.roughness).powi(2) * 0.9 + 0.04;
+    let spec_col = DVec3::splat(1.0).lerp(m.color, m.metalness);
+    let spec =
+        nn.dot(h).max(0.0).powf(shininess) * spec_strength * lit * 2.3 * (shininess + 8.0) / 64.0;
+    let grazing = 1.0 - nn.dot(v).max(0.0);
+    let fresnel = grazing.powi(5) * 0.25;
+    // Glass mirrors the studio at grazing angles; metals mirror it everywhere.
+    let sheen = hemi * (0.04 + 0.9 * grazing.powi(3)) * m.transmission
+        + spec_col * hemi * m.metalness * (1.0 - m.roughness * 0.6) * 0.55;
+    (
+        diffuse_col * (hemi * 0.9 + DVec3::splat(key + fill)),
+        spec_col * (spec + fresnel) + sheen,
+    )
 }
 
 // 5x7 bitmap font for tile labels.
@@ -736,6 +840,62 @@ mod tests {
             top(Some(10.0)),
             top(Some(50.0)),
             "poses hold after the last key"
+        );
+    }
+
+    #[test]
+    fn glass_shows_what_is_behind_and_neon_glows() {
+        let mut ed = Editor::new();
+        ed.apply(
+            &serde_json::from_value::<crate::engine::CommandBatch>(serde_json::json!({"commands": [
+                {"op": "add", "name": "Back", "primitive": {"kind": "cube"}, "translation": [0, 0.5, -1.5], "scale": [3, 1, 0.2], "color": "#c83232"},
+                {"op": "add", "name": "Pane", "primitive": {"kind": "cube"}, "translation": [0, 0.5, 0], "scale": [1, 1, 0.1], "preset": "glass"},
+                {"op": "add", "name": "Lamp", "primitive": {"kind": "sphere"}, "translation": [2.5, 0.5, 0], "scale": [0.3, 0.3, 0.3], "preset": "neon", "color": "#20ff40"}
+            ]})).unwrap(),
+        )
+        .unwrap();
+        let opts = |focus| RenderOptions {
+            views: vec![View::preset("front").unwrap()],
+            size: 128,
+            focus,
+            frame: None,
+        };
+        let (_, _, px) = decode(&render_png(&ed, &opts(Some(2))).unwrap());
+        let at = |x: usize, y: usize| {
+            let i = (y * 128 + x) * 3;
+            [px[i] as i32, px[i + 1] as i32, px[i + 2] as i32]
+        };
+        let c = at(64, 64);
+        assert!(c[0] > c[1] + 30, "red wall through the glass: {c:?}");
+
+        let (_, _, px) = decode(&render_png(&ed, &opts(Some(3))).unwrap());
+        let at = |x: usize, y: usize| {
+            let i = (y * 128 + x) * 3;
+            [px[i] as i32, px[i + 1] as i32, px[i + 2] as i32]
+        };
+        let core = at(64, 64);
+        assert!(core[1] > 200, "lamp is bright: {core:?}");
+        // The halo reaches past the silhouette into the background.
+        let lit = px.clone();
+        ed.apply(
+            &serde_json::from_value::<crate::engine::CommandBatch>(
+                serde_json::json!({"commands": [
+                    {"op": "material", "id": "Lamp", "emissive_strength": 0}
+                ]}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let (_, _, unlit) = decode(&render_png(&ed, &opts(Some(3))).unwrap());
+        let green = |img: &[u8], x: usize| img[(64 * 128 + x) * 3 + 1] as i32;
+        let edge = (64..128)
+            .find(|&x| (green(&unlit, x) - green(&unlit, 127)).abs() < 4)
+            .unwrap();
+        let (halo, bg) = (green(&lit, edge + 2), green(&unlit, edge + 2));
+        assert!(
+            halo > bg + 8,
+            "halo {halo} vs unlit {bg} at x = {}",
+            edge + 2
         );
     }
 
