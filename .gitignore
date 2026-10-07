@@ -1,0 +1,7 @@
+/target/
+/web/node_modules/
+/web/dist/
+/docs/frames/
+/.env
+/*.tatara.json
+/test-results/
