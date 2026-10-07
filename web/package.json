@@ -1,0 +1,16 @@
+{
+  "name": "tatara-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0",
+    "vite": "^8.3.3"
+  }
+}

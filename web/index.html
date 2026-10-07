@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tatara</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 28 10v12L16 29 4 22V10z' fill='%23ff7a3d'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 28 10v12L16 29 4 22V10z" fill="var(--accent)"/><path d="M16 3v26M4 10l12 7 12-7" stroke="#1b1c1f" stroke-width="1.6" fill="none" opacity=".55"/></svg>
+          <span>Tatara</span>
+        </div>
+        <div class="group" id="add-group" aria-label="Add primitive"></div>
+        <div class="group" id="edit-group"></div>
+        <div class="group" id="history-group"></div>
+        <div class="spacer"></div>
+        <button id="demo-btn" class="primary">Build a vessel study</button>
+        <div class="group" id="file-group"></div>
+        <input id="open-input" type="file" accept=".json,application/json" hidden />
+      </header>
+
+      <aside class="outliner">
+        <div class="panel-title"><span>Scene</span><span id="object-count" class="muted"></span></div>
+        <ul id="outliner"></ul>
+        <div class="outliner-empty" id="outliner-empty">
+          <p>The scene is empty.</p>
+          <p class="muted">Add a primitive, ask your agent, or press <b>Build a vessel study</b>.</p>
+        </div>
+      </aside>
+
+      <main class="viewport" id="viewport">
+        <div class="view-label"><span class="dot"></span>Perspective · Studio</div>
+        <div class="view-toggles">
+          <button id="wire-btn" title="Wireframe (W)"></button>
+          <button id="frame-btn" title="Frame scene (F)"></button>
+        </div>
+        <div class="axes" id="axes"></div>
+        <div class="caption" id="caption"><span class="caption-step" id="caption-step"></span><span id="caption-text"></span><code id="caption-hint"></code></div>
+        <div class="terminal" id="terminal"><div class="terminal-bar"><i></i><i></i><i></i><span>agent ⇄ tatara --mcp</span></div><pre id="terminal-body"></pre></div>
+        <div class="cursor" id="cursor"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 1.6L10 19z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg><span class="ripple"></span></div>
+        <div class="toasts" id="toasts"></div>
+      </main>
+
+      <aside class="sidebar">
+        <nav class="tabs">
+          <button data-tab="properties" class="active">Properties</button>
+          <button data-tab="agent">Agent</button>
+        </nav>
+        <section class="tab-panel active" data-panel="properties" id="properties"></section>
+        <section class="tab-panel" data-panel="agent" id="agent">
+          <div class="card">
+            <div class="card-title">Chat <span class="badge" id="ai-badge">off</span></div>
+            <textarea id="chat-input" rows="3" placeholder="Describe a change, e.g. “Add a celadon bowl next to the vase”"></textarea>
+            <div class="row end"><span class="muted small" id="chat-status"></span><button id="chat-send" class="primary small-btn">Send</button></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Command batch <a class="muted small" href="/api/schema" target="_blank">schema</a></div>
+            <textarea id="batch-input" class="mono" rows="7" spellcheck="false"></textarea>
+            <div class="row end"><button id="batch-apply" class="small-btn">Apply batch</button></div>
+          </div>
+          <div class="card grow">
+            <div class="card-title">Activity</div>
+            <ol id="activity"></ol>
+          </div>
+        </section>
+      </aside>
+
+      <footer class="statusbar">
+        <span id="status-rev"></span>
+        <span id="status-mesh"></span>
+        <span class="spacer"></span>
+        <span class="muted" id="status-hint">Alt+click a face · G/R/S transform · F frame · W wireframe</span>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
