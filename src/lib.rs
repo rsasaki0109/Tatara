@@ -1,7 +1,10 @@
+pub mod api;
 pub mod edit;
 pub mod engine;
 pub mod gltf;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod modifiers;
 pub mod render;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod server;
