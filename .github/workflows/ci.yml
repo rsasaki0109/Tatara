@@ -12,6 +12,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -20,9 +21,12 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy -p tatara-wasm --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo test --workspace
       - run: npm --prefix web ci
       - run: npm --prefix web run build
       - run: cargo build --release
       - run: npx --prefix web playwright-core install --with-deps chromium
       - run: node scripts/browser-check.mjs
+      - run: node scripts/build-static.mjs
+      - run: node scripts/static-check.mjs

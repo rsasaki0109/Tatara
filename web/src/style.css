@@ -1053,6 +1053,19 @@ input[type='range'] {
   font-variant-numeric: tabular-nums;
 }
 
+.wasm-badge {
+  display: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(127, 209, 139, 0.14);
+  color: var(--good);
+  font-weight: 600;
+}
+
+.browser-only .wasm-badge {
+  display: inline-block;
+}
+
 /* Recordings step time manually; nothing may animate on its own. */
 .capture *,
 .capture *::before,

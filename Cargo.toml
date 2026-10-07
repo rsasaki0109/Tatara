@@ -6,20 +6,35 @@ description = "An AI-native 3D editor"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rsasaki0109/Tatara"
 
+[workspace]
+members = ["wasm"]
+default-members = ["."]
+
 [dependencies]
-anyhow = "1.0.104"
-axum = "0.8"
 base64 = "0.23.1"
-futures-util = "0.3.34"
 glam = "0.34.1"
 png = "0.18.1"
-reqwest = { version = "0.13.5", features = ["json", "query"] }
 schemars = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+
+# The server, MCP bridge and their runtime are native-only; the modeling
+# core above also compiles to wasm32 for the browser-only build in wasm/.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+anyhow = "1.0.104"
+axum = "0.8"
+futures-util = "0.3.34"
+reqwest = { version = "0.13.5", features = ["json", "query"] }
 tokio = { version = "1.53.2", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 tower-http = { version = "0.7.1", features = ["fs"] }
 
 [profile.release]
 opt-level = 3
+
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"

@@ -5,3 +5,5 @@
 /.env
 /*.tatara.json
 /test-results/
+/web/dist-static/
+/web/public/tatara.wasm

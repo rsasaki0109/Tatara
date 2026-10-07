@@ -5,9 +5,13 @@ import { Viewport, displayMesh } from './viewport.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
+import { installWasmBackend } from './backend.js'
 
 const params = new URLSearchParams(location.search)
 const capture = params.has('capture')
+// The browser-only build runs the Rust core as WebAssembly instead of a server.
+const browserOnly = import.meta.env.VITE_TATARA_STATIC === '1' || params.has('wasm')
+document.documentElement.classList.toggle('browser-only', browserOnly)
 document.documentElement.classList.toggle('capture', capture)
 
 const clock = new Clock(capture)
@@ -377,7 +381,17 @@ app.setMode = setMode
 app.setSelectMode = setSelectMode
 app.pickComponent = pickComponent
 
-function download(href, name) {
+async function download(href, name) {
+  // Fetch first so /api downloads also work in the WebAssembly build.
+  if (href.startsWith('/api/')) {
+    try {
+      const res = await fetch(href)
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+      href = URL.createObjectURL(await res.blob())
+    } catch (e) {
+      return toast(`Download failed: ${e.message}`, 'error')
+    }
+  }
   const a = document.createElement('a')
   a.href = href
   a.download = name
@@ -747,10 +761,12 @@ $('batch-apply').addEventListener('click', async () => {
   run(commands, 'Batch').catch(() => {})
 })
 $('chat-send').addEventListener('click', sendChat)
-$('render-btn').addEventListener('click', () => {
+$('render-btn').addEventListener('click', async () => {
+  const res = await fetch('/api/render?views=iso,front,right,top&size=256')
+  if (!res.ok) return toast('Render failed', 'error')
   const img = new Image()
   img.alt = 'Front, right, top and iso views rendered by the Rust engine'
-  img.src = `/api/render?views=iso,front,right,top&size=256&rev=${app.scene.revision}`
+  img.src = URL.createObjectURL(await res.blob())
   $('render-out').replaceChildren(img)
 })
 $('chat-input').addEventListener('keydown', (e) => {
@@ -856,12 +872,16 @@ function loop() {
 
 const status = { done: false, error: null, started: false }
 const ready = (async () => {
+  if (browserOnly) {
+    await installWasmBackend(`${import.meta.env.BASE_URL}tatara.wasm`)
+    $('status-hint').dataset.static = '1'
+  }
   await refresh(false)
   if (app.scene.objects.length) viewport.frameAll(0)
   animator.step()
   viewport.frame()
-  if (!capture) {
-    requestAnimationFrame(loop)
+  if (!capture) requestAnimationFrame(loop)
+  if (!capture && !browserOnly) {
     const events = new EventSource('/api/events')
     events.addEventListener('revision', (e) => {
       const rev = Number(e.data)

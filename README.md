@@ -7,6 +7,8 @@
 <p align="center"><b>An AI-native 3D editor, built with Rust.</b><br>
 Create in your browser. Give your agent the same tools. Keep every edit inspectable and undoable.</p>
 
+<p align="center"><a href="https://rsasaki0109.github.io/Tatara/"><b>▶ Try it in your browser</b></a> — no install; the Rust core runs as WebAssembly.</p>
+
 <table>
   <tr>
     <td width="50%"><img src="docs/media/vision.gif" alt="An agent builds a vase, a cup and a plinth over MCP, calls render_view, sees front and top renders showing the cup overlapping the vase, moves and re-glazes the cup, then renders again to confirm"></td>
@@ -48,6 +50,10 @@ Blender is the benchmark for what a 3D suite can do. Tatara starts from a differ
 It is early. Today it is a modeling prototype, and the [roadmap](#roadmap) shows the way toward a full creation suite.
 
 ## Try it
+
+**In the browser:** open **https://rsasaki0109.github.io/Tatara/**. The Rust modeling core runs in the tab as WebAssembly, with no server and no install. Modeling, modifiers, edit mode, glTF import/export and the agent renderer all work there. The scene lives in that tab, so use **Save** to keep it. MCP and chat need the desktop server below.
+
+**On your machine** (needed for MCP agents and chat):
 
 Requirements: current stable Rust, Node.js 22+, and a browser with WebGL 2.
 
@@ -196,6 +202,10 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Geometry, commands, validation, history, OBJ | Rust: `src/engine.rs` |
 | glTF export and import | Rust: `src/gltf.rs` |
 | Headless renderer for agent vision | Rust: `src/render.rs` (CPU rasterizer, shadow map, no GPU needed) |
+| Shared API router (server and browser) | Rust: `src/api.rs` |
+| Browser-only build | Rust → WebAssembly: `wasm/` (plain C ABI, no bindgen) + `web/src/backend.js` |
+
+The native server and the WebAssembly build answer `/api` through the same `api::handle` router. In the browser build, `backend.js` sends the editor's `/api` requests into the module, so the UI is identical in both. Build the static site with `node scripts/build-static.mjs` (output in `web/dist-static/`), and check it with `node scripts/static-check.mjs`. The `Pages` workflow publishes it on every push to `main`.
 | Modifier stack evaluation | Rust: `src/modifiers.rs` |
 | Bevel, loop cut, vertex moves | Rust: `src/edit.rs` |
 | HTTP API, live events, chat provider | Rust: `src/server.rs` (axum) |
@@ -210,10 +220,13 @@ The browser is a presentation layer; geometry and authoritative edits run in Rus
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test                       # engine, HTTP API, MCP bridge, mock chat
+cargo test --workspace           # engine, API router, HTTP, MCP bridge, mock chat, wasm ABI
 npm --prefix web ci && npm --prefix web run build
 cargo build --release
 node scripts/browser-check.mjs   # real-browser editing, history, files, layout and all scenarios
+rustup target add wasm32-unknown-unknown
+node scripts/build-static.mjs    # browser-only build in web/dist-static
+node scripts/static-check.mjs    # drives it under a /Tatara/ sub-path with no server
 ```
 
 `TATARA_PORT` changes the port, and `TATARA_WEB_DIR` points at the built assets when you move the binary. The browser check starts its own isolated server.
@@ -223,7 +236,7 @@ node scripts/browser-check.mjs   # real-browser editing, history, files, layout 
 The aim is a creation suite that surpasses Blender for human and agent collaboration, taken one verifiable step at a time:
 
 1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓; next: multi-segment bevel, knife, merge and dissolve, booleans, and solidify/bevel/boolean modifiers.
-2. **Interchange:** ~~glTF import and export~~ ✓; next: UVs and textures in glTF, and a browser-only Rust/WASM engine.
+2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓; next: UVs and textures in glTF, and opening `.tatara.json` links directly in the web build.
 3. **Look development:** a node-based material system, UVs and textures, and a path-traced preview.
 4. **Motion:** keyframes, curves, constraints, then rigging.
 5. **Agents:** ~~visual feedback (`render_view`)~~ ✓; next: measurements and collision reports as tool results, reviewable change proposals and multi-user sessions.

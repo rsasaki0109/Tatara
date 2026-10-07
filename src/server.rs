@@ -20,7 +20,7 @@ use tokio::sync::{Mutex, broadcast};
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::engine::{self, CommandBatch, Editor, EngineError, Scene};
+use crate::engine::{self, CommandBatch, Editor, EngineError};
 
 #[derive(Clone, Debug)]
 pub struct AiConfig {
@@ -73,21 +73,10 @@ pub fn state(ai: Option<AiConfig>) -> Shared {
 pub fn router(state: Shared, web_dir: PathBuf) -> Router {
     let index = web_dir.join("index.html");
     let api = Router::new()
-        .route("/state", get(get_state))
-        .route("/scene", get(get_scene).put(put_scene))
-        .route("/context", get(get_context))
-        .route("/schema", get(get_schema))
-        .route("/commands", post(post_commands))
-        .route("/undo", post(post_undo))
-        .route("/redo", post(post_redo))
-        .route("/reset", post(post_reset))
-        .route("/export/obj", get(get_obj))
-        .route("/export/glb", get(get_glb))
-        .route("/import", post(post_import))
-        .route("/render", get(get_render))
         .route("/events", get(get_events))
         .route("/ai", get(get_ai))
         .route("/chat", post(post_chat))
+        .fallback(core)
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state);
     Router::new()
@@ -146,170 +135,41 @@ fn changed(state: &AppState, revision: u64) {
     let _ = state.events.send(revision);
 }
 
-async fn get_state(State(s): State<Shared>) -> Json<Value> {
-    let ed = s.editor.lock().await;
-    let mut scene = serde_json::to_value(ed.scene()).expect("scene serializes");
-    // Objects with modifiers also carry the evaluated mesh the viewport shows.
-    if let Some(objects) = scene["objects"].as_array_mut() {
-        for (value, o) in objects.iter_mut().zip(&ed.scene().objects) {
-            if !o.modifiers.is_empty() {
-                value["display"] = json!(ed.evaluated(o));
-            }
-        }
+/// Everything except live events and chat goes through the shared,
+/// transport-independent router (also used by the WebAssembly build).
+async fn core(
+    State(s): State<Shared>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    body: axum::body::Bytes,
+) -> Response {
+    let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let r = {
+        let mut ed = s.editor.lock().await;
+        crate::api::handle(&mut ed, method.as_str(), path, &body, s.ai.is_some())
+    };
+    if let Some(revision) = r.changed {
+        changed(&s, revision);
     }
-    Json(json!({ "scene": scene, "history": history(&ed), "ai": s.ai.is_some() }))
+    let mut response = (
+        StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        [(header::CONTENT_TYPE, r.content_type)],
+        r.body,
+    )
+        .into_response();
+    if let Some(d) = r.disposition {
+        response.headers_mut().insert(
+            header::CONTENT_DISPOSITION,
+            header::HeaderValue::from_static(d),
+        );
+    }
+    response
 }
 
-async fn get_scene(State(s): State<Shared>) -> Json<Scene> {
-    Json(s.editor.lock().await.scene().clone())
-}
-
-async fn get_context(State(s): State<Shared>) -> Json<Value> {
-    Json(engine::context(&*s.editor.lock().await))
-}
-
-async fn get_schema() -> Json<Value> {
-    Json(engine::command_schema())
-}
-
-/// Parse the body ourselves so schema errors come back as JSON messages.
+/// Read a JSON body, reporting schema errors as JSON messages.
 fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ApiError> {
     serde_json::from_slice(body)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("invalid request: {e}")))
-}
-
-async fn post_commands(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResult {
-    let batch: CommandBatch = parse(&body)?;
-    let mut ed = s.editor.lock().await;
-    let result = ed.apply(&batch)?;
-    changed(&s, result.revision);
-    Ok(Json(
-        json!({ "revision": result.revision, "created": result.created, "history": history(&ed) }),
-    ))
-}
-
-async fn put_scene(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResult {
-    let scene: Scene = parse(&body)?;
-    let mut ed = s.editor.lock().await;
-    let revision = ed.load(scene)?;
-    changed(&s, revision);
-    Ok(Json(
-        json!({ "revision": revision, "history": history(&ed) }),
-    ))
-}
-
-async fn post_undo(State(s): State<Shared>) -> ApiResult {
-    let mut ed = s.editor.lock().await;
-    let revision = ed
-        .undo()
-        .ok_or_else(|| api_error(StatusCode::CONFLICT, "nothing to undo"))?;
-    changed(&s, revision);
-    Ok(Json(
-        json!({ "revision": revision, "history": history(&ed) }),
-    ))
-}
-
-async fn post_redo(State(s): State<Shared>) -> ApiResult {
-    let mut ed = s.editor.lock().await;
-    let revision = ed
-        .redo()
-        .ok_or_else(|| api_error(StatusCode::CONFLICT, "nothing to redo"))?;
-    changed(&s, revision);
-    Ok(Json(
-        json!({ "revision": revision, "history": history(&ed) }),
-    ))
-}
-
-async fn post_reset(State(s): State<Shared>) -> ApiResult {
-    let mut ed = s.editor.lock().await;
-    ed.reset();
-    let revision = ed.scene().revision;
-    changed(&s, revision);
-    Ok(Json(
-        json!({ "revision": revision, "history": history(&ed) }),
-    ))
-}
-
-async fn get_glb(State(s): State<Shared>) -> Response {
-    let glb = crate::gltf::export_glb(&*s.editor.lock().await);
-    (
-        [
-            (header::CONTENT_TYPE, "model/gltf-binary"),
-            (
-                header::CONTENT_DISPOSITION,
-                "attachment; filename=\"scene.glb\"",
-            ),
-        ],
-        glb,
-    )
-        .into_response()
-}
-
-/// Import a `.glb` or `.gltf` (embedded buffers) as one undoable batch.
-async fn post_import(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResult {
-    let commands = crate::gltf::import(&body)?;
-    let mut ed = s.editor.lock().await;
-    let result = ed.apply(&CommandBatch {
-        commands,
-        expected_revision: None,
-    })?;
-    changed(&s, result.revision);
-    Ok(Json(
-        json!({ "revision": result.revision, "created": result.created, "history": history(&ed) }),
-    ))
-}
-
-#[derive(Deserialize)]
-struct RenderQuery {
-    views: Option<String>,
-    size: Option<u32>,
-    object: Option<String>,
-}
-
-/// PNG of the scene from named views (`front,right,top,iso`) or `az:el` pairs.
-async fn get_render(
-    State(s): State<Shared>,
-    axum::extract::Query(q): axum::extract::Query<RenderQuery>,
-) -> Result<Response, ApiError> {
-    let views = crate::render::parse_views(q.views.as_deref().unwrap_or("iso"))?;
-    let ed = s.editor.lock().await;
-    let focus = match q.object.as_deref() {
-        None | Some("") => None,
-        Some(r) => {
-            let found = r
-                .parse::<u64>()
-                .ok()
-                .and_then(|id| ed.scene().objects.iter().find(|o| o.id == id))
-                .or_else(|| ed.scene().objects.iter().find(|o| o.name == r));
-            Some(
-                found
-                    .map(|o| o.id)
-                    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, format!("no object {r:?}")))?,
-            )
-        }
-    };
-    let opts = crate::render::RenderOptions {
-        views,
-        size: q.size.unwrap_or(512),
-        focus,
-    };
-    let png = crate::render::render_png(&ed, &opts)?;
-    Ok(([(header::CONTENT_TYPE, "image/png")], png).into_response())
-}
-
-async fn get_obj(State(s): State<Shared>) -> Response {
-    let obj = engine::export_obj(&*s.editor.lock().await);
-    (
-        [
-            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
-            (
-                header::CONTENT_DISPOSITION,
-                "attachment; filename=\"scene.obj\"",
-            ),
-        ],
-        obj,
-    )
-        .into_response()
 }
 
 async fn get_events(
