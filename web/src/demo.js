@@ -100,7 +100,12 @@ export class DemoRunner {
     }
     if (s.tab) return app.showTab(s.tab)
     if (s.select !== undefined && Object.keys(s).length === 1) return app.select(s.select === null ? null : this.resolveId(s.select))
-    if (s.type) return this.type(s.into, s.type, s.cps)
+    if (s.type) {
+      await this.type(s.into, s.type, s.cps)
+      await this.idle()
+      return s.after ? this.sleep(s.after) : undefined
+    }
+    if (s.slide) return this.slide(s)
     if (s.chat) return this.chat(s)
     if (s.mcp) return this.mcp(s)
     if (s.terminal !== undefined) return this.fade($('terminal'), s.terminal ? 1 : 0, 300)
@@ -174,13 +179,15 @@ export class DemoRunner {
   async click(selector, s) {
     const el = document.querySelector(selector)
     if (!el) throw new Error(`demo: nothing matches ${selector}`)
+    el.scrollIntoView({ block: 'nearest' })
     const r = el.getBoundingClientRect()
     await this.moveTo(r.left + r.width * 0.5, r.top + r.height * 0.55)
     el.classList.add('pressed')
     const press = this.press()
     await this.sleep(90)
     el.classList.remove('pressed')
-    el.click()
+    // Panels re-render after edits; click whatever now matches the selector.
+    ;(document.querySelector(selector) || el).click()
     await this.idle()
     if (s.select === 'created') {
       const last = this.app.scene.objects.at(-1)
@@ -206,6 +213,8 @@ export class DemoRunner {
 
   async type(selector, text, cps = 28) {
     const el = document.querySelector(selector)
+    if (!el) throw new Error(`demo: nothing matches ${selector}`)
+    el.scrollIntoView({ block: 'nearest' })
     el.value = ''
     let typed = ''
     for (const ch of text) {
@@ -215,6 +224,32 @@ export class DemoRunner {
       await this.sleep(1000 / cps)
     }
     el.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+
+  /** Drag a range input's thumb to `to`, then commit it like a mouse release. */
+  async slide(s) {
+    const el = document.querySelector(s.slide)
+    if (!el) throw new Error(`demo: nothing matches ${s.slide}`)
+    el.scrollIntoView({ block: 'nearest' })
+    const min = Number(el.min)
+    const max = Number(el.max)
+    const from = Number(el.value)
+    const r = el.getBoundingClientRect()
+    const x = (v) => r.left + 8 + ((v - min) / (max - min)) * (r.width - 16)
+    const y = r.top + r.height / 2
+    await this.moveTo(x(from), y)
+    this.press()
+    const label = el.parentElement.querySelector('b')
+    await this.app.animator.add('slide', s.ms ?? 900, (t) => {
+      const v = from + (s.to - from) * t
+      el.value = String(v)
+      if (label) label.textContent = String(Math.round(Number(el.value) * 100) / 100)
+      this.pos = { x: x(Number(el.value)), y }
+      this.placeCursor()
+    })
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    await this.idle()
+    if (s.after) await this.sleep(s.after)
   }
 
   // -- agent replays ----------------------------------------------------------

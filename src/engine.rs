@@ -6,15 +6,19 @@
 //! undo step.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use glam::{DMat4, DQuat, DVec3, EulerRot};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::modifiers::{self, Modifier};
+
 pub type Vec3 = [f64; 3];
 
 const MAX_OBJECTS: usize = 2_000;
-const MAX_FACES: usize = 250_000;
+pub const MAX_FACES: usize = 250_000;
 const MAX_NAME: usize = 80;
 const HISTORY_LIMIT: usize = 200;
 
@@ -85,7 +89,11 @@ pub struct Object {
     pub kind: String,
     pub transform: Transform,
     pub material: Material,
+    /// Editable base mesh. Modifiers are evaluated on top of it.
     pub mesh: Mesh,
+    /// Non-destructive modifier stack, evaluated in order.
+    #[serde(default)]
+    pub modifiers: Vec<Modifier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -304,6 +312,34 @@ pub enum Command {
         count: u32,
         offset: Vec3,
     },
+    /// Move a polygon's corners toward its centre by `fraction` (0-1),
+    /// adding a ring of quads. Combine with `extrude` for panels and bosses.
+    Inset {
+        id: ObjRef,
+        face: usize,
+        fraction: f64,
+    },
+    /// Append a modifier, or insert it at `index`.
+    AddModifier {
+        id: ObjRef,
+        modifier: Modifier,
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Replace the modifier at `index`.
+    SetModifier {
+        id: ObjRef,
+        index: usize,
+        modifier: Modifier,
+    },
+    RemoveModifier {
+        id: ObjRef,
+        index: usize,
+    },
+    /// Bake the modifier stack into the base mesh and clear it.
+    ApplyModifiers {
+        id: ObjRef,
+    },
     /// Remove every object.
     Clear {},
 }
@@ -345,12 +381,18 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
+impl EngineError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            command_index: None,
+            stale: false,
+        }
+    }
+}
+
 fn err<T>(message: impl Into<String>) -> Result<T, EngineError> {
-    Err(EngineError {
-        message: message.into(),
-        command_index: None,
-        stale: false,
-    })
+    Err(EngineError::new(message))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -363,11 +405,31 @@ pub struct ApplyResult {
 // Editor (scene + history)
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone)]
+struct Evaluated {
+    fingerprint: u64,
+    mesh: Arc<Mesh>,
+}
+
 #[derive(Debug, Default)]
 pub struct Editor {
     scene: Scene,
     undo: Vec<Scene>,
     redo: Vec<Scene>,
+    /// Evaluated meshes for objects with modifiers, reused while unchanged.
+    evaluated: HashMap<u64, Evaluated>,
+}
+
+fn fingerprint(o: &Object) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for v in &o.mesh.vertices {
+        v.map(f64::to_bits).hash(&mut h);
+    }
+    o.mesh.faces.hash(&mut h);
+    serde_json::to_string(&o.modifiers)
+        .unwrap_or_default()
+        .hash(&mut h);
+    h.finish()
 }
 
 impl Editor {
@@ -377,6 +439,39 @@ impl Editor {
 
     pub fn scene(&self) -> &Scene {
         &self.scene
+    }
+
+    /// The mesh an object displays: its base mesh run through its modifiers.
+    pub fn evaluated<'a>(&'a self, o: &'a Object) -> &'a Mesh {
+        match self.evaluated.get(&o.id) {
+            Some(e) if !o.modifiers.is_empty() => &e.mesh,
+            _ => &o.mesh,
+        }
+    }
+
+    /// Evaluate every modifier stack in `scene`, reusing unchanged results.
+    fn evaluate_all(&self, scene: &Scene) -> Result<HashMap<u64, Evaluated>, EngineError> {
+        let mut out = HashMap::new();
+        for o in scene.objects.iter().filter(|o| !o.modifiers.is_empty()) {
+            let fp = fingerprint(o);
+            let entry =
+                match self.evaluated.get(&o.id) {
+                    Some(e) if e.fingerprint == fp => e.clone(),
+                    _ => Evaluated {
+                        fingerprint: fp,
+                        mesh: Arc::new(modifiers::evaluate(&o.mesh, &o.modifiers).map_err(
+                            |e| EngineError::new(format!("{:?}: {}", o.name, e.message)),
+                        )?),
+                    },
+                };
+            out.insert(o.id, entry);
+        }
+        Ok(out)
+    }
+
+    fn refresh_evaluated(&mut self) {
+        // Scenes in history were valid when committed, so this cannot fail.
+        self.evaluated = self.evaluate_all(&self.scene).unwrap_or_default();
     }
 
     pub fn can_undo(&self) -> bool {
@@ -411,7 +506,9 @@ impl Editor {
                 e
             })?;
         }
+        let evaluated = self.evaluate_all(&next)?;
         self.commit(next);
+        self.evaluated = evaluated;
         Ok(ApplyResult {
             revision: self.scene.revision,
             created,
@@ -421,7 +518,9 @@ impl Editor {
     /// Replace the whole scene (e.g. opening a file). Undoable.
     pub fn load(&mut self, scene: Scene) -> Result<u64, EngineError> {
         validate_scene(&scene)?;
+        let evaluated = self.evaluate_all(&scene)?;
         self.commit(scene);
+        self.evaluated = evaluated;
         Ok(self.scene.revision)
     }
 
@@ -441,6 +540,7 @@ impl Editor {
         previous.revision = self.scene.revision + 1;
         let current = std::mem::replace(&mut self.scene, previous);
         self.redo.push(current);
+        self.refresh_evaluated();
         Some(self.scene.revision)
     }
 
@@ -449,6 +549,7 @@ impl Editor {
         next.revision = self.scene.revision + 1;
         let current = std::mem::replace(&mut self.scene, next);
         self.undo.push(current);
+        self.refresh_evaluated();
         Some(self.scene.revision)
     }
 
@@ -511,6 +612,7 @@ fn apply_command(
                 transform,
                 material,
                 mesh,
+                modifiers: Vec::new(),
             });
             scene.next_id += 1;
             created.push(id);
@@ -588,6 +690,55 @@ fn apply_command(
                 created.push(new_id);
                 source = scene.objects.len() - 1;
             }
+        }
+        Command::Inset { id, face, fraction } => {
+            let i = resolve(scene, id)?;
+            if !(fraction.is_finite() && *fraction > 0.0 && *fraction < 1.0) {
+                return err("fraction must be between 0 and 1 (exclusive)");
+            }
+            inset(&mut scene.objects[i].mesh, *face, *fraction)?;
+        }
+        Command::AddModifier {
+            id,
+            modifier,
+            index,
+        } => {
+            let i = resolve(scene, id)?;
+            modifier.validate()?;
+            let stack = &mut scene.objects[i].modifiers;
+            if stack.len() >= 16 {
+                return err("an object can have at most 16 modifiers");
+            }
+            let at = index.unwrap_or(stack.len());
+            if at > stack.len() {
+                return err(format!("modifier index {at} is out of range"));
+            }
+            stack.insert(at, modifier.clone());
+        }
+        Command::SetModifier {
+            id,
+            index,
+            modifier,
+        } => {
+            let i = resolve(scene, id)?;
+            modifier.validate()?;
+            let Some(slot) = scene.objects[i].modifiers.get_mut(*index) else {
+                return err(format!("no modifier at index {index}"));
+            };
+            *slot = modifier.clone();
+        }
+        Command::RemoveModifier { id, index } => {
+            let i = resolve(scene, id)?;
+            if *index >= scene.objects[i].modifiers.len() {
+                return err(format!("no modifier at index {index}"));
+            }
+            scene.objects[i].modifiers.remove(*index);
+        }
+        Command::ApplyModifiers { id } => {
+            let i = resolve(scene, id)?;
+            let o = &mut scene.objects[i];
+            o.mesh = modifiers::evaluate(&o.mesh, &o.modifiers)?;
+            o.modifiers.clear();
         }
         Command::Clear {} => scene.objects.clear(),
     }
@@ -788,11 +939,11 @@ pub struct Bounds {
     pub max: Vec3,
 }
 
-pub fn world_bounds(o: &Object) -> Option<Bounds> {
+pub fn world_bounds(o: &Object, mesh: &Mesh) -> Option<Bounds> {
     let m = o.transform.matrix();
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
-    for v in &o.mesh.vertices {
+    for v in &mesh.vertices {
         let p = m.transform_point3(DVec3::from(*v)).to_array();
         for k in 0..3 {
             min[k] = min[k].min(p[k]);
@@ -803,14 +954,16 @@ pub fn world_bounds(o: &Object) -> Option<Bounds> {
 }
 
 /// Compact scene description without mesh data, for agents and the chat prompt.
-pub fn context(scene: &Scene) -> serde_json::Value {
+pub fn context(ed: &Editor) -> serde_json::Value {
+    let scene = ed.scene();
     let mut scene_min = [f64::INFINITY; 3];
     let mut scene_max = [f64::NEG_INFINITY; 3];
     let objects: Vec<_> = scene
         .objects
         .iter()
         .map(|o| {
-            let bounds = world_bounds(o);
+            let mesh = ed.evaluated(o);
+            let bounds = world_bounds(o, mesh);
             if let Some(b) = &bounds {
                 for k in 0..3 {
                     scene_min[k] = scene_min[k].min(b.min[k]);
@@ -823,8 +976,10 @@ pub fn context(scene: &Scene) -> serde_json::Value {
                 "kind": o.kind,
                 "transform": o.transform,
                 "material": o.material,
-                "vertex_count": o.mesh.vertices.len(),
-                "face_count": o.mesh.faces.len(),
+                "modifiers": o.modifiers,
+                "base_face_count": o.mesh.faces.len(),
+                "vertex_count": mesh.vertices.len(),
+                "face_count": mesh.faces.len(),
                 "bounds": bounds,
             })
         })
@@ -842,10 +997,11 @@ pub fn context(scene: &Scene) -> serde_json::Value {
     })
 }
 
-pub fn export_obj(scene: &Scene) -> String {
+pub fn export_obj(ed: &Editor) -> String {
     let mut out = String::from("# Exported from Tatara\n");
     let mut base = 1usize;
-    for o in &scene.objects {
+    for o in &ed.scene().objects {
+        let mesh = ed.evaluated(o);
         let m = o.transform.matrix();
         let name: String = o
             .name
@@ -853,13 +1009,13 @@ pub fn export_obj(scene: &Scene) -> String {
             .map(|c| if c.is_whitespace() { '_' } else { c })
             .collect();
         out.push_str(&format!("o {name}\n"));
-        for v in &o.mesh.vertices {
+        for v in &mesh.vertices {
             let p = m.transform_point3(DVec3::from(*v));
             out.push_str(&format!("v {:.6} {:.6} {:.6}\n", p.x, p.y, p.z));
         }
         // A mirrored transform flips winding; keep normals outward.
         let flip = m.determinant() < 0.0;
-        for f in &o.mesh.faces {
+        for f in &mesh.faces {
             out.push('f');
             let mut idx: Vec<u32> = f.clone();
             if flip {
@@ -870,7 +1026,7 @@ pub fn export_obj(scene: &Scene) -> String {
             }
             out.push('\n');
         }
-        base += o.mesh.vertices.len();
+        base += mesh.vertices.len();
     }
     out
 }
@@ -1170,6 +1326,31 @@ pub fn face_normal(mesh: &Mesh, face: &[u32]) -> Vec3 {
 }
 
 pub fn extrude(mesh: &mut Mesh, face: usize, distance: f64) -> Result<(), EngineError> {
+    let poly = face_loop(mesh, face)?;
+    let n = face_normal(mesh, &poly);
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if len < 1e-12 {
+        return err("cannot extrude a degenerate face");
+    }
+    let offset = scale(n, distance / len);
+    ring_face(mesh, face, &poly, |v| add(v, offset));
+    Ok(())
+}
+
+pub fn inset(mesh: &mut Mesh, face: usize, fraction: f64) -> Result<(), EngineError> {
+    let poly = face_loop(mesh, face)?;
+    let centre = scale(
+        poly.iter()
+            .fold([0.0; 3], |acc, &i| add(acc, mesh.vertices[i as usize])),
+        1.0 / poly.len() as f64,
+    );
+    ring_face(mesh, face, &poly, |v| {
+        add(v, scale(add(centre, scale(v, -1.0)), fraction))
+    });
+    Ok(())
+}
+
+fn face_loop(mesh: &Mesh, face: usize) -> Result<Vec<u32>, EngineError> {
     let Some(poly) = mesh.faces.get(face).cloned() else {
         return err(format!(
             "face {face} does not exist (mesh has {} faces)",
@@ -1179,15 +1360,15 @@ pub fn extrude(mesh: &mut Mesh, face: usize, distance: f64) -> Result<(), Engine
     if mesh.faces.len() + poly.len() > MAX_FACES {
         return err(format!("mesh would exceed {MAX_FACES} faces"));
     }
-    let n = face_normal(mesh, &poly);
-    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-    if len < 1e-12 {
-        return err("cannot extrude a degenerate face");
-    }
-    let offset = scale(n, distance / len);
+    Ok(poly)
+}
+
+/// Replace a face with a moved copy of itself joined by a ring of quads.
+/// The face keeps its index; the side quads are appended in edge order.
+fn ring_face(mesh: &mut Mesh, face: usize, poly: &[u32], place: impl Fn(Vec3) -> Vec3) {
     let base = mesh.vertices.len() as u32;
-    for &i in &poly {
-        let v = add(mesh.vertices[i as usize], offset);
+    for &i in poly {
+        let v = place(mesh.vertices[i as usize]);
         mesh.vertices.push(v);
     }
     let k = poly.len();
@@ -1197,7 +1378,6 @@ pub fn extrude(mesh: &mut Mesh, face: usize, distance: f64) -> Result<(), Engine
         mesh.faces.push(vec![a, b, b2, a2]);
     }
     mesh.faces[face] = (base..base + k as u32).collect();
-    Ok(())
 }
 
 /// One level of Catmull-Clark subdivision. Boundaries use the crease rule.
@@ -1544,10 +1724,10 @@ mod tests {
         assert_eq!(s.objects.len(), 4);
         assert_eq!(s.objects[3].transform.translation, [6.0, 0.0, 0.0]);
         assert_eq!(s.objects[3].name, "Cube.003");
-        let obj = export_obj(s);
+        let obj = export_obj(&ed);
         assert_eq!(obj.lines().filter(|l| l.starts_with("v ")).count(), 32);
         assert!(obj.contains("f 29 30 31 32"));
-        let ctx = context(s);
+        let ctx = context(&ed);
         assert_eq!(ctx["bounds"]["max"][0], 6.5);
     }
 
@@ -1562,6 +1742,7 @@ mod tests {
             transform: Transform::default(),
             material: Material::default(),
             mesh: cube(1.0),
+            modifiers: Vec::new(),
         });
         assert!(ed.load(scene.clone()).is_err(), "id must be below next_id");
         scene.next_id = 6;
@@ -1570,9 +1751,84 @@ mod tests {
     }
 
     #[test]
+    fn inset_keeps_mesh_closed() {
+        let mut m = cube(2.0);
+        inset(&mut m, 4, 0.5).unwrap();
+        assert_closed(&m);
+        assert!((volume(&m) - 8.0).abs() < 1e-9);
+        assert_eq!(m.faces.len(), 10);
+        extrude(&mut m, 4, 1.0).unwrap();
+        assert!((volume(&m) - 9.0).abs() < 1e-9, "1x1 boss of height 1");
+    }
+
+    #[test]
+    fn modifier_commands_are_non_destructive_and_undoable() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "name": "Box", "primitive": {"kind": "cube"}},
+            {"op": "add_modifier", "id": "Box", "modifier": {"type": "array", "count": 3, "offset": [0, 1.5, 0]}},
+            {"op": "add_modifier", "id": "Box", "modifier": {"type": "subdivision", "levels": 1}}
+        ]})))
+        .unwrap();
+        let o = &ed.scene().objects[0];
+        assert_eq!(o.mesh.faces.len(), 6, "base mesh is untouched");
+        assert_eq!(ed.evaluated(o).faces.len(), 72);
+        assert_eq!(
+            context(&ed)["bounds"]["max"][1],
+            serde_json::json!(
+                ed.evaluated(o)
+                    .vertices
+                    .iter()
+                    .map(|v| v[1])
+                    .fold(f64::MIN, f64::max)
+            )
+        );
+
+        // Editing the base re-evaluates the stack.
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "extrude", "id": "Box", "face": 4, "distance": 0.5}
+        ]})))
+        .unwrap();
+        let o = &ed.scene().objects[0];
+        assert_eq!(ed.evaluated(o).faces.len(), 3 * 10 * 4);
+
+        // An over-budget stack is rejected atomically.
+        let before = ed.scene().clone();
+        assert!(ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "set_modifier", "id": "Box", "index": 1, "modifier": {"type": "subdivision", "levels": 4}},
+            {"op": "set_modifier", "id": "Box", "index": 0, "modifier": {"type": "array", "count": 100, "offset": [1, 0, 0]}}
+        ]}))).is_err());
+        assert_eq!(ed.scene(), &before);
+
+        ed.undo().unwrap();
+        let o = &ed.scene().objects[0];
+        assert_eq!(
+            ed.evaluated(o).faces.len(),
+            72,
+            "undo restores the evaluated mesh"
+        );
+
+        ed.apply(&batch(
+            serde_json::json!({"commands": [{"op": "apply_modifiers", "id": "Box"}]}),
+        ))
+        .unwrap();
+        let o = &ed.scene().objects[0];
+        assert!(o.modifiers.is_empty());
+        assert_eq!(o.mesh.faces.len(), 72);
+    }
+
+    #[test]
     fn schema_lists_operations() {
         let s = command_schema().to_string();
-        for op in ["add", "extrude", "subdivide", "vessel"] {
+        for op in [
+            "add",
+            "extrude",
+            "subdivide",
+            "vessel",
+            "inset",
+            "add_modifier",
+            "twist",
+        ] {
             assert!(s.contains(op));
         }
     }

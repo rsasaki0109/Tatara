@@ -36,6 +36,9 @@ function buildGeometry(vertices, faces) {
   return { geometry, triFace }
 }
 
+/** The mesh an object displays: evaluated through its modifier stack, if any. */
+export const displayMesh = (o) => o.display || o.mesh
+
 function polygonEdges(vertices, faces) {
   const seen = new Set()
   const pos = []
@@ -224,18 +227,27 @@ export class Viewport {
         depthWrite: false,
       }),
     )
-    for (const x of [wire, outline, faceMark]) {
+    // The cage is the editable base mesh: invisible for picking faces, drawn
+    // as orange lines when a modifier stack changes what is displayed.
+    const cage = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ visible: false }))
+    cage.userData.id = o.id
+    const cageLines = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color: SELECT, transparent: true, opacity: 0.7, depthTest: false }),
+    )
+    for (const x of [wire, outline, faceMark, cageLines]) {
       x.visible = false
       x.renderOrder = 2
     }
-    group.add(mesh, wire, outline, faceMark)
+    cageLines.renderOrder = 3
+    group.add(mesh, wire, outline, faceMark, cage, cageLines)
     this.root.add(group)
-    const node = { id: o.id, group, mesh, wire, outline, faceMark, data: null, key: null, triFace: [] }
+    const node = { id: o.id, group, mesh, wire, outline, faceMark, cage, cageLines, data: o, key: null, cageKey: null, triFace: [] }
     this.nodes.set(o.id, node)
     this.setTransform(node.group, o.transform)
     this.setMaterial(node, o.material)
-    this.setMesh(node, o.mesh)
-    node.data = o
+    this.setMesh(node, displayMesh(o))
+    this.setCage(node, o.mesh)
     if (animate) {
       const target = node.group.scale.clone()
       this.anim.add(`tf:${o.id}`, 520, (t) => node.group.scale.copy(target).multiplyScalar(Math.max(0.0001, t)), ease.back)
@@ -245,9 +257,10 @@ export class Viewport {
   update(node, o, animate) {
     const prev = node.data
     node.data = o
-    const key = meshKey(o.mesh)
+    const plain = !o.display && !prev.display
+    const key = meshKey(displayMesh(o))
     if (key !== node.key) {
-      const morph = animate && this.morphStart(prev.mesh, o.mesh)
+      const morph = animate && plain && this.morphStart(prev.mesh, o.mesh)
       if (morph) {
         const end = o.mesh.vertices
         const verts = end.map((v) => v.slice())
@@ -256,13 +269,16 @@ export class Viewport {
             const s = morph[i]
             for (let k = 0; k < 3; k++) verts[i][k] = s[k] + (end[i][k] - s[k]) * t
           }
-          this.setMesh(node, { vertices: verts, faces: o.mesh.faces }, t < 1 ? null : key)
+          const live = { vertices: verts, faces: o.mesh.faces }
+          this.setMesh(node, live, t < 1 ? null : key)
+          this.setCage(node, live, t < 1 ? null : meshKey(o.mesh))
         })
       } else {
-        this.setMesh(node, o.mesh, key)
+        this.setMesh(node, displayMesh(o), key)
         if (animate) this.flash(node)
       }
     }
+    if (meshKey(o.mesh) !== node.cageKey && !this.anim.has(`mesh:${o.id}`)) this.setCage(node, o.mesh)
     const tf = o.transform
     const g = node.group
     const same =
@@ -352,17 +368,26 @@ export class Viewport {
   }
 
   setMesh(node, mesh, key = meshKey(mesh)) {
-    const { geometry, triFace } = buildGeometry(mesh.vertices, mesh.faces)
+    const { geometry } = buildGeometry(mesh.vertices, mesh.faces)
     node.mesh.geometry.dispose()
     node.mesh.geometry = geometry
-    node.triFace = triFace
     node.wire.geometry.dispose()
     node.wire.geometry = polygonEdges(mesh.vertices, mesh.faces)
     node.outline.geometry.dispose()
     node.outline.geometry = new THREE.EdgesGeometry(geometry, 32)
     if (key) node.key = key
-    node.liveMesh = mesh
-    if (this.selected === node.id && this.face != null) this.setSelection(node.id, this.face)
+  }
+
+  setCage(node, base, key = meshKey(base)) {
+    const { geometry, triFace } = buildGeometry(base.vertices, base.faces)
+    node.cage.geometry.dispose()
+    node.cage.geometry = geometry
+    node.triFace = triFace
+    node.cageLines.geometry.dispose()
+    node.cageLines.geometry = polygonEdges(base.vertices, base.faces)
+    node.baseMesh = base
+    if (key) node.cageKey = key
+    if (this.selected === node.id) this.setSelection(node.id, this.face)
   }
 
   setSelection(id, face) {
@@ -371,7 +396,8 @@ export class Viewport {
     for (const node of this.nodes.values()) {
       const on = node.id === this.selected
       node.outline.visible = on
-      const mesh = node.liveMesh || node.data.mesh
+      node.cageLines.visible = on && Boolean(node.data.display)
+      const mesh = node.baseMesh
       const showFace = on && this.face != null && this.face < mesh.faces.length
       node.faceMark.visible = showFace
       if (showFace) {
@@ -401,7 +427,7 @@ export class Viewport {
     const rect = this.renderer.domElement.getBoundingClientRect()
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1)
     this.raycaster.setFromCamera(ndc, this.camera)
-    const meshes = [...this.nodes.values()].map((n) => n.mesh)
+    const meshes = [...this.nodes.values()].map((n) => n.cage)
     const hit = this.raycaster.intersectObjects(meshes, false)[0]
     if (!hit) return null
     const id = hit.object.userData.id
@@ -461,7 +487,7 @@ export class Viewport {
         new THREE.Quaternion().setFromEuler(new THREE.Euler(...tf.rotation, 'XYZ')),
         new THREE.Vector3(...tf.scale),
       )
-      for (const v of node.data.mesh.vertices) box.expandByPoint(new THREE.Vector3(...v).applyMatrix4(m))
+      for (const v of displayMesh(node.data).vertices) box.expandByPoint(new THREE.Vector3(...v).applyMatrix4(m))
     }
     return box
   }
@@ -485,7 +511,7 @@ export class Viewport {
     const node = this.nodes.get(id)
     if (!node) return null
     node.group.updateMatrixWorld(true)
-    const mesh = node.liveMesh || node.data.mesh
+    const mesh = node.baseMesh
     const idx = face != null ? mesh.faces[face] : null
     let p
     if (idx) {

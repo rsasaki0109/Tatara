@@ -17,6 +17,12 @@ const P = {
   exportObj: '<path d="M8 10V2M4.8 5 8 1.8 11.2 5"/><path d="M2.6 9.4v3.2c0 .8.6 1.4 1.4 1.4h8c.8 0 1.4-.6 1.4-1.4V9.4"/>',
   wire: '<path d="M8 1.8 13.6 5v6L8 14.2 2.4 11V5z"/><path d="M2.4 5 8 8.2 13.6 5M8 8.2v6M2.4 11 13.6 5M2.4 5l11.2 6" opacity=".55"/>',
   frame: '<path d="M2 5.4V2h3.4M10.6 2H14v3.4M14 10.6V14h-3.4M5.4 14H2v-3.4"/><circle cx="8" cy="8" r="2.2"/>',
+  inset: '<rect x="2" y="2" width="12" height="12" rx="1.5"/><rect x="5.2" y="5.2" width="5.6" height="5.6" rx=".8"/><path d="M2 2l3.2 3.2M14 2l-3.2 3.2M2 14l3.2-3.2M14 14l-3.2-3.2" opacity=".6"/>',
+  'mod-mirror': '<path d="M8 1.5v13" stroke-dasharray="1.6 1.6"/><path d="M6 4 2.5 12H6zM10 4l3.5 8H10z"/>',
+  'mod-subdivision': '<rect x="2.2" y="2.2" width="11.6" height="11.6" rx="4.5"/><path d="M8 2.2v11.6M2.2 8h11.6" opacity=".55"/>',
+  'mod-array': '<rect x="1.6" y="9.6" width="4" height="4" rx=".8"/><rect x="6" y="5.8" width="4" height="4" rx=".8"/><rect x="10.4" y="2" width="4" height="4" rx=".8"/>',
+  'mod-twist': '<path d="M4 2c5 2 3 4 8 4M4 6c5 2 3 4 8 4M4 10c5 2 3 4 8 4"/>',
+  'mod-taper': '<path d="M3 14h10L10 2H6z"/>',
   cursor: '<path d="M3.5 2.5 12.5 8l-4 1-2 4.5z"/>',
 }
 

@@ -209,4 +209,40 @@ export const mcp = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp }
+export const modifiers = {
+  title: 'Modifier stack',
+  width: 800,
+  gizmo: false,
+  camera: { azimuth: 30, elevation: 20, distance: 4.6, target: [0, 0.3, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Flatten a cube into a slab', hint: 'transform · scale' },
+    { click: '[data-add=cube]', after: 150 },
+    { type: '0.3', into: '[data-field=scale][data-i="1"]', cps: 14, after: 150 },
+    { caption: 'Inset the top face, then extrude it', hint: 'inset · extrude' },
+    { pick: 'Cube', face: 4 },
+    { click: '#edit-group [data-action=inset]', after: 100 },
+    { type: '0.6', into: '#p-dist', cps: 18 },
+    { click: '#edit-group [data-action=extrude]', after: 200 },
+    { caption: 'Stack it with non-destructive modifiers', hint: 'array · twist · taper' },
+    { click: '[data-add-mod=array]', after: 100 },
+    { camera: { target: [0, 2.0, 0], distance: 11, elevation: 14 }, ms: 1500, async: true },
+    { type: '9', into: '[data-mod="0"][data-field=count]', cps: 10, after: 250 },
+    { click: '[data-add-mod=twist]', after: 100 },
+    { slide: '[data-mod="1"][data-field=angle]', to: 270, after: 150 },
+    { click: '[data-add-mod=taper]', after: 100 },
+    { slide: '[data-mod="2"][data-field=factor]', to: 0.35, ms: 700, after: 150 },
+    { caption: 'Smooth the whole stack', hint: 'subdivision' },
+    { click: '[data-add-mod=subdivision]', after: 400 },
+    { caption: 'Edit the base mesh — every layer follows', hint: 'extrude · face 4' },
+    { pick: 'Cube', face: 4 },
+    { click: '#edit-group [data-action=extrude]', after: 400 },
+    { click: '[data-glaze^="#b5643c"]', after: 200 },
+    { cursor: false },
+    { spin: 26 },
+    { camera: { elevation: 8, distance: 10 }, ms: 1500 },
+    { wait: 800 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers }

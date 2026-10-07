@@ -90,6 +90,16 @@ try {
   const [obj] = await Promise.all([page.waitForEvent('download'), page.click('[data-action=exportObj]')])
   check(fs.readFileSync(await obj.path(), 'utf8').includes('o Cube'), 'OBJ export downloads geometry')
 
+  await page.click('#outliner li')
+  await page.click('[data-add-mod=array]')
+  await page.waitForFunction(() => /30 faces/.test(document.querySelector('#status-mesh').textContent))
+  await page.click('[data-add-mod=subdivision]')
+  await page.waitForFunction(() => /120 faces/.test(document.querySelector('#status-mesh').textContent))
+  check((await faces()) === 120, 'modifier stack evaluates array → subdivision')
+  await page.click('[data-mod-apply]')
+  await page.waitForFunction(() => !document.querySelector('[data-mod-apply]'))
+  check((await faces()) === 120, 'apply bakes the stack into the base mesh')
+
   await page.setViewportSize({ width: 390, height: 844 })
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
   check(!overflow, 'phone layout has no horizontal scroll')

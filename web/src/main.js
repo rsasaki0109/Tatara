@@ -1,7 +1,7 @@
 import './style.css'
 import { createApi } from './api.js'
 import { Animator, Clock } from './clock.js'
-import { Viewport } from './viewport.js'
+import { Viewport, displayMesh } from './viewport.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
@@ -58,6 +58,7 @@ const app = {
   inflight: 0,
   activity: [],
   extrudeDistance: 0.3,
+  insetFraction: 0.3,
 }
 
 const viewport = new Viewport($('viewport'), clock, animator, {
@@ -98,7 +99,14 @@ async function refresh(animate = true) {
 function summarize(commands) {
   const parts = []
   for (const c of commands) {
-    const label = c.op === 'add' ? `add ${c.primitive.kind}` : c.op
+    const label =
+      c.op === 'add'
+        ? `add ${c.primitive.kind}`
+        : c.op === 'add_modifier'
+          ? `+ ${c.modifier.type}`
+          : c.op === 'set_modifier'
+            ? `${c.modifier.type}`
+            : c.op
     const last = parts.at(-1)
     if (last && last.label === label) last.n++
     else parts.push({ label, n: 1 })
@@ -181,6 +189,24 @@ const actions = {
     if (app.selected == null || app.face == null) return toast('Alt+click a face to extrude it')
     return run([{ op: 'extrude', id: app.selected, face: app.face, distance }])
   },
+  inset(fraction = app.insetFraction) {
+    if (app.selected == null || app.face == null) return toast('Alt+click a face to inset it')
+    return run([{ op: 'inset', id: app.selected, face: app.face, fraction }])
+  },
+  addModifier(type) {
+    const o = objectById(app.selected)
+    if (!o) return toast('Select an object first')
+    return run([{ op: 'add_modifier', id: o.id, modifier: defaultModifier(type, o) }])
+  },
+  setModifier(index, modifier) {
+    return run([{ op: 'set_modifier', id: app.selected, index, modifier }])
+  },
+  removeModifier(index) {
+    return run([{ op: 'remove_modifier', id: app.selected, index }])
+  },
+  applyModifiers() {
+    return run([{ op: 'apply_modifiers', id: app.selected }])
+  },
   subdivide() {
     if (app.selected == null) return toast('Select an object first')
     return run([{ op: 'subdivide', id: app.selected, levels: 1 }])
@@ -256,6 +282,7 @@ $('add-group').innerHTML =
     .join('')
 $('edit-group').innerHTML =
   button('extrude', 'Extrude', 'Extrude selected face (E)') +
+  button('inset', 'Inset', 'Inset selected face (I)') +
   button('subdivide', 'Subdivide', 'Catmull-Clark subdivision') +
   button('duplicate', 'Duplicate', 'Duplicate (Shift+D)') +
   button('delete', 'Delete', 'Delete (X)')
@@ -289,7 +316,7 @@ const KIND_ICON = { cube: 'cube', sphere: 'sphere', cylinder: 'cylinder', torus:
 
 function render() {
   const { objects } = app.scene
-  const faces = objects.reduce((n, o) => n + o.mesh.faces.length, 0)
+  const faces = objects.reduce((n, o) => n + displayMesh(o).faces.length, 0)
   $('object-count').textContent = objects.length ? String(objects.length) : ''
   $('outliner-empty').style.display = objects.length ? 'none' : ''
   $('outliner').innerHTML = objects
@@ -305,6 +332,7 @@ function render() {
   const sel = objectById(app.selected)
   for (const a of ['duplicate', 'delete', 'subdivide']) document.querySelector(`[data-action=${a}]`).disabled = !sel
   document.querySelector('[data-action=extrude]').disabled = !sel || app.face == null
+  document.querySelector('[data-action=inset]').disabled = !sel || app.face == null
   $('wire-btn').classList.toggle('on', app.wireframe)
   $('ai-badge').textContent = app.replaying ? 'replay' : app.ai ? 'on' : 'off'
   $('ai-badge').classList.toggle('on', app.ai || Boolean(app.replaying))
@@ -328,7 +356,9 @@ let renderedKey = ''
 
 function renderProperties(o) {
   const el = $('properties')
-  const key = o ? JSON.stringify([o.id, o.name, o.transform, o.material, o.mesh.faces.length, app.face]) : 'none'
+  const key = o
+    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.mesh.faces.length, displayMesh(o).faces.length, o.modifiers, app.face])
+    : 'none'
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
   renderedKey = key
@@ -349,7 +379,7 @@ function renderProperties(o) {
     <div class="card">
       <div class="card-title">Object <span class="muted small">#${o.id} · ${o.kind}</span></div>
       <input class="name-input" id="p-name" value="${escapeHtml(o.name)}" spellcheck="false">
-      <div class="meta">${o.mesh.vertices.length.toLocaleString('en-US')} vertices · ${o.mesh.faces.length.toLocaleString('en-US')} faces</div>
+      <div class="meta">${num(displayMesh(o).vertices.length)} vertices · ${num(displayMesh(o).faces.length)} faces${o.display ? ` <span class="muted">(base ${num(o.mesh.faces.length)})</span>` : ''}</div>
     </div>
     <div class="card">
       <div class="card-title">Transform</div>
@@ -371,8 +401,77 @@ function renderProperties(o) {
         <label class="inline">Distance <input type="text" inputmode="decimal" id="p-dist" value="${app.extrudeDistance}"></label>
         <button class="small-btn" data-action="extrude" ${app.face == null ? 'disabled' : ''}>${icon('extrude')}Extrude</button>
       </div>
-      <div class="row"><button class="small-btn wide" data-action="subdivide">${icon('subdivide')}Subdivide</button><button class="small-btn wide" data-action="duplicate">${icon('duplicate')}Duplicate</button></div>
+      <div class="row">
+        <label class="inline">Fraction <input type="text" inputmode="decimal" id="p-inset" value="${app.insetFraction}"></label>
+        <button class="small-btn" data-action="inset" ${app.face == null ? 'disabled' : ''}>${icon('inset')}Inset</button>
+      </div>
+    </div>
+    <div class="card" id="modifiers">
+      <div class="card-title">Modifiers <span class="muted small">non-destructive</span></div>
+      ${o.modifiers.map(modifierCard).join('')}
+      <div class="mod-add">${MODIFIER_TYPES.map((t) => `<button class="chip" data-add-mod="${t}">+ ${MODIFIER_LABEL[t]}</button>`).join('')}</div>
+      ${o.modifiers.length ? `<button class="small-btn wide" data-mod-apply>${icon('subdivide')}Apply stack to base mesh</button>` : ''}
     </div>`
+}
+
+const num = (n) => n.toLocaleString('en-US')
+
+const MODIFIER_TYPES = ['mirror', 'subdivision', 'array', 'twist', 'taper']
+const MODIFIER_LABEL = { mirror: 'Mirror', subdivision: 'Subdivision', array: 'Array', twist: 'Twist', taper: 'Taper' }
+
+function defaultModifier(type, o) {
+  const xs = o.mesh.vertices.map((v) => v[1])
+  const height = Math.max(...xs) - Math.min(...xs) || 1
+  switch (type) {
+    case 'mirror':
+      return { type, axis: 'x' }
+    case 'subdivision':
+      return { type, levels: 1 }
+    case 'array':
+      return { type, count: 3, offset: [0, Math.round(height * 1.15 * 100) / 100, 0] }
+    case 'twist':
+      return { type, angle: Math.PI / 2 }
+    default:
+      return { type: 'taper', factor: 0.5 }
+  }
+}
+
+function modifierCard(m, i) {
+  const field = (name, value, extra = '') =>
+    `<input type="text" inputmode="decimal" class="mod-num" data-mod="${i}" data-field="${name}" value="${value}" ${extra}>`
+  const segment = (name, options, current) =>
+    `<div class="segment">${options
+      .map((v) => `<button class="${String(v) === String(current) ? 'on' : ''}" data-mod="${i}" data-set="${name}" data-value="${v}">${String(v).toUpperCase()}</button>`)
+      .join('')}</div>`
+  let body = ''
+  if (m.type === 'mirror') body = `<div class="mod-row"><span>Axis</span>${segment('axis', ['x', 'y', 'z'], m.axis)}</div>`
+  if (m.type === 'subdivision') body = `<div class="mod-row"><span>Levels</span>${segment('levels', [1, 2, 3, 4], m.levels)}</div>`
+  if (m.type === 'array') {
+    body =
+      `<div class="mod-row"><span>Count</span>${field('count', m.count)}</div>` +
+      `<div class="vec-row"><span>Offset</span>${m.offset
+        .map((v, k) => `<label class="axis axis-${'xyz'[k]}"><i>${'XYZ'[k]}</i>${field(`offset.${k}`, fmt(v, 3))}</label>`)
+        .join('')}</div>`
+  }
+  if (m.type === 'twist') {
+    const deg = Math.round((m.angle * 180) / Math.PI)
+    body = `<label class="slider"><span>Angle°</span><input type="range" min="-360" max="360" step="5" data-mod="${i}" data-field="angle" value="${deg}"><b>${deg}</b></label>`
+  }
+  if (m.type === 'taper') {
+    body = `<label class="slider"><span>Factor</span><input type="range" min="0" max="2" step="0.05" data-mod="${i}" data-field="factor" value="${m.factor}"><b>${fmt(m.factor)}</b></label>`
+  }
+  return `<div class="mod"><div class="mod-head">${icon(`mod-${m.type}`)}<b>${MODIFIER_LABEL[m.type]}</b><span class="muted small">${i + 1}</span><button class="mod-x" data-mod-remove="${i}" title="Remove">×</button></div>${body}</div>`
+}
+
+function modifierField(m, name, raw) {
+  const v = Number(raw)
+  if (!Number.isFinite(v)) return null
+  const next = structuredClone(m)
+  if (name === 'angle') next.angle = (v * Math.PI) / 180
+  else if (name.startsWith('offset.')) next.offset[Number(name.split('.')[1])] = v
+  else if (name === 'count') next.count = Math.round(v)
+  else next[name] = v
+  return next
 }
 
 $('properties').addEventListener('change', (e) => {
@@ -383,6 +482,17 @@ $('properties').addEventListener('change', (e) => {
   if (target.id === 'p-dist') {
     app.extrudeDistance = Number(target.value) || 0.3
     return
+  }
+  if (target.id === 'p-inset') {
+    const f = Number(target.value)
+    app.insetFraction = f > 0 && f < 1 ? f : 0.3
+    return
+  }
+  if (target.dataset.mod !== undefined) {
+    const i = Number(target.dataset.mod)
+    const next = modifierField(o.modifiers[i], target.dataset.field, target.value)
+    if (!next) return render()
+    return actions.setModifier(i, next).catch(() => {})
   }
   if (target.id === 'p-color') return run([{ op: 'material', id: o.id, color: target.value }]).catch(() => {})
   if (target.id === 'p-rough') return run([{ op: 'material', id: o.id, roughness: Number(target.value) }]).catch(() => {})
@@ -398,6 +508,19 @@ $('properties').addEventListener('change', (e) => {
   }
 })
 $('properties').addEventListener('click', (e) => {
+  const o0 = objectById(app.selected)
+  const addMod = e.target.closest('[data-add-mod]')
+  if (addMod) return actions.addModifier(addMod.dataset.addMod).catch(() => {})
+  const remove = e.target.closest('[data-mod-remove]')
+  if (remove) return actions.removeModifier(Number(remove.dataset.modRemove)).catch(() => {})
+  if (e.target.closest('[data-mod-apply]')) return actions.applyModifiers().catch(() => {})
+  const set = e.target.closest('[data-set]')
+  if (set && o0) {
+    const i = Number(set.dataset.mod)
+    const next = { ...o0.modifiers[i] }
+    next[set.dataset.set] = set.dataset.set === 'levels' ? Number(set.dataset.value) : set.dataset.value
+    return actions.setModifier(i, next).catch(() => {})
+  }
   const g = e.target.closest('[data-glaze]')
   const o = objectById(app.selected)
   if (!g || !o) return
@@ -483,6 +606,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'f') actions.frame()
   else if (k === 'w') actions.wireframe()
   else if (k === 'e') actions.extrude()?.catch?.(() => {})
+  else if (k === 'i') actions.inset()?.catch?.(() => {})
   else if (k === 'd' && e.shiftKey) actions.duplicate()?.catch?.(() => {})
   else if (k === 'delete' || k === 'backspace' || k === 'x') actions.delete()?.catch?.(() => {})
   else if (k === 'escape') select(null)

@@ -9,12 +9,18 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
 
 <table>
   <tr>
-    <td width="33%"><img src="docs/media/modeling.gif" alt="A cube is extruded face by face into a cactus, subdivided with Catmull-Clark, glazed and shown in wireframe"></td>
-    <td width="33%"><img src="docs/media/agent.gif" alt="A chat request becomes a validated command batch that builds a tea set; a second request recolors the cups by name"></td>
-    <td width="33%"><img src="docs/media/mcp.gif" alt="An external agent calls tatara --mcp tools; a stale edit is rejected and undo/redo work from the agent"></td>
+    <td width="50%"><img src="docs/media/modifiers.gif" alt="A slab is inset and extruded, then stacked with array, twist, taper and subdivision modifiers; extruding the base face updates every layer"></td>
+    <td width="50%"><img src="docs/media/modeling.gif" alt="A cube is extruded face by face into a cactus, subdivided with Catmull-Clark, glazed and shown in wireframe"></td>
   </tr>
   <tr>
+    <td><b>Stack</b> — non-destructive modifiers; edit the base and every layer follows.</td>
     <td><b>Model</b> — Alt+click a face, extrude, subdivide, glaze.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/agent.gif" alt="A chat request becomes a validated command batch that builds a tea set; a second request recolors the cups by name"></td>
+    <td width="50%"><img src="docs/media/mcp.gif" alt="An external agent calls tatara --mcp tools; a stale edit is rejected and undo/redo work from the agent"></td>
+  </tr>
+  <tr>
     <td><b>Ask</b> — chat turns into an atomic, undoable command batch.</td>
     <td><b>Connect</b> — any MCP agent edits the scene you are looking at.</td>
   </tr>
@@ -53,7 +59,8 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 
 - **Workspace:** studio lighting with shadows, orbit and zoom, outliner, properties panel, transform gizmo, polygon wireframe, axis widget and a phone layout.
 - **Geometry (Rust):** cube, plane, UV sphere, cylinder or cone, torus, and hollow **vessels** revolved from a smoothed cross section.
-- **Modeling:** transform, glaze presets and PBR material, rename, duplicate, array, delete, per-face extrusion and Catmull-Clark subdivision.
+- **Modeling:** transform, glaze presets and PBR material, rename, duplicate, array, delete, per-face inset and extrusion, and Catmull-Clark subdivision.
+- **Modifier stack:** non-destructive Mirror, Subdivision, Array, Twist and Taper, evaluated in Rust in order. The base mesh stays editable and is drawn as an orange cage. **Apply** bakes the stack into the base mesh.
 - **History:** each batch is one undo step, and an invalid batch changes nothing.
 - **Files:** validated JSON scene save/open, plus OBJ export with transforms applied.
 - **Agents:** a stdio MCP bridge, generated command schemas, scene bounds and optional full mesh reads.
@@ -61,7 +68,7 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
-| Alt + click | Select a face | E | Extrude selected face |
+| Alt + click | Select a face (on the base cage) | E / I | Extrude / inset selected face |
 | G / R / S | Move / rotate / scale gizmo | Shift + D | Duplicate |
 | F | Frame scene | X / Delete | Delete |
 | W | Wireframe | Ctrl/Cmd + Z | Undo (add Shift to redo) |
@@ -114,11 +121,23 @@ curl http://127.0.0.1:3000/api/commands \
 | `add` | `primitive` (`cube`, `plane`, `sphere`, `cylinder`, `torus`, `vessel`), optional `name`, `translation`, `rotation`, `scale`, `color`, `roughness`, `metalness` |
 | `transform` / `material` / `rename` | `id`, plus the fields to change |
 | `duplicate` / `array` | `id`, `offset` (and `count` for `array`) |
-| `extrude` | `id`, `face`, `distance` |
+| `extrude` / `inset` | `id`, `face`, and `distance` or `fraction` (0–1) |
+| `add_modifier` / `set_modifier` / `remove_modifier` | `id`, `modifier` (`mirror`, `subdivision`, `array`, `twist`, `taper`), `index` |
+| `apply_modifiers` | `id`: bake the stack into the base mesh |
 | `subdivide` | `id`, `levels` (1–4) |
 | `delete` / `clear` | `id` / nothing |
 
-`id` accepts a numeric ID or an exact object name. New objects take IDs from the scene's `next_id`, in order.
+`id` accepts a numeric ID or an exact object name. New objects take IDs from the scene's `next_id`, in order. Face indices refer to the base mesh. An extruded or inset face keeps its index, and its four new side faces are appended in edge order, so an agent can chain edits without re-reading the mesh. `get_scene` reports both the base and evaluated face counts, and bounds come from the evaluated mesh.
+
+```json
+{"commands": [
+  {"op": "add", "name": "Tower", "primitive": {"kind": "cube"}, "scale": [1, 0.3, 1]},
+  {"op": "add_modifier", "id": "Tower", "modifier": {"type": "array", "count": 9, "offset": [0, 1.2, 0]}},
+  {"op": "add_modifier", "id": "Tower", "modifier": {"type": "twist", "angle": 4.7}},
+  {"op": "add_modifier", "id": "Tower", "modifier": {"type": "taper", "factor": 0.35}},
+  {"op": "add_modifier", "id": "Tower", "modifier": {"type": "subdivision", "levels": 1}}
+]}
+```
 
 Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj` and `GET /api/events`. The last is a server-sent event stream of revisions.
 
@@ -157,6 +176,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Part | Implementation |
 | --- | --- |
 | Geometry, commands, validation, history, OBJ | Rust: `src/engine.rs` |
+| Modifier stack evaluation | Rust: `src/modifiers.rs` |
 | HTTP API, live events, chat provider | Rust: `src/server.rs` (axum) |
 | Stdio MCP bridge | Rust: `src/mcp.rs` |
 | Editor UI and WebGL presentation | JavaScript + Three.js: `web/src` |
@@ -181,7 +201,7 @@ node scripts/browser-check.mjs   # real-browser editing, history, files, layout 
 
 The aim is a creation suite that surpasses Blender for human and agent collaboration, taken one verifiable step at a time:
 
-1. **Modeling depth:** an edit mode for vertices, edges and faces, inset, bevel, loop cut, booleans and a modifier stack that stays non-destructive.
+1. **Modeling depth:** ~~non-destructive modifier stack~~ ✓, ~~inset~~ ✓, then an edit mode for vertices and edges, bevel, loop cut, booleans and more modifiers (solidify, bevel, boolean).
 2. **Interchange:** glTF import and export, and a browser-only Rust/WASM engine.
 3. **Look development:** a node-based material system, UVs and textures, and a path-traced preview.
 4. **Motion:** keyframes, curves, constraints, then rigging.

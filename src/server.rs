@@ -145,7 +145,16 @@ fn changed(state: &AppState, revision: u64) {
 
 async fn get_state(State(s): State<Shared>) -> Json<Value> {
     let ed = s.editor.lock().await;
-    Json(json!({ "scene": ed.scene(), "history": history(&ed), "ai": s.ai.is_some() }))
+    let mut scene = serde_json::to_value(ed.scene()).expect("scene serializes");
+    // Objects with modifiers also carry the evaluated mesh the viewport shows.
+    if let Some(objects) = scene["objects"].as_array_mut() {
+        for (value, o) in objects.iter_mut().zip(&ed.scene().objects) {
+            if !o.modifiers.is_empty() {
+                value["display"] = json!(ed.evaluated(o));
+            }
+        }
+    }
+    Json(json!({ "scene": scene, "history": history(&ed), "ai": s.ai.is_some() }))
 }
 
 async fn get_scene(State(s): State<Shared>) -> Json<Scene> {
@@ -153,7 +162,7 @@ async fn get_scene(State(s): State<Shared>) -> Json<Scene> {
 }
 
 async fn get_context(State(s): State<Shared>) -> Json<Value> {
-    Json(engine::context(s.editor.lock().await.scene()))
+    Json(engine::context(&*s.editor.lock().await))
 }
 
 async fn get_schema() -> Json<Value> {
@@ -219,7 +228,7 @@ async fn post_reset(State(s): State<Shared>) -> ApiResult {
 }
 
 async fn get_obj(State(s): State<Shared>) -> Response {
-    let obj = engine::export_obj(s.editor.lock().await.scene());
+    let obj = engine::export_obj(&*s.editor.lock().await);
     (
         [
             (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
@@ -271,7 +280,7 @@ async fn post_chat(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResul
     }
     let (context, revision) = {
         let ed = s.editor.lock().await;
-        (engine::context(ed.scene()), ed.scene().revision)
+        (engine::context(&ed), ed.scene().revision)
     };
     let content = ask_provider(&s.http, &ai, prompt, &context).await?;
     let mut batch = parse_batch(&content).map_err(|e| {

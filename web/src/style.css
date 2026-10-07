@@ -127,12 +127,14 @@ textarea {
 
 .group button.icon-only,
 #file-group button,
+#edit-group [data-action='subdivide'],
 #edit-group [data-action='duplicate'],
 #edit-group [data-action='delete'] {
   padding: 0 7px;
 }
 
 #file-group span,
+#edit-group [data-action='subdivide'] span,
 #edit-group [data-action='duplicate'] span,
 #edit-group [data-action='delete'] span {
   display: none;
@@ -850,6 +852,117 @@ input[type='range'] {
 #activity .rev {
   font: 10.5px var(--mono);
   color: var(--muted);
+}
+
+/* ---- modifiers ---------------------------------------------------------- */
+
+.mod {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+}
+
+.mod-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+}
+
+.mod-head .icon {
+  color: var(--accent-2);
+}
+
+.mod-head b {
+  font-weight: 600;
+  flex: 1;
+}
+
+.mod-x {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.mod-row {
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mod-num {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+  outline: none;
+}
+
+.vec-row .mod-num {
+  padding-left: 17px;
+}
+
+.segment {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+.segment button {
+  flex: 1;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.segment button.on {
+  background: rgba(255, 122, 61, 0.2);
+  color: var(--accent-2);
+  font-weight: 600;
+}
+
+.mod-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  cursor: pointer;
+  font-size: 11.5px;
+  color: #cfcdc8;
+}
+
+.chip.pressed,
+.segment button.pressed,
+.mod-x.pressed {
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 /* ---- status bar --------------------------------------------------------- */
