@@ -308,6 +308,18 @@ export class DemoRunner {
     const term = $('terminal')
     if (Number(getComputedStyle(term).opacity) < 0.99 || term.style.display === 'none') await this.fade(term, 1, 250)
     for (const call of s.mcp) {
+      if (call.say) {
+        // The scripted agent's reasoning, shown as a comment line.
+        const line = this.termLine(`<span class="t-say"></span>`)
+        const el = line.querySelector('.t-say')
+        for (let i = 1; i <= call.say.length; i += 3) {
+          el.textContent = `# ${call.say.slice(0, i)}`
+          await this.sleep(18)
+        }
+        el.textContent = `# ${call.say}`
+        await this.sleep(call.after ?? 350)
+        continue
+      }
       const args = JSON.stringify(call.arguments ?? {})
       const shown = args.length > 46 ? `${args.slice(0, 44)}…` : args
       const line = this.termLine(`<span class="t-out">→</span> <span class="t-tool"></span> <span class="t-args"></span>`)
@@ -329,6 +341,9 @@ export class DemoRunner {
         } catch {}
         summary = `<span class="t-err">✗ ${escapeHtml(message.split('\n')[0])}</span>`
       }
+      else if (result.image) {
+        summary = `<span class="t-ok">✓</span> image · ${escapeHtml((call.arguments?.views ?? ['iso']).join(', '))}`
+      }
       else {
         const data = JSON.parse(result.text)
         if (call.tool === 'get_scene') summary = `revision ${data.revision} · ${data.objects.length} objects`
@@ -337,7 +352,15 @@ export class DemoRunner {
         summary = `<span class="t-ok">✓</span> ${summary}`
       }
       this.termLine(`<span class="t-in">←</span> ${summary}`)
-      if (call.tool !== 'get_scene' && !result.isError) {
+      if (result.image) {
+        const body = $('terminal-body')
+        for (const old of body.querySelectorAll('.t-img')) old.parentElement.remove()
+        while (body.children.length > 6) body.firstChild.remove()
+        const line = this.termLine(`<img class="t-img" alt="render_view result">`)
+        line.querySelector('img').src = result.image
+        await this.clock.track(line.querySelector('img').decode().catch(() => {}))
+      }
+      if (call.tool !== 'get_scene' && call.tool !== 'render_view' && !result.isError) {
         await app.refresh(true)
         app.log('MCP', call.tool === 'apply_commands' ? app.summarize(call.arguments.commands) : call.tool)
       }
@@ -353,6 +376,19 @@ export class DemoRunner {
       let data
       if (tool === 'get_scene') data = await this.clock.track(fetch('/api/context').then((r) => r.json()))
       else if (tool === 'apply_commands') data = await api.commands(args.commands, args.expected_revision)
+      else if (tool === 'render_view') {
+        const q = new URLSearchParams({ views: (args.views ?? ['iso']).join(','), size: String(args.size ?? 512) })
+        if (args.object) q.set('object', args.object)
+        const blob = await this.clock.track(fetch(`/api/render?${q}`).then((r) => r.blob()))
+        const image = await this.clock.track(
+          new Promise((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result)
+            reader.readAsDataURL(blob)
+          }),
+        )
+        return { text: '', image, isError: false }
+      }
       else data = await api[tool]()
       return { text: JSON.stringify(data), isError: false }
     } catch (e) {

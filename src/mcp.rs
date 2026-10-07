@@ -81,6 +81,24 @@ pub fn tools() -> Value {
                 "required": ["path"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "render_view",
+            "description": "Look at the shared scene: returns a PNG rendered from one or more labelled camera views (tiled two per row), with shadows, outlines and a 1 m ground grid. Use it after editing to check proportions, placement and intersections.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "views": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Up to 6 of: front, back, left, right, top, bottom, iso, or \"azimuth:elevation\" in degrees (azimuth 0 looks from +Z). Default [\"iso\"].",
+                        "maxItems": 6
+                    },
+                    "size": { "type": "integer", "minimum": 64, "maximum": 1024, "default": 512, "description": "Pixel size of each view" },
+                    "object": { "type": "string", "description": "Frame one object (name or numeric id) instead of the whole scene" }
+                },
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -172,6 +190,9 @@ async fn file_tool(http: &reqwest::Client, base: &str, name: &str, args: &Value)
 }
 
 async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) -> Value {
+    if name == "render_view" {
+        return render_tool(http, base, &args).await;
+    }
     if name == "import_gltf" || name == "export_gltf" {
         return file_tool(http, base, name, &args).await;
     }
@@ -201,6 +222,80 @@ async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) 
             true,
         ),
     }
+}
+
+async fn render_tool(http: &reqwest::Client, base: &str, args: &Value) -> Value {
+    let views: Vec<String> = match &args["views"] {
+        Value::Array(list) => list
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        Value::String(s) => vec![s.clone()],
+        _ => vec!["iso".into()],
+    };
+    let views = if views.is_empty() {
+        vec!["iso".to_string()]
+    } else {
+        views
+    };
+    let mut query = vec![("views", views.join(","))];
+    if let Some(size) = args["size"].as_u64() {
+        query.push(("size", size.to_string()));
+    }
+    if let Some(object) = args["object"]
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| args["object"].as_u64().map(|v| v.to_string()))
+    {
+        query.push(("object", object));
+    }
+    let resp = match http
+        .get(format!("{base}/api/render"))
+        .query(&query)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return tool_result(
+                format!("Tatara editor is not reachable at {base} ({e})."),
+                true,
+            );
+        }
+    };
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return tool_result(text, true);
+    }
+    let png = resp.bytes().await.unwrap_or_default();
+    let summary = match http.get(format!("{base}/api/context")).send().await {
+        Ok(r) => r.json::<Value>().await.ok(),
+        Err(_) => None,
+    };
+    let caption = match summary {
+        Some(ctx) => format!(
+            "Rendered {} at revision {}. Objects: {}.",
+            views.join(", "),
+            ctx["revision"],
+            ctx["objects"]
+                .as_array()
+                .map(|o| o
+                    .iter()
+                    .map(|o| format!("{} (#{})", o["name"].as_str().unwrap_or("?"), o["id"]))
+                    .collect::<Vec<_>>()
+                    .join(", "))
+                .unwrap_or_default()
+        ),
+        None => format!("Rendered {}.", views.join(", ")),
+    };
+    use base64::Engine as _;
+    json!({
+        "content": [
+            { "type": "image", "data": base64::engine::general_purpose::STANDARD.encode(&png), "mimeType": "image/png" },
+            { "type": "text", "text": caption }
+        ],
+        "isError": false
+    })
 }
 
 fn tool_result(text: String, is_error: bool) -> Value {

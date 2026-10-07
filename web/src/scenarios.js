@@ -289,4 +289,57 @@ export const editing = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing }
+// A scripted agent that uses render_view (a real `tatara --mcp` process)
+// to notice its own mistake and fix it.
+const VISION_VASE = [[0.11, 0], [0.19, 0.06], [0.25, 0.26], [0.22, 0.46], [0.11, 0.64], [0.08, 0.74], [0.105, 0.8]]
+export const vision = {
+  title: 'Agents can see',
+  width: 800,
+  external: true,
+  tab: 'agent',
+  camera: { azimuth: 10, elevation: 22, distance: 5.6, target: [-1.0, 0.3, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'The agent builds a still life over MCP', hint: 'apply_commands' },
+    {
+      mcp: [
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              { op: 'add', name: 'Plinth', primitive: { kind: 'cube' }, translation: [0, 0.04, 0], scale: [1.7, 0.08, 0.9], color: '#d8d4cb', roughness: 0.7 },
+              { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VISION_VASE, thickness: 0.018, segments: 64 }, translation: [-0.25, 0.08, 0], color: '#2f4f8f', roughness: 0.2 },
+              { op: 'add', name: 'Cup', primitive: { kind: 'vessel', profile: [[0.065, 0], [0.085, 0.02], [0.1, 0.13], [0.108, 0.16]], thickness: 0.014 }, translation: [0.02, 0.08, 0.1], color: '#b5643c', roughness: 0.7 },
+            ],
+          },
+          after: 500,
+        },
+        { say: 'check the result before finishing', after: 200 },
+        { tool: 'render_view', arguments: { views: ['front', 'top'], size: 256 }, after: 900 },
+      ],
+    },
+    { caption: 'It looks at its work and spots the problem', hint: 'render_view' },
+    {
+      mcp: [
+        { say: 'top view: Cup overlaps Vase. move it right, glaze it red', after: 300 },
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              { op: 'transform', id: 'Cup', translation: [0.45, 0.08, 0.12] },
+              { op: 'material', id: 'Cup', color: '#9b2c2c', roughness: 0.16 },
+            ],
+          },
+          after: 500,
+        },
+        { tool: 'render_view', arguments: { views: ['front', 'top'], size: 256 }, after: 400 },
+        { say: 'no overlaps now. done', after: 600 },
+      ],
+    },
+    { caption: 'Agents verify edits with their own eyes', hint: 'render_view · MCP' },
+    { spin: 8 },
+    { wait: 1800 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision }
