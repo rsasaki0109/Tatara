@@ -559,7 +559,7 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
             if width != 3 {
                 return err("POSITION must be VEC3");
             }
-            let positions: Vec<Vec3> = pos.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
+            let positions: Vec<Vec3> = pos.as_chunks::<3>().0.to_vec();
             let indices: Vec<u32> = match prim["indices"].as_u64() {
                 Some(ii) => read_accessor(&doc, &buffers, ii as usize)?
                     .0
@@ -571,10 +571,7 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
             if indices.iter().any(|&i| i as usize >= positions.len()) {
                 return err("triangle index out of range");
             }
-            let triangles: Vec<[u32; 3]> = indices
-                .chunks_exact(3)
-                .map(|c| [c[0], c[1], c[2]])
-                .collect();
+            let triangles: Vec<[u32; 3]> = indices.as_chunks::<3>().0.to_vec();
             if triangles.len() > MAX_FACES * 2 {
                 return err(format!("a primitive exceeds {MAX_FACES} faces"));
             }
