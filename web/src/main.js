@@ -59,16 +59,24 @@ const app = {
   activity: [],
   extrudeDistance: 0.3,
   insetFraction: 0.3,
+  bevelWidth: 0.1,
+  // Edit mode works on the selected object's base mesh.
+  mode: 'object',
+  selectMode: 'face',
+  sel: { verts: [], edges: [], faces: [] },
 }
 
 const viewport = new Viewport($('viewport'), clock, animator, {
   capture,
   onPick: (hit, e) => {
+    if (hit && 'component' in hit) return pickComponent(hit.component, e.shiftKey)
     if (!hit) return select(null)
     if (e.altKey) select(hit.id, hit.face)
     else select(hit.id)
   },
   onTransform: (id, tf) => run([{ op: 'transform', id, ...tf }], 'Gizmo').catch(() => {}),
+  onMoveVertices: (id, vertices, offset) =>
+    run([{ op: 'move_vertices', id, vertices, offset: offset.map((v) => Math.round(v * 1e6) / 1e6) }], 'Gizmo').catch(() => {}),
 })
 app.viewport = viewport
 
@@ -91,9 +99,102 @@ async function refresh(animate = true) {
   }
   const sel = objectById(app.selected)
   if (sel && app.face != null && app.face >= sel.mesh.faces.length) app.face = null
+  if (!sel) app.mode = 'object'
+  if (sel) {
+    const nv = sel.mesh.vertices.length
+    app.sel.verts = app.sel.verts.filter((v) => v < nv)
+    app.sel.edges = app.sel.edges.filter(([a, b]) => a < nv && b < nv)
+    app.sel.faces = app.sel.faces.filter((f) => f < sel.mesh.faces.length)
+  }
   viewport.sync(app.scene, animate)
+  syncEdit()
+}
+
+/** Push edit-mode state to the viewport and redraw panels. */
+function syncEdit() {
+  const active = app.mode === 'edit' && app.selected != null
+  viewport.setEditState({ active, mode: app.selectMode, ...app.sel })
   viewport.setSelection(app.selected, app.face)
   render()
+}
+
+function clearComponents() {
+  app.sel = { verts: [], edges: [], faces: [] }
+}
+
+function setMode(mode) {
+  if (mode === 'edit' && app.selected == null) return toast('Select an object to edit its mesh')
+  app.mode = mode
+  clearComponents()
+  if (mode === 'object') app.face = null
+  syncEdit()
+}
+
+function setSelectMode(m) {
+  app.selectMode = m
+  clearComponents()
+  app.face = null
+  syncEdit()
+}
+
+const sameEdge = (e, f) => (e[0] === f[0] && e[1] === f[1]) || (e[0] === f[1] && e[1] === f[0])
+
+/** Click on a vertex/edge/face in edit mode; Shift toggles into the selection. */
+function pickComponent(c, additive) {
+  if (!additive) clearComponents()
+  if (c) {
+    const toggle = (list, item, eq = (a, b) => a === b) => {
+      const i = list.findIndex((x) => eq(x, item))
+      if (i >= 0 && additive) list.splice(i, 1)
+      else if (i < 0) list.push(item)
+    }
+    if (c.vertex !== undefined) toggle(app.sel.verts, c.vertex)
+    if (c.edge) toggle(app.sel.edges, c.edge, sameEdge)
+    if (c.face !== undefined) toggle(app.sel.faces, c.face)
+  }
+  app.face = app.selectMode === 'face' ? (app.sel.faces.at(-1) ?? null) : null
+  syncEdit()
+}
+
+function selectAll() {
+  const o = objectById(app.selected)
+  if (!o || app.mode !== 'edit') return
+  const m = o.mesh
+  const allSelected =
+    (app.selectMode === 'vertex' && app.sel.verts.length === m.vertices.length) ||
+    (app.selectMode === 'face' && app.sel.faces.length === m.faces.length) ||
+    (app.selectMode === 'edge' && app.sel.edges.length > 0 && app.sel.edges.length === meshEdges(m).length)
+  clearComponents()
+  if (!allSelected) {
+    if (app.selectMode === 'vertex') app.sel.verts = m.vertices.map((_, i) => i)
+    if (app.selectMode === 'face') app.sel.faces = m.faces.map((_, i) => i)
+    if (app.selectMode === 'edge') app.sel.edges = meshEdges(m)
+  }
+  app.face = app.selectMode === 'face' ? (app.sel.faces.at(-1) ?? null) : null
+  syncEdit()
+}
+
+function meshEdges(m) {
+  const seen = new Set()
+  const out = []
+  for (const f of m.faces) {
+    for (let k = 0; k < f.length; k++) {
+      const a = f[k]
+      const b = f[(k + 1) % f.length]
+      const id = a < b ? `${a},${b}` : `${b},${a}`
+      if (!seen.has(id)) {
+        seen.add(id)
+        out.push([a, b])
+      }
+    }
+  }
+  return out
+}
+
+/** Faces an extrude or inset acts on: the edit selection, or the Alt+clicked face. */
+function targetFaces() {
+  if (app.mode === 'edit' && app.selectMode === 'face') return app.sel.faces
+  return app.face != null ? [app.face] : []
 }
 
 function summarize(commands) {
@@ -158,10 +259,15 @@ async function history(kind) {
 }
 
 function select(id, face = null) {
+  if (id !== app.selected) clearComponents()
   app.selected = id
   app.face = id == null ? null : face
-  viewport.setSelection(app.selected, app.face)
-  render()
+  if (id == null) app.mode = 'object'
+  if (face != null) {
+    app.selectMode = 'face'
+    app.sel = { verts: [], edges: [], faces: [face] }
+  }
+  syncEdit()
 }
 
 function freeSpot(half) {
@@ -186,13 +292,38 @@ const actions = {
     return run([{ op: 'delete', id: app.selected }])
   },
   extrude(distance = app.extrudeDistance) {
-    if (app.selected == null || app.face == null) return toast('Alt+click a face to extrude it')
-    return run([{ op: 'extrude', id: app.selected, face: app.face, distance }])
+    const faces = targetFaces()
+    if (app.selected == null || !faces.length) return toast('Alt+click a face to extrude it')
+    return run(faces.map((face) => ({ op: 'extrude', id: app.selected, face, distance })))
   },
   inset(fraction = app.insetFraction) {
-    if (app.selected == null || app.face == null) return toast('Alt+click a face to inset it')
-    return run([{ op: 'inset', id: app.selected, face: app.face, fraction }])
+    const faces = targetFaces()
+    if (app.selected == null || !faces.length) return toast('Alt+click a face to inset it')
+    return run(faces.map((face) => ({ op: 'inset', id: app.selected, face, fraction })))
   },
+  bevel(width = app.bevelWidth) {
+    if (app.selected == null) return toast('Select an object first')
+    const picked = app.mode === 'edit' && app.selectMode === 'edge' && app.sel.edges.length > 0
+    const cmd = { op: 'bevel', id: app.selected, width }
+    if (picked) cmd.edges = app.sel.edges
+    return run([cmd]).then((r) => {
+      clearComponents()
+      syncEdit()
+      return r
+    })
+  },
+  loopCut(fraction = 0.5) {
+    const edge = app.sel.edges.at(-1)
+    if (app.mode !== 'edit' || app.selectMode !== 'edge' || !edge) return toast('In edge mode, click an edge to cut across')
+    return run([{ op: 'loop_cut', id: app.selected, edge, fraction }]).then((r) => {
+      clearComponents()
+      syncEdit()
+      return r
+    })
+  },
+  editMode: () => setMode(app.mode === 'edit' ? 'object' : 'edit'),
+  selectMode: (m) => setSelectMode(m),
+  selectAll,
   addModifier(type) {
     const o = objectById(app.selected)
     if (!o) return toast('Select an object first')
@@ -239,6 +370,9 @@ app.refresh = refresh
 app.log = log
 app.summarize = summarize
 app.render = () => render()
+app.setMode = setMode
+app.setSelectMode = setSelectMode
+app.pickComponent = pickComponent
 
 function download(href, name) {
   const a = document.createElement('a')
@@ -303,6 +437,12 @@ document.addEventListener('click', (e) => {
   }
 })
 $('wire-btn').addEventListener('click', () => actions.wireframe())
+$('mode-bar').addEventListener('click', (e) => {
+  const m = e.target.closest('[data-mode]')
+  if (m && !m.disabled) return setMode(m.dataset.mode)
+  const sm = e.target.closest('[data-select-mode]')
+  if (sm) setSelectMode(sm.dataset.selectMode)
+})
 $('frame-btn').addEventListener('click', () => actions.frame())
 
 for (const tab of document.querySelectorAll('.tabs button')) tab.addEventListener('click', () => showTab(tab.dataset.tab))
@@ -314,7 +454,27 @@ app.showTab = showTab
 
 const KIND_ICON = { cube: 'cube', sphere: 'sphere', cylinder: 'cylinder', torus: 'torus', vessel: 'vessel', plane: 'plane' }
 
+const SELECT_MODES = [
+  ['vertex', 'Vertex (1)'],
+  ['edge', 'Edge (2)'],
+  ['face', 'Face (3)'],
+]
+
+function renderModeBar() {
+  const edit = app.mode === 'edit'
+  $('mode-bar').innerHTML =
+    `<div class="mode-group"><button data-mode="object" class="${edit ? '' : 'on'}" title="Object mode">${icon('object')}Object</button>` +
+    `<button data-mode="edit" class="${edit ? 'on' : ''}" ${app.selected == null ? 'disabled' : ''} title="Edit mode (Tab)">${icon('edit')}Edit</button></div>` +
+    (edit
+      ? `<div class="mode-group">${SELECT_MODES.map(([m, t]) => `<button data-select-mode="${m}" class="icon-btn ${app.selectMode === m ? 'on' : ''}" title="${t}">${icon(`sel-${m}`)}</button>`).join('')}</div>`
+      : '')
+  $('status-hint').textContent = edit
+    ? '1/2/3 vertex/edge/face · Shift+click add · A all · G move · Ctrl+B bevel · Ctrl+R loop cut · Tab exit'
+    : 'Alt+click a face · Tab edit mode · G/R/S transform · F frame · W wireframe'
+}
+
 function render() {
+  renderModeBar()
   const { objects } = app.scene
   const faces = objects.reduce((n, o) => n + displayMesh(o).faces.length, 0)
   $('object-count').textContent = objects.length ? String(objects.length) : ''
@@ -331,8 +491,9 @@ function render() {
   for (const b of document.querySelectorAll('[data-action=redo]')) b.disabled = !app.history.can_redo
   const sel = objectById(app.selected)
   for (const a of ['duplicate', 'delete', 'subdivide']) document.querySelector(`[data-action=${a}]`).disabled = !sel
-  document.querySelector('[data-action=extrude]').disabled = !sel || app.face == null
-  document.querySelector('[data-action=inset]').disabled = !sel || app.face == null
+  const noFaces = !sel || targetFaces().length === 0
+  document.querySelector('[data-action=extrude]').disabled = noFaces
+  document.querySelector('[data-action=inset]').disabled = noFaces
   $('wire-btn').classList.toggle('on', app.wireframe)
   $('ai-badge').textContent = app.replaying ? 'replay' : app.ai ? 'on' : 'off'
   $('ai-badge').classList.toggle('on', app.ai || Boolean(app.replaying))
@@ -357,7 +518,7 @@ let renderedKey = ''
 function renderProperties(o) {
   const el = $('properties')
   const key = o
-    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.mesh.faces.length, displayMesh(o).faces.length, o.modifiers, app.face])
+    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.mesh.faces.length, displayMesh(o).faces.length, o.modifiers, app.face, app.mode, app.selectMode, app.sel])
     : 'none'
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -396,15 +557,20 @@ function renderProperties(o) {
     </div>
     <div class="card">
       <div class="card-title">Mesh</div>
-      <div class="face-info ${app.face != null ? 'on' : ''}">${app.face != null ? `Face <b>${app.face}</b> selected` : 'Alt+click a face to select it'}</div>
+      <div class="face-info ${selectionText() ? 'on' : ''}">${selectionText() || (app.mode === 'edit' ? `Click ${app.selectMode === 'edge' ? 'an edge' : `a ${app.selectMode}`} · Shift+click to add` : 'Alt+click a face, or press Tab to edit')}</div>
       <div class="row">
         <label class="inline">Distance <input type="text" inputmode="decimal" id="p-dist" value="${app.extrudeDistance}"></label>
-        <button class="small-btn" data-action="extrude" ${app.face == null ? 'disabled' : ''}>${icon('extrude')}Extrude</button>
+        <button class="small-btn" data-action="extrude" ${targetFaces().length ? '' : 'disabled'}>${icon('extrude')}Extrude</button>
       </div>
       <div class="row">
         <label class="inline">Fraction <input type="text" inputmode="decimal" id="p-inset" value="${app.insetFraction}"></label>
-        <button class="small-btn" data-action="inset" ${app.face == null ? 'disabled' : ''}>${icon('inset')}Inset</button>
+        <button class="small-btn" data-action="inset" ${targetFaces().length ? '' : 'disabled'}>${icon('inset')}Inset</button>
       </div>
+      <div class="row">
+        <label class="inline">Width <input type="text" inputmode="decimal" id="p-bevel" value="${app.bevelWidth}"></label>
+        <button class="small-btn" data-action="bevel" title="Bevel selected edges, or all edges (Ctrl+B)">${icon('bevel')}${app.mode === 'edit' && app.selectMode === 'edge' && app.sel.edges.length ? 'Bevel' : 'Bevel all'}</button>
+      </div>
+      <div class="row"><button class="small-btn wide" data-action="loopCut" ${app.mode === 'edit' && app.selectMode === 'edge' && app.sel.edges.length ? '' : 'disabled'} title="Cut a loop across the selected edge (Ctrl+R)">${icon('loopcut')}Loop cut</button></div>
     </div>
     <div class="card" id="modifiers">
       <div class="card-title">Modifiers <span class="muted small">non-destructive</span></div>
@@ -415,6 +581,17 @@ function renderProperties(o) {
 }
 
 const num = (n) => n.toLocaleString('en-US')
+
+function selectionText() {
+  const plural = (n, w) => `<b>${n}</b> ${w}${n === 1 ? '' : 's'} selected`
+  if (app.mode === 'edit') {
+    if (app.selectMode === 'vertex' && app.sel.verts.length) return plural(app.sel.verts.length, 'vertex').replace('vertexs', 'vertices')
+    if (app.selectMode === 'edge' && app.sel.edges.length) return plural(app.sel.edges.length, 'edge')
+    if (app.selectMode === 'face' && app.sel.faces.length) return plural(app.sel.faces.length, 'face')
+    return ''
+  }
+  return app.face != null ? `Face <b>${app.face}</b> selected` : ''
+}
 
 const MODIFIER_TYPES = ['mirror', 'subdivision', 'array', 'twist', 'taper']
 const MODIFIER_LABEL = { mirror: 'Mirror', subdivision: 'Subdivision', array: 'Array', twist: 'Twist', taper: 'Taper' }
@@ -481,6 +658,11 @@ $('properties').addEventListener('change', (e) => {
   if (target.id === 'p-name') return run([{ op: 'rename', id: o.id, name: target.value }]).catch(() => {})
   if (target.id === 'p-dist') {
     app.extrudeDistance = Number(target.value) || 0.3
+    return
+  }
+  if (target.id === 'p-bevel') {
+    const w = Number(target.value)
+    app.bevelWidth = w > 0 ? w : 0.1
     return
   }
   if (target.id === 'p-inset') {
@@ -595,11 +777,25 @@ document.addEventListener('keydown', (e) => {
     return e.shiftKey ? actions.redo() : actions.undo()
   }
   if (mod && k === 'y') return actions.redo()
+  if (mod && k === 'b') {
+    e.preventDefault()
+    return actions.bevel()?.catch?.(() => {})
+  }
+  if (mod && k === 'r') {
+    e.preventDefault()
+    return actions.loopCut()?.catch?.(() => {})
+  }
   if (mod && k === 's') {
     e.preventDefault()
     return actions.save()
   }
   if (mod) return
+  if (k === 'tab') {
+    e.preventDefault()
+    return actions.editMode()
+  }
+  if (app.mode === 'edit' && ['1', '2', '3'].includes(k)) return setSelectMode(['vertex', 'edge', 'face'][Number(k) - 1])
+  if (app.mode === 'edit' && k === 'a') return selectAll()
   if (k === 'g') viewport.setGizmoMode('translate')
   else if (k === 'r') viewport.setGizmoMode('rotate')
   else if (k === 's') viewport.setGizmoMode('scale')
@@ -608,8 +804,11 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'e') actions.extrude()?.catch?.(() => {})
   else if (k === 'i') actions.inset()?.catch?.(() => {})
   else if (k === 'd' && e.shiftKey) actions.duplicate()?.catch?.(() => {})
-  else if (k === 'delete' || k === 'backspace' || k === 'x') actions.delete()?.catch?.(() => {})
-  else if (k === 'escape') select(null)
+  else if ((k === 'delete' || k === 'backspace' || k === 'x') && app.mode === 'object') actions.delete()?.catch?.(() => {})
+  else if (k === 'escape') {
+    if (app.mode === 'edit') setMode('object')
+    else select(null)
+  }
 })
 
 // ---------------------------------------------------------------------------

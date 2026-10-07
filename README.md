@@ -9,20 +9,23 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/media/modifiers.gif" alt="A slab is inset and extruded, then stacked with array, twist, taper and subdivision modifiers; extruding the base face updates every layer"></td>
+    <td width="50%"><img src="docs/media/editing.gif" alt="In edit mode a cube gets a loop cut, its ridge vertices are raised into a gable roof, two front panels are inset and pushed in, then every edge is bevelled and smoothed"></td>
     <td width="50%"><img src="docs/media/modeling.gif" alt="A cube is extruded face by face into a cactus, subdivided with Catmull-Clark, glazed and shown in wireframe"></td>
   </tr>
   <tr>
-    <td><b>Stack</b> — non-destructive modifiers; edit the base and every layer follows.</td>
+    <td><b>Edit</b> — vertex, edge and face selection, loop cut, move and bevel.</td>
     <td><b>Model</b> — Alt+click a face, extrude, subdivide, glaze.</td>
   </tr>
   <tr>
+    <td width="50%"><img src="docs/media/modifiers.gif" alt="A slab is inset and extruded, then stacked with array, twist, taper and subdivision modifiers; extruding the base face updates every layer"></td>
     <td width="50%"><img src="docs/media/agent.gif" alt="A chat request becomes a validated command batch that builds a tea set; a second request recolors the cups by name"></td>
-    <td width="50%"><img src="docs/media/mcp.gif" alt="An external agent calls tatara --mcp tools; a stale edit is rejected and undo/redo work from the agent"></td>
   </tr>
   <tr>
+    <td><b>Stack</b> — non-destructive modifiers; edit the base and every layer follows.</td>
     <td><b>Ask</b> — chat turns into an atomic, undoable command batch.</td>
-    <td><b>Connect</b> — any MCP agent edits the scene you are looking at.</td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/media/mcp.gif" width="50%" alt="An external agent calls tatara --mcp tools; a stale edit is rejected and undo/redo work from the agent"><br><b>Connect</b> — any MCP agent edits the scene you are looking at.</td>
   </tr>
 </table>
 
@@ -60,6 +63,7 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **Workspace:** studio lighting with shadows, orbit and zoom, outliner, properties panel, transform gizmo, polygon wireframe, axis widget and a phone layout.
 - **Geometry (Rust):** cube, plane, UV sphere, cylinder or cone, torus, and hollow **vessels** revolved from a smoothed cross section.
 - **Modeling:** transform, glaze presets and PBR material, rename, duplicate, array, delete, per-face inset and extrusion, and Catmull-Clark subdivision.
+- **Edit mode (Tab):** vertex, edge and face selection with Shift+click and select all; move a selection with the gizmo; loop cut; bevel selected edges or every edge; extrude and inset several faces at once.
 - **Modifier stack:** non-destructive Mirror, Subdivision, Array, Twist and Taper, evaluated in Rust in order. The base mesh stays editable and is drawn as an orange cage. **Apply** bakes the stack into the base mesh.
 - **History:** each batch is one undo step, and an invalid batch changes nothing.
 - **Files:** validated JSON scene save/open, plus OBJ export with transforms applied.
@@ -72,7 +76,9 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 | G / R / S | Move / rotate / scale gizmo | Shift + D | Duplicate |
 | F | Frame scene | X / Delete | Delete |
 | W | Wireframe | Ctrl/Cmd + Z | Undo (add Shift to redo) |
-| Esc | Deselect | Ctrl/Cmd + S | Save |
+| Tab | Edit mode | 1 / 2 / 3 | Vertex / edge / face select (edit mode) |
+| A | Select all (edit mode) | Ctrl + B / Ctrl + R | Bevel / loop cut |
+| Esc | Leave edit mode or deselect | Ctrl/Cmd + S | Save |
 
 Units are meters and Y is up. The inspector shows rotations in degrees; the command API takes radians.
 
@@ -122,6 +128,9 @@ curl http://127.0.0.1:3000/api/commands \
 | `transform` / `material` / `rename` | `id`, plus the fields to change |
 | `duplicate` / `array` | `id`, `offset` (and `count` for `array`) |
 | `extrude` / `inset` | `id`, `face`, and `distance` or `fraction` (0–1) |
+| `move_vertices` | `id`, `vertices` (indices), `offset` |
+| `bevel` | `id`, `width`, optional `edges` as `[[a, b], …]` (all edges when omitted) |
+| `loop_cut` | `id`, `edge` `[a, b]`, optional `fraction` |
 | `add_modifier` / `set_modifier` / `remove_modifier` | `id`, `modifier` (`mirror`, `subdivision`, `array`, `twist`, `taper`), `index` |
 | `apply_modifiers` | `id`: bake the stack into the base mesh |
 | `subdivide` | `id`, `levels` (1–4) |
@@ -177,6 +186,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | --- | --- |
 | Geometry, commands, validation, history, OBJ | Rust: `src/engine.rs` |
 | Modifier stack evaluation | Rust: `src/modifiers.rs` |
+| Bevel, loop cut, vertex moves | Rust: `src/edit.rs` |
 | HTTP API, live events, chat provider | Rust: `src/server.rs` (axum) |
 | Stdio MCP bridge | Rust: `src/mcp.rs` |
 | Editor UI and WebGL presentation | JavaScript + Three.js: `web/src` |
@@ -201,7 +211,7 @@ node scripts/browser-check.mjs   # real-browser editing, history, files, layout 
 
 The aim is a creation suite that surpasses Blender for human and agent collaboration, taken one verifiable step at a time:
 
-1. **Modeling depth:** ~~non-destructive modifier stack~~ ✓, ~~inset~~ ✓, then an edit mode for vertices and edges, bevel, loop cut, booleans and more modifiers (solidify, bevel, boolean).
+1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓; next: multi-segment bevel, knife, merge and dissolve, booleans, and solidify/bevel/boolean modifiers.
 2. **Interchange:** glTF import and export, and a browser-only Rust/WASM engine.
 3. **Look development:** a node-based material system, UVs and textures, and a path-traced preview.
 4. **Motion:** keyframes, curves, constraints, then rigging.

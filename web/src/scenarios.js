@@ -245,4 +245,48 @@ export const modifiers = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers }
+// Vertex and face indices below follow the engine: a loop cut across the
+// cube's top-front edge 7-6 adds vertices 8 (top front) and 11 (top back),
+// and the front face becomes faces 0 and 1.
+export const editing = {
+  title: 'Edit mode',
+  width: 800,
+  gizmo: 'edit',
+  camera: { azimuth: 32, elevation: 18, distance: 5.2, target: [0, 0.75, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Tab into edit mode', hint: 'vertex · edge · face' },
+    { click: '[data-add=cube]', after: 150 },
+    { click: '[data-mode=edit]', after: 150 },
+    { caption: 'Pick an edge, then loop cut across it', hint: 'loop_cut · Ctrl+R' },
+    { click: '[data-select-mode=edge]' },
+    { pick: 'Cube', edge: [7, 6], after: 150 },
+    { click: '[data-action=loopCut]', after: 250 },
+    { caption: 'Select the new ridge vertices and raise them', hint: 'move_vertices · G' },
+    { click: '[data-select-mode=vertex]' },
+    { pick: 'Cube', vertex: 8 },
+    { pick: 'Cube', vertex: 11, shift: true, after: 200 },
+    { run: [{ op: 'move_vertices', id: 'Cube', vertices: [8, 11], offset: [0, 0.6, 0] }], source: 'Gizmo', after: 300 },
+    { caption: 'Inset and push in the front panels', hint: 'inset · extrude' },
+    { click: '[data-select-mode=face]' },
+    { pick: 'Cube', face: 0 },
+    { pick: 'Cube', face: 1, shift: true },
+    { type: '0.32', into: '#p-inset', cps: 20 },
+    { click: '[data-action=inset]', after: 100 },
+    { type: '-0.12', into: '#p-dist', cps: 20 },
+    { click: '#edit-group [data-action=extrude]', after: 250 },
+    { caption: 'Bevel every edge, then smooth', hint: 'bevel · subdivision' },
+    { click: '[data-mode=object]', after: 100 },
+    { type: '0.035', into: '#p-bevel', cps: 22 },
+    { click: '[data-action=bevel]', after: 250 },
+    { click: '[data-add-mod=subdivision]', after: 200 },
+    { click: '[data-glaze^="#b5643c"]', after: 150 },
+    { cursor: false },
+    { select: null },
+    { spin: 28 },
+    { camera: { elevation: 12, distance: 4.6 }, ms: 1400 },
+    { wait: 1000 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing }

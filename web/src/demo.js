@@ -200,13 +200,18 @@ export class DemoRunner {
   async pick(s) {
     const { app } = this
     const id = this.resolveId(s.pick)
-    const p = app.viewport.anchor(id, s.face)
+    const component = s.vertex !== undefined || s.edge !== undefined
+    const p = component ? app.viewport.anchorComponent(id, s) : app.viewport.anchor(id, s.face)
     if (!p) throw new Error(`demo: cannot pick ${s.pick}`)
     const screen = app.viewport.worldToScreen(p)
     const vr = $('viewport').getBoundingClientRect()
     await this.moveTo(vr.left + screen.x, vr.top + screen.y)
     this.press()
-    app.select(id, s.face ?? null)
+    if (app.mode === 'edit' && app.selected === id) {
+      app.pickComponent({ vertex: s.vertex, edge: s.edge, face: s.face }, Boolean(s.shift))
+    } else {
+      app.select(id, s.face ?? null)
+    }
     await this.sleep(140)
     if (s.after) await this.sleep(s.after)
   }
