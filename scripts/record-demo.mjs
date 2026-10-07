@@ -105,7 +105,13 @@ function startMcp(bin, url) {
       await ready
       const msg = await rpc('tools/call', { name: tool, arguments: args })
       if (msg.error) return { text: msg.error.message, isError: true }
-      return { text: msg.result.content[0].text, isError: msg.result.isError }
+      const content = msg.result.content
+      const image = content.find((c) => c.type === 'image')
+      return {
+        text: content.find((c) => c.type === 'text')?.text ?? '',
+        image: image ? `data:${image.mimeType};base64,${image.data}` : undefined,
+        isError: msg.result.isError,
+      }
     },
   }
 }

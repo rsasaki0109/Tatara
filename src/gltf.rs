@@ -66,13 +66,13 @@ fn newell(mesh: &Mesh, face: &[u32]) -> DVec3 {
 }
 
 /// Triangulated render data with normals split at creases, like the viewport.
-struct Shaded {
-    positions: Vec<[f32; 3]>,
-    normals: Vec<[f32; 3]>,
-    indices: Vec<u32>,
+pub(crate) struct Shaded {
+    pub(crate) positions: Vec<[f32; 3]>,
+    pub(crate) normals: Vec<[f32; 3]>,
+    pub(crate) indices: Vec<u32>,
 }
 
-fn shade(mesh: &Mesh) -> Shaded {
+pub(crate) fn shade(mesh: &Mesh) -> Shaded {
     let normals: Vec<DVec3> = mesh.faces.iter().map(|f| newell(mesh, f)).collect();
     let mut around: Vec<Vec<usize>> = vec![Vec::new(); mesh.vertices.len()];
     for (fi, f) in mesh.faces.iter().enumerate() {

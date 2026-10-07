@@ -12,7 +12,8 @@ axum = "0.8"
 base64 = "0.23.1"
 futures-util = "0.3.34"
 glam = "0.34.1"
-reqwest = { version = "0.13.5", features = ["json"] }
+png = "0.18.1"
+reqwest = { version = "0.13.5", features = ["json", "query"] }
 schemars = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

@@ -133,6 +133,13 @@ try {
   await page.waitForFunction(() => /26 faces/.test(document.querySelector('#status-mesh').textContent))
   check((await faces()) === 26, 'bevel all chamfers the cube')
 
+  await page.click('.tabs [data-tab=agent]')
+  await page.click('#render-btn')
+  await page.waitForFunction(() => document.querySelector('#render-out img')?.naturalWidth > 0)
+  const rendered = await page.evaluate(() => document.querySelector('#render-out img').naturalWidth)
+  check(rendered === 514, `agent view renders four tiles (${rendered}px wide)`)
+  await page.click('.tabs [data-tab=properties]')
+
   await page.setViewportSize({ width: 390, height: 844 })
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
   check(!overflow, 'phone layout has no horizontal scroll')

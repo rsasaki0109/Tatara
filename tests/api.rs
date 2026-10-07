@@ -188,7 +188,7 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let init = call(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "tatara");
     let tools = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 7);
     let r = call(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "apply_commands", "arguments": {"commands": [{"op": "add", "primitive": {"kind": "torus"}}]}}})).await;
     assert_eq!(r["result"]["isError"], false, "{r}");
     let r = call(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "get_scene", "arguments": {}}})).await;
@@ -224,5 +224,24 @@ async fn mcp_bridge_edits_the_shared_scene() {
         ctx["objects"][1]["face_count"]
     );
     std::fs::remove_dir_all(dir).ok();
+
+    // Vision: the agent gets a PNG back.
+    let r = call(json!({"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "render_view", "arguments": {"views": ["front", "top"], "size": 64}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    assert_eq!(r["result"]["content"][0]["type"], "image");
+    assert_eq!(r["result"]["content"][0]["mimeType"], "image/png");
+    use base64::Engine as _;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(r["result"]["content"][0]["data"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(&png[1..4], b"PNG");
+    assert!(
+        r["result"]["content"][1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Torus")
+    );
+    let r = call(json!({"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "render_view", "arguments": {"views": ["sideways"]}}})).await;
+    assert_eq!(r["result"]["isError"], true);
     child.kill().await.unwrap();
 }

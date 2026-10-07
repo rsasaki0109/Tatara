@@ -84,6 +84,7 @@ pub fn router(state: Shared, web_dir: PathBuf) -> Router {
         .route("/export/obj", get(get_obj))
         .route("/export/glb", get(get_glb))
         .route("/import", post(post_import))
+        .route("/render", get(get_render))
         .route("/events", get(get_events))
         .route("/ai", get(get_ai))
         .route("/chat", post(post_chat))
@@ -256,6 +257,44 @@ async fn post_import(State(s): State<Shared>, body: axum::body::Bytes) -> ApiRes
     Ok(Json(
         json!({ "revision": result.revision, "created": result.created, "history": history(&ed) }),
     ))
+}
+
+#[derive(Deserialize)]
+struct RenderQuery {
+    views: Option<String>,
+    size: Option<u32>,
+    object: Option<String>,
+}
+
+/// PNG of the scene from named views (`front,right,top,iso`) or `az:el` pairs.
+async fn get_render(
+    State(s): State<Shared>,
+    axum::extract::Query(q): axum::extract::Query<RenderQuery>,
+) -> Result<Response, ApiError> {
+    let views = crate::render::parse_views(q.views.as_deref().unwrap_or("iso"))?;
+    let ed = s.editor.lock().await;
+    let focus = match q.object.as_deref() {
+        None | Some("") => None,
+        Some(r) => {
+            let found = r
+                .parse::<u64>()
+                .ok()
+                .and_then(|id| ed.scene().objects.iter().find(|o| o.id == id))
+                .or_else(|| ed.scene().objects.iter().find(|o| o.name == r));
+            Some(
+                found
+                    .map(|o| o.id)
+                    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, format!("no object {r:?}")))?,
+            )
+        }
+    };
+    let opts = crate::render::RenderOptions {
+        views,
+        size: q.size.unwrap_or(512),
+        focus,
+    };
+    let png = crate::render::render_png(&ed, &opts)?;
+    Ok(([(header::CONTENT_TYPE, "image/png")], png).into_response())
 }
 
 async fn get_obj(State(s): State<Shared>) -> Response {

@@ -747,6 +747,12 @@ $('batch-apply').addEventListener('click', async () => {
   run(commands, 'Batch').catch(() => {})
 })
 $('chat-send').addEventListener('click', sendChat)
+$('render-btn').addEventListener('click', () => {
+  const img = new Image()
+  img.alt = 'Front, right, top and iso views rendered by the Rust engine'
+  img.src = `/api/render?views=iso,front,right,top&size=256&rev=${app.scene.revision}`
+  $('render-out').replaceChildren(img)
+})
 $('chat-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) sendChat()
 })
