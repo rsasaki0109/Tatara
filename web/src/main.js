@@ -99,6 +99,9 @@ const app = {
   mode: 'object',
   selectMode: 'face',
   sel: { verts: [], edges: [], faces: [] },
+  // Boolean card: the other object, and whether to keep it.
+  boolWith: null,
+  boolKeep: false,
   // Assemblies expanded in the outliner.
   openGroups: new Set(),
   // Sculpt mode brush (radius in world units).
@@ -251,13 +254,15 @@ function summarize(commands) {
         ? `add ${c.primitive.kind}`
         : c.op === 'build'
           ? `build ${c.template}`
-          : c.op === 'material' && c.preset
-            ? `${c.preset} material`
-            : c.op === 'add_modifier'
-              ? `+ ${c.modifier.type}`
-              : c.op === 'set_modifier'
-                ? `${c.modifier.type}`
-                : c.op
+          : c.op === 'boolean'
+            ? c.operation
+            : c.op === 'material' && c.preset
+              ? `${c.preset} material`
+              : c.op === 'add_modifier'
+                ? `+ ${c.modifier.type}`
+                : c.op === 'set_modifier'
+                  ? `${c.modifier.type}`
+                  : c.op
     const last = parts.at(-1)
     if (last && last.label === label) last.n++
     else parts.push({ label, n: 1 })
@@ -631,7 +636,7 @@ let renderedKey = ''
 function renderProperties(o) {
   const el = $('properties')
   const key = o
-    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush])
+    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
     : 'none'
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -659,6 +664,8 @@ function renderProperties(o) {
     ([id, name, swatch]) => `<button class="chip preset" data-preset="${id}" title="${name} preset"><i style="--c:${swatch}"></i>${name}</button>`,
   ).join('')
   const b = app.brush
+  const others = app.scene.objects.filter((x) => x.id !== o.id)
+  if (!others.some((x) => x.id === app.boolWith)) app.boolWith = others.at(-1)?.id ?? null
   const brushCard =
     app.mode === 'sculpt'
       ? `<div class="card brush-card">
@@ -715,6 +722,16 @@ function renderProperties(o) {
         <button class="small-btn" data-action="bevel" title="Bevel selected edges, or all edges (Ctrl+B)">${icon('bevel')}${app.mode === 'edit' && app.selectMode === 'edge' && app.sel.edges.length ? 'Bevel' : 'Bevel all'}</button>
       </div>
       <div class="row"><button class="small-btn wide" data-action="loopCut" ${app.mode === 'edit' && app.selectMode === 'edge' && app.sel.edges.length ? '' : 'disabled'} title="Cut a loop across the selected edge (Ctrl+R)">${icon('loopcut')}Loop cut</button></div>
+    </div>
+    <div class="card boolean">
+      <div class="card-title">Boolean <span class="muted small">cut · merge · overlap</span></div>
+      ${
+        others.length
+          ? `<div class="row"><label class="inline">With <select id="bool-with">${others.map((x) => `<option value="${x.id}" ${x.id === app.boolWith ? 'selected' : ''}>${escapeHtml(x.name)}</option>`).join('')}</select></label>
+      <label class="inline keep"><input type="checkbox" id="bool-keep" ${app.boolKeep ? 'checked' : ''}> Keep</label></div>
+      <div class="row bool-ops"><button class="small-btn" data-bool="difference" title="Cut the other shape out of this one">${icon('bool-difference')}Difference</button><button class="small-btn" data-bool="union" title="Merge the other shape into this one">${icon('bool-union')}Union</button><button class="small-btn" data-bool="intersect" title="Keep only where they overlap">${icon('bool-intersect')}Intersect</button></div>`
+          : '<div class="muted small">Add a second object to cut or merge with.</div>'
+      }
     </div>
     <div class="card" id="modifiers">
       <div class="card-title">Modifiers <span class="muted small">non-destructive</span></div>
@@ -820,6 +837,14 @@ $('properties').addEventListener('change', (e) => {
     if (!next) return render()
     return actions.setModifier(i, next).catch(() => {})
   }
+  if (target.id === 'bool-with') {
+    app.boolWith = Number(target.value)
+    return render()
+  }
+  if (target.id === 'bool-keep') {
+    app.boolKeep = target.checked
+    return
+  }
   if (target.id === 'b-radius' || target.id === 'b-strength') {
     app.brush = { ...app.brush, [target.id === 'b-radius' ? 'radius' : 'strength']: Number(target.value) }
     return syncEdit()
@@ -860,6 +885,10 @@ $('properties').addEventListener('click', (e) => {
     const next = { ...o0.modifiers[i] }
     next[set.dataset.set] = set.dataset.set === 'levels' ? Number(set.dataset.value) : set.dataset.value
     return actions.setModifier(i, next).catch(() => {})
+  }
+  const bool = e.target.closest('[data-bool]')
+  if (bool && o0 && app.boolWith != null) {
+    return run([{ op: 'boolean', id: o0.id, with: app.boolWith, operation: bool.dataset.bool, keep: app.boolKeep }]).catch(() => {})
   }
   const groupAct = e.target.closest('[data-group-act]')
   if (groupAct && o0?.group) {

@@ -597,4 +597,61 @@ export const furnish = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish }
+// Booleans through the real UI, then an agent drills the pips of a die.
+const DIE = [2.0, 0.5, 0]
+const pip = (k, x, y, z) => [
+  { op: 'add', name: `Pip ${k}`, primitive: { kind: 'sphere', radius: 0.085, segments: 20, rings: 10 }, translation: [DIE[0] + x, DIE[1] + y, DIE[2] + z] },
+  { op: 'boolean', id: 'Die', with: `Pip ${k}`, operation: 'difference' },
+]
+export const boolean = {
+  title: 'Booleans',
+  width: 800,
+  external: true,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Block', primitive: { kind: 'cube' }, translation: [-0.4, 0.45, 0], scale: [1.3, 0.9, 0.9], color: '#8fb9a0', roughness: 0.3 },
+    { op: 'add', name: 'Drill', primitive: { kind: 'cylinder', radius: 0.24, height: 1.6, segments: 48 }, translation: [-0.4, 0.45, 0], rotation: [Math.PI / 2, 0, 0], color: '#ff7a3d', roughness: 0.4, opacity: 0.55 },
+    { op: 'add', name: 'Die', primitive: { kind: 'cube' }, translation: DIE, color: '#f4f1ea', roughness: 0.22 },
+    { op: 'add', name: 'Ball', primitive: { kind: 'sphere', radius: 0.68, segments: 48, rings: 24 }, translation: DIE, color: '#ff7a3d', roughness: 0.4, opacity: 0.45 },
+  ],
+  camera: { azimuth: 24, elevation: 20, distance: 5.6, target: [0.8, 0.45, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Cut one shape out of another', hint: 'boolean · difference' },
+    { pick: 'Block', after: 100 },
+    { choose: '#bool-with', value: 'Drill', after: 200 },
+    { click: '[data-bool=difference]', after: 700 },
+    { caption: 'Keep only the overlap: a cube and a sphere make a die', hint: 'boolean · intersect' },
+    { pick: 'Die', after: 100 },
+    { choose: '#bool-with', value: 'Ball', after: 200 },
+    { click: '[data-bool=intersect]', after: 700 },
+    { caption: 'An agent drills the pips with the same command', hint: '{"op": "boolean", "operation": "difference"}' },
+    { select: null },
+    {
+      mcp: [
+        { say: 'six pips: one on top, two on the right, three in front', after: 150 },
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              ...pip(1, 0, 0.5, 0),
+              ...pip(2, 0.5, 0.22, -0.22),
+              ...pip(3, 0.5, -0.22, 0.22),
+              ...pip(4, -0.25, 0.25, 0.5),
+              ...pip(5, 0, 0, 0.5),
+              ...pip(6, 0.25, -0.25, 0.5),
+            ],
+          },
+          after: 600,
+        },
+      ],
+    },
+    { terminal: false },
+    { cursor: false },
+    { caption: 'Every cut is one undoable step', hint: 'boolean · undo' },
+    { spin: 9 },
+    { wait: 2600 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean }

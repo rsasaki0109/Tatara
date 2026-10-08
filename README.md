@@ -43,15 +43,20 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Model</b> — Alt+click a face, extrude, subdivide, glaze.</td>
   </tr>
   <tr>
+    <td width="50%"><img src="docs/media/mcp.gif" alt="An external agent calls tatara --mcp tools; a stale edit is rejected and undo/redo work from the agent"></td>
+    <td width="50%"><img src="docs/media/boolean.gif" alt="A cylinder is subtracted from a block to drill a hole, a cube is intersected with a sphere to make a rounded die, then an agent drills six pips into it with boolean difference commands over MCP"></td>
+  </tr>
+  <tr>
+    <td><b>Connect</b> — any MCP agent edits the scene you are looking at.</td>
+    <td><b>Cut</b> — boolean difference, union and intersect, from the panel or an agent.</td>
+  </tr>
+  <tr>
     <td width="50%"><img src="docs/media/animate.gif" alt="A vessel is keyed at frame 1, the timeline is scrubbed to frames 36 and 72 where edits auto-key a lift, a tilt and a cobalt glaze, then the animation plays back"></td>
     <td width="50%"><img src="docs/media/modifiers.gif" alt="A slab is inset and extruded, then stacked with array, twist, taper and subdivision modifiers; extruding the base face updates every layer"></td>
   </tr>
   <tr>
     <td><b>Animate</b> — key a pose, scrub, edit (auto-key), play; exports as a glTF animation.</td>
     <td><b>Stack</b> — non-destructive modifiers; edit the base and every layer follows.</td>
-  </tr>
-  <tr>
-    <td colspan="2"><img width="50%" src="docs/media/mcp.gif" alt="An external agent calls tatara --mcp tools; a stale edit is rejected and undo/redo work from the agent"><br><b>Connect</b> — any MCP agent edits the scene you are looking at.</td>
   </tr>
 </table>
 
@@ -94,6 +99,7 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **Geometry (Rust):** cube, plane, UV sphere, quad sphere (even quads for sculpting), cylinder or cone, torus, and hollow **vessels** revolved from a smoothed cross section.
 - **Modeling:** transform, glaze presets and PBR material, rename, duplicate, array, delete, per-face inset and extrusion, and Catmull-Clark subdivision.
 - **Sculpt mode:** draw, inflate, smooth, flatten and grab brushes with a smooth falloff and X mirror symmetry. Ctrl carves, Shift smooths and `[` `]` resize the brush. The stroke previews live while you drag and is committed as one `sculpt` command (one undo step), so agents sculpt with exactly the same operation. **Smooth shading** blends normals across edges, in the viewport, agent renders and glTF export alike.
+- **Booleans:** `boolean` cuts one object out of another (`difference`), merges them (`union`) or keeps their overlap (`intersect`), with a BSP-tree CSG in Rust. The result is welded and its T-junctions repaired, so it stays watertight and renders without cracks. The Properties panel has a Boolean card, and the cutter is consumed unless you keep it.
 - **Edit mode (Tab):** vertex, edge and face selection with Shift+click and select all; move a selection with the gizmo; loop cut; bevel selected edges or every edge; extrude and inset several faces at once.
 - **Materials:** PBR colour, roughness and metalness, plus emission (with a strength above 1 for glow), opacity and transmission for glass. Twelve presets cover glass, frosted glass, chrome, steel, gold, copper, jade, ceramic, clay, plastic, rubber and neon; any field given alongside a preset overrides it. Emissive surfaces bloom in the viewport and in agent renders, and glass shows what is behind it in both.
 - **Animation:** keyframes for location, rotation, scale, colour, roughness, metalness, emission and opacity, with ease, linear or step interpolation. The timeline plays back, scrubs and marks keys with diamonds. **K** keys every property, and editing a value that already has keys adds a key at the current frame (auto-key). Transform tracks export as glTF animation channels, which pass the Khronos validator. Agents can read a pose (`get_scene` with `frame`) and render any frame (`render_view` with `frame`).
@@ -173,6 +179,7 @@ curl http://127.0.0.1:3000/api/commands \
 | `place` | `id`, then `on` (+ optional `at` [u, v]) or `beside` (+ `side`: `left`, `right`, `front`, `back`, and `gap`) |
 | `arrange` | `ids`, `layout` (`row`, `grid`, `circle`), optional `around`, `center` [x, z], `spacing`, `radius` |
 | `move` | `id`, optional `offset` and `rotate_y` (radians, about its centre) |
+| `boolean` | `id`, `with`, `operation` (`difference`, `union`, `intersect`), optional `keep` (keep the other object) |
 | groups | every command that takes an `id` (`move`, `place`, `arrange`, `drop`, `delete`) also accepts a group name |
 | material fields | `preset` (`glass`, `frosted`, `chrome`, `steel`, `gold`, `copper`, `jade`, `ceramic`, `clay`, `plastic`, `rubber`, `neon`), `color`, `roughness`, `metalness`, `emissive` (`#rrggbb`), `emissive_strength` (0–20), `opacity`, `transmission` |
 | `duplicate` / `array` | `id`, `offset` (and `count` for `array`) |
@@ -242,6 +249,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Headless renderer for agent vision | Rust: `src/render.rs` (CPU rasterizer, shadow map, no GPU needed) |
 | Scene inspection and `drop` | Rust: `src/inspect.rs` (point-in-mesh, penetration depth, support search) |
 | Assemblies and relational layout | Rust: `src/assembly.rs` (templates, `place`, `arrange`, group moves) |
+| Boolean operations | Rust: `src/csg.rs` (arena BSP trees after csg.js, T-junction repair) |
 | Shared API router (server and browser) | Rust: `src/api.rs` |
 | Browser-only build | Rust → WebAssembly: `wasm/` (plain C ABI, no bindgen) + `web/src/backend.js` |
 
@@ -277,7 +285,7 @@ node scripts/static-check.mjs    # drives it under a /Tatara/ sub-path with no s
 
 The aim is a creation suite that surpasses Blender for human and agent collaboration, taken one verifiable step at a time:
 
-1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓, ~~sculpting~~ ✓; next: dynamic topology and multires sculpting, multi-segment bevel, knife, merge and dissolve, booleans, and solidify/bevel/boolean modifiers.
+1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓, ~~sculpting~~ ✓; ~~booleans~~ ✓; next: dynamic topology and multires sculpting, multi-segment bevel, knife, merge and dissolve, and solidify/bevel/boolean modifiers.
 2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓; next: UVs and textures in glTF, and opening `.tatara.json` links directly in the web build.
 3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓; next: a node-based material system, UVs and textures, and a path-traced preview.
 4. **Motion:** ~~keyframes and timeline~~ ✓; next: a graph editor for curves, animating modifier parameters, constraints, then rigging.

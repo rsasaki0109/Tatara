@@ -183,6 +183,15 @@ try {
   await page.keyboard.press('Escape')
   await page.waitForSelector('[data-mode=object].on')
 
+  // Boolean: cut a second cube out of the first from the Boolean card.
+  await page.keyboard.press('Escape')
+  await page.click('[data-add=cube]')
+  await page.waitForFunction(() => document.querySelectorAll('#outliner li').length === 2)
+  await page.click('#outliner li:nth-child(1)')
+  await page.click('[data-bool=difference]')
+  await page.waitForFunction(() => document.querySelector('#activity li .what')?.textContent === 'difference')
+  check((await count()) === 1, 'boolean difference consumes the cutter')
+
   // Assemblies: build a chair from the empty panel; it lists as one group.
   await page.keyboard.press('Escape')
   await page.click('[data-build=chair]')

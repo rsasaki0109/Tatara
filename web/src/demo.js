@@ -109,6 +109,7 @@ export class DemoRunner {
     }
     if (s.slide) return this.slide(s)
     if (s.stroke) return this.stroke(s)
+    if (s.choose) return this.choose(s)
     if (s.scrub !== undefined) return this.scrub(s)
     if (s.chat) return this.chat(s)
     if (s.mcp) return this.mcp(s)
@@ -281,6 +282,22 @@ export class DemoRunner {
       this.placeCursor()
     })
     vp.sculptUp()
+    await this.idle()
+    if (s.after) await this.sleep(s.after)
+  }
+
+  /** Pick an option of a <select> by its label, like a mouse would. */
+  async choose(s) {
+    const el = document.querySelector(s.choose)
+    if (!el) throw new Error(`demo: nothing matches ${s.choose}`)
+    el.scrollIntoView({ block: 'nearest' })
+    const r = el.getBoundingClientRect()
+    await this.moveTo(r.left + r.width * 0.6, r.top + r.height * 0.55)
+    this.press()
+    const option = [...el.options].find((o) => o.textContent === s.value)
+    if (!option) throw new Error(`demo: no option ${s.value}`)
+    el.value = option.value
+    el.dispatchEvent(new Event('change', { bubbles: true }))
     await this.idle()
     if (s.after) await this.sleep(s.after)
   }

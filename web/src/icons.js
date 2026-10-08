@@ -34,6 +34,9 @@ const P = {
   play: '<path d="M4.5 2.8v10.4L13 8z" fill="currentColor"/>',
   pause: '<path d="M4.5 3v10M11.5 3v10" stroke-width="2.4"/>',
   cursor: '<path d="M3.5 2.5 12.5 8l-4 1-2 4.5z"/>',
+  'bool-difference': '<rect x="2" y="2" width="8.5" height="8.5" rx="1"/><circle cx="10.5" cy="10.5" r="4" stroke-dasharray="2 1.6"/>',
+  'bool-union': '<path d="M2 3a1 1 0 0 1 1-1h6.5a1 1 0 0 1 1 1v3.6A4 4 0 1 1 6.6 10.5H3a1 1 0 0 1-1-1z"/>',
+  'bool-intersect': '<rect x="2" y="2" width="8.5" height="8.5" rx="1" stroke-dasharray="2 1.6"/><circle cx="10.5" cy="10.5" r="4" stroke-dasharray="2 1.6"/><path d="M6.6 10.5a4 4 0 0 1 3.9-3.9v3.9z" fill="currentColor"/>',
   group: '<rect x="2" y="6" width="7" height="7.5" rx="1"/><rect x="7" y="2.5" width="7" height="7.5" rx="1"/>',
   sculpt: '<path d="M10.6 2.2 13.8 5.4 7.4 11.8 4.2 8.6z"/><path d="M4.2 8.6c-1.6.4-2.2 1.6-2.2 3.2 0 .9-.2 1.6-.6 2.2 2.2.2 4.4-.4 6-2.2"/>',
 }

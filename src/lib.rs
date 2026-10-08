@@ -1,6 +1,7 @@
 pub mod anim;
 pub mod api;
 pub mod assembly;
+pub mod csg;
 pub mod edit;
 pub mod engine;
 pub mod gltf;
