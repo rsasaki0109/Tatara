@@ -81,7 +81,8 @@ export class PathPreview {
 
   /** Called every frame: start the next pass once things are still. */
   tick() {
-    if (!this.active || this.busy) return
+    // A final render uses the core's tracer meanwhile.
+    if (!this.active || this.busy || this.paused) return
     const params = this.params()
     const key = JSON.stringify([params, this.revision])
     const now = this.clock.now()

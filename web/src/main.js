@@ -5,6 +5,7 @@ import { Viewport, displayMesh, hasUvs } from './viewport.js'
 import { NodeEditor, starterGraph } from './nodes.js'
 import { UvEditor } from './uveditor.js'
 import { PathPreview } from './pathpreview.js'
+import { FinalRender } from './finalrender.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
@@ -159,6 +160,26 @@ const preview = new PathPreview(viewport, clock, {
 })
 
 app.preview = preview
+
+// The Render panel: a finished image of this view.
+const finalRender = new FinalRender($('final-render'), {
+  camera: () => ({ eye: viewport.camera.position.toArray(), target: viewport.controls.target.toArray(), fov: viewport.camera.fov }),
+  focusPoint: () => {
+    const node = viewport.nodes.get(app.selected)
+    if (!node) return null
+    const g = node.mesh.geometry
+    if (!g.boundingSphere) g.computeBoundingSphere()
+    return g.boundingSphere.center.clone().applyMatrix4(node.mesh.matrixWorld).toArray()
+  },
+  frame: () => Math.round(app.frame),
+  range: () => animRange(),
+  clock,
+  onChange: () => {
+    preview.paused = finalRender.running
+    $('final-btn').classList.toggle('on', finalRender.open)
+  },
+})
+app.finalRender = finalRender
 
 function syncRenderLabel() {
   const label = document.querySelector('.view-label')
@@ -494,6 +515,11 @@ const actions = {
   exportGlb() {
     download('/api/export/glb', 'scene.glb')
   },
+  renderImage(on = !finalRender.open) {
+    if (on) finalRender.show()
+    else finalRender.hide()
+    finalRender.onChange()
+  },
   rendered(on = !preview.active) {
     preview.setActive(on)
   },
@@ -612,6 +638,7 @@ $('file-group').innerHTML =
 $('wire-btn').innerHTML = icon('wire')
 $('frame-btn').innerHTML = icon('frame')
 $('shading-btn').innerHTML = icon('render')
+$('final-btn').innerHTML = icon('camera')
 
 document.addEventListener('click', (e) => {
   const add = e.target.closest('[data-add]')
@@ -631,6 +658,7 @@ $('mode-bar').addEventListener('click', (e) => {
 })
 $('frame-btn').addEventListener('click', () => actions.frame())
 $('shading-btn').addEventListener('click', () => actions.rendered())
+$('final-btn').addEventListener('click', () => actions.renderImage())
 
 for (const tab of document.querySelectorAll('.tabs button')) tab.addEventListener('click', () => showTab(tab.dataset.tab))
 function showTab(name) {
@@ -1317,6 +1345,10 @@ document.addEventListener('keydown', (e) => {
     return e.shiftKey ? actions.redo() : actions.undo()
   }
   if (mod && k === 'y') return actions.redo()
+  if (k === 'f12') {
+    e.preventDefault()
+    return actions.renderImage()
+  }
   if (mod && k === 'b') {
     e.preventDefault()
     return actions.bevel()?.catch?.(() => {})
@@ -1568,6 +1600,7 @@ window.__tatara = {
   debug: () => ({ pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
     pathSamples: preview.active ? preview.samples : null,
+    finalSamples: finalRender.open ? finalRender.samples : null,
     bonesShown: [...viewport.nodes.values()].filter((n) => n.bones.visible).length,
     reachHandle: viewport.ikHandle.visible,
     triplanar: [...viewport.nodes.values()].filter((n) => 'TRIPLANAR' in n.mesh.material.defines).length,

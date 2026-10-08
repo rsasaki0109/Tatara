@@ -364,69 +364,209 @@ impl PathJob {
     }
 }
 
-/// Parse a path tracing request: `w`, `h`, `eye` and `target` ("x,y,z"),
-/// optional `fov` (degrees), `samples` and `frame`. Requests for the same
-/// camera and scene keep refining one image.
-pub fn path_job(ed: &Editor, query: &str) -> Result<PathJob, Response> {
-    let number = |key: &str, default: Option<f64>| -> Result<f64, Response> {
-        match query_param(query, key).filter(|s| !s.is_empty()) {
-            Some(v) => v
-                .parse::<f64>()
-                .ok()
-                .filter(|x| x.is_finite())
-                .ok_or_else(|| Response::error(400, format!("{key} must be a number"))),
-            None => default.ok_or_else(|| Response::error(400, format!("{key} is required"))),
-        }
-    };
-    let point = |key: &str| -> Result<glam::DVec3, Response> {
-        let raw = query_param(query, key).unwrap_or_default();
-        let v: Vec<f64> = raw
-            .split(',')
-            .filter_map(|x| x.trim().parse().ok())
-            .collect();
-        match v[..] {
-            [x, y, z] if v.iter().all(|c| c.is_finite()) => Ok(glam::DVec3::new(x, y, z)),
-            _ => Err(Response::error(400, format!("{key} must be x,y,z"))),
-        }
-    };
-    let (w, h) = (number("w", None)?, number("h", None)?);
-    if !(8.0..=2048.0).contains(&w) || !(8.0..=2048.0).contains(&h) {
-        return Err(Response::error(400, "w and h must be between 8 and 2048"));
+/// A number from the query, or `default` (an error when there is none).
+fn number(query: &str, key: &str, default: Option<f64>) -> Result<f64, Response> {
+    match query_param(query, key).filter(|s| !s.is_empty()) {
+        Some(v) => v
+            .parse::<f64>()
+            .ok()
+            .filter(|x| x.is_finite())
+            .ok_or_else(|| Response::error(400, format!("{key} must be a number"))),
+        None => default.ok_or_else(|| Response::error(400, format!("{key} is required"))),
     }
-    let fov = number("fov", Some(36.0))?;
+}
+
+/// An "x,y,z" point from the query.
+fn point(query: &str, key: &str) -> Result<glam::DVec3, Response> {
+    let raw = query_param(query, key).unwrap_or_default();
+    let v: Vec<f64> = raw
+        .split(',')
+        .filter_map(|x| x.trim().parse().ok())
+        .collect();
+    match v[..] {
+        [x, y, z] if v.iter().all(|c| c.is_finite()) => Ok(glam::DVec3::new(x, y, z)),
+        _ => Err(Response::error(400, format!("{key} must be x,y,z"))),
+    }
+}
+
+fn frame_param(query: &str) -> Result<Option<f64>, Response> {
+    match query_param(query, "frame").filter(|s| !s.is_empty()) {
+        Some(f) => Ok(Some(crate::anim::check_frame(
+            f.parse()
+                .map_err(|_| Response::error(400, "frame must be a number"))?,
+        )?)),
+        None => Ok(None),
+    }
+}
+
+/// Image size `w` x `h` (8-`max`), `fov` (degrees), `aperture` (lens
+/// radius in metres, 0-1) and `focus` (metres, 0 = the target's distance).
+fn lens(query: &str, max: f64) -> Result<(usize, usize, f64, f64, f64), Response> {
+    let (w, h) = (number(query, "w", None)?, number(query, "h", None)?);
+    if !(8.0..=max).contains(&w) || !(8.0..=max).contains(&h) {
+        return Err(Response::error(
+            400,
+            format!("w and h must be between 8 and {max}"),
+        ));
+    }
+    let fov = number(query, "fov", Some(36.0))?;
     if !(1.0..=170.0).contains(&fov) {
         return Err(Response::error(
             400,
             "fov must be between 1 and 170 degrees",
         ));
     }
-    let samples = number("samples", Some(1.0))?;
-    if !(1.0..=64.0).contains(&samples) {
-        return Err(Response::error(400, "samples must be between 1 and 64"));
+    let aperture = number(query, "aperture", Some(0.0))?;
+    let focus = number(query, "focus", Some(0.0))?;
+    if !(0.0..=1.0).contains(&aperture) || !(0.0..=1e4).contains(&focus) {
+        return Err(Response::error(
+            400,
+            "aperture must be 0-1 m and focus 0-10000 m",
+        ));
     }
-    let frame = match query_param(query, "frame").filter(|s| !s.is_empty()) {
-        Some(f) => {
-            Some(crate::anim::check_frame(f.parse().map_err(|_| {
-                Response::error(400, "frame must be a number")
-            })?)?)
-        }
-        None => None,
-    };
-    let (eye, target) = (point("eye")?, point("target")?);
+    Ok((w as usize, h as usize, fov, aperture, focus))
+}
+
+/// A camera at `eye` looking at `target`, from the query.
+fn camera(query: &str, max: f64) -> Result<crate::pathtrace::Camera, Response> {
+    let (w, h, fov, aperture, focus) = lens(query, max)?;
+    let (eye, target) = (point(query, "eye")?, point(query, "target")?);
     if eye.distance(target) < 1e-9 {
         return Err(Response::error(400, "eye and target must differ"));
     }
+    Ok(crate::pathtrace::Camera {
+        aperture,
+        focus,
+        ..crate::pathtrace::Camera::new(eye, target, fov, w, h)
+    })
+}
+
+/// Parse a path tracing request: the camera (`w`, `h`, `eye`, `target`,
+/// optional `fov`, `aperture`, `focus`), `samples` and `frame`. Requests for
+/// the same camera and scene keep refining one image.
+pub fn path_job(ed: &Editor, query: &str) -> Result<PathJob, Response> {
+    let camera = camera(query, 2048.0)?;
+    let samples = number(query, "samples", Some(1.0))?;
+    if !(1.0..=64.0).contains(&samples) {
+        return Err(Response::error(400, "samples must be between 1 and 64"));
+    }
     Ok(PathJob {
-        scene: crate::pathtrace::traced(ed, frame)?,
-        camera: crate::pathtrace::Camera {
-            eye,
-            target,
-            fov,
-            width: w as usize,
-            height: h as usize,
-        },
+        scene: crate::pathtrace::traced(ed, frame_param(query)?)?,
+        camera,
         samples: samples as u32,
     })
+}
+
+/// A final render: the scene (one per frame for animations), the camera,
+/// samples and background.
+pub struct ImageJob {
+    scenes: Vec<std::sync::Arc<crate::pathtrace::Traced>>,
+    camera: crate::pathtrace::Camera,
+    samples: u32,
+    transparent: bool,
+    fps: f64,
+}
+
+/// Parse a final render: the camera (`eye`/`target`, or a `view` preset
+/// framing the scene), `w`, `h`, `fov`, `aperture`, `focus`, `samples`
+/// (1-4096), `background` (`studio` or `transparent`) and `frame`, or
+/// `frames=a-b` for an animated PNG.
+pub fn image_job(ed: &Editor, query: &str) -> Result<ImageJob, Response> {
+    let frames: Vec<Option<f64>> = match query_param(query, "frames").filter(|s| !s.is_empty()) {
+        Some(range) => {
+            let (a, b) = range
+                .split_once('-')
+                .and_then(|(a, b)| {
+                    Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
+                })
+                .ok_or_else(|| Response::error(400, "frames must be start-end"))?;
+            let (a, b) = (crate::anim::check_frame(a)?, crate::anim::check_frame(b)?);
+            if b < a || b - a >= 240.0 {
+                return Err(Response::error(
+                    400,
+                    "frames must run forward, at most 240 of them",
+                ));
+            }
+            (0..=(b - a) as usize).map(|k| Some(a + k as f64)).collect()
+        }
+        None => vec![frame_param(query)?],
+    };
+    let samples = number(query, "samples", Some(64.0))?;
+    if !(1.0..=4096.0).contains(&samples) {
+        return Err(Response::error(400, "samples must be between 1 and 4096"));
+    }
+    let transparent = match query_param(query, "background").as_deref() {
+        None | Some("") | Some("studio") => false,
+        Some("transparent") => true,
+        Some(_) => {
+            return Err(Response::error(
+                400,
+                "background must be studio or transparent",
+            ));
+        }
+    };
+    let scenes = frames
+        .iter()
+        .map(|f| crate::pathtrace::traced_uncached(ed, *f))
+        .collect::<Result<Vec<_>, _>>()?;
+    let camera = if query_param(query, "eye").is_some() {
+        camera(query, 4096.0)?
+    } else {
+        let (w, h, fov, aperture, focus) = lens(query, 4096.0)?;
+        let view = crate::render::parse_views(
+            &query_param(query, "view").unwrap_or_else(|| "iso".into()),
+        )?;
+        let [view] = &view[..] else {
+            return Err(Response::error(400, "view names one view"));
+        };
+        let (eye, target) = scenes[0].frame_view(view, fov, w as f64 / h as f64);
+        crate::pathtrace::Camera {
+            aperture,
+            focus,
+            ..crate::pathtrace::Camera::new(eye, target, fov, w, h)
+        }
+    };
+    let work = camera.width as f64 * camera.height as f64 * samples * scenes.len() as f64;
+    if work > 4e9 {
+        return Err(Response::error(
+            400,
+            "too much work: lower the size, samples or frames (w x h x samples x frames at most 4e9)",
+        ));
+    }
+    Ok(ImageJob {
+        scenes,
+        camera,
+        samples: samples as u32,
+        transparent,
+        fps: ed.scene().animation.fps,
+    })
+}
+
+impl ImageJob {
+    /// Render and answer with a PNG (an animated PNG for several frames).
+    pub fn run(self) -> Response {
+        let frames: Vec<Vec<u8>> = self
+            .scenes
+            .iter()
+            .map(|t| t.still(&self.camera, self.samples, self.transparent))
+            .collect();
+        match crate::pathtrace::png(
+            &frames,
+            self.camera.width,
+            self.camera.height,
+            self.transparent,
+            self.fps,
+        ) {
+            Ok(body) => Response {
+                status: 200,
+                content_type: "image/png",
+                body,
+                changed: None,
+                disposition: None,
+            },
+            Err(e) => e.into(),
+        }
+    }
 }
 
 /// Route one request. `path` may include a query string; it is relative to
@@ -517,6 +657,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
         }
         ("GET", "/render") => render_job(ed, query).map(render_png),
         ("GET", "/pathtrace") => path_job(ed, query).map(PathJob::run),
+        ("GET", "/render/image") => image_job(ed, query).map(ImageJob::run),
         ("GET", "/texture") => texture(ed, query),
         ("GET", "/image") => image(ed, query),
         ("GET", "/nodes") => node_tile(ed, query),
@@ -713,6 +854,69 @@ mod tests {
             handle(&mut ed, "GET", "/render?size=64&samples=999", &[], false).status,
             422
         );
+    }
+
+    #[test]
+    fn final_renders_are_pngs_and_animations_are_apngs() {
+        let mut ed = Editor::new();
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands": [
+                {"op": "add", "name": "Box", "primitive": {"kind": "cube"}, "translation": [0, 0.5, 0]},
+                {"op": "set_keyframe", "id": "Box", "property": "translation", "frame": 1, "value": [0, 0.5, 0]},
+                {"op": "set_keyframe", "id": "Box", "property": "translation", "frame": 3, "value": [1, 0.5, 0]}
+            ]}),
+        );
+        let still = handle(
+            &mut ed,
+            "GET",
+            "/render/image?w=32&h=18&samples=2&view=front&aperture=0.1",
+            &[],
+            false,
+        );
+        assert_eq!((still.status, still.content_type), (200, "image/png"));
+        let decoder = png::Decoder::new(std::io::Cursor::new(still.body));
+        let info = decoder.read_info().unwrap();
+        assert_eq!((info.info().width, info.info().height), (32, 18));
+        assert_eq!(
+            info.info().color_type,
+            png::ColorType::Rgb,
+            "the studio backdrop is opaque"
+        );
+        let clear = handle(
+            &mut ed,
+            "GET",
+            "/render/image?w=16&h=16&samples=1&background=transparent&eye=0,1,4&target=0,0.5,0",
+            &[],
+            false,
+        );
+        let decoder = png::Decoder::new(std::io::Cursor::new(clear.body));
+        assert_eq!(
+            decoder.read_info().unwrap().info().color_type,
+            png::ColorType::Rgba
+        );
+        // A frame range is an animated PNG, one frame each.
+        let anim = handle(
+            &mut ed,
+            "GET",
+            "/render/image?w=16&h=16&samples=1&frames=1-3",
+            &[],
+            false,
+        );
+        let decoder = png::Decoder::new(std::io::Cursor::new(anim.body));
+        let info = decoder.read_info().unwrap();
+        assert_eq!(info.info().animation_control().unwrap().num_frames, 3);
+        for bad in [
+            "/render/image?w=16&h=16&samples=0",
+            "/render/image?w=16&h=16&frames=5-1",
+            "/render/image?w=16&h=16&background=pink",
+            "/render/image?w=4000&h=4000&samples=4096",
+            "/render/image?w=16&h=16&aperture=2",
+        ] {
+            assert_eq!(handle(&mut ed, "GET", bad, &[], false).status, 400, "{bad}");
+        }
     }
 
     #[test]
