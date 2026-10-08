@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::{EngineError, Material, ObjRef, Primitive, Scene, Vec3};
 use crate::inspect;
+use crate::texture::{Pattern, Texture};
 
 fn err<T>(message: impl Into<String>) -> Result<T, EngineError> {
     Err(EngineError::new(message))
@@ -126,7 +127,10 @@ fn post(name: &'static str, radius: f64, height: f64, at: Vec3, material: Materi
 
 /// The parts of a template, resting on the floor around the origin.
 pub fn parts(t: Template) -> Vec<Part> {
-    let wood = mat("#8b5a3c", 0.6);
+    let wood = Material {
+        texture: Some(Texture::new(Pattern::Wood, "#5f3c27", 0.6)),
+        ..mat("#8b5a3c", 0.6)
+    };
     let dark = mat("#3b2a22", 0.55);
     match t {
         Template::Table => {

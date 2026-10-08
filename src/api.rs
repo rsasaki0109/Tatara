@@ -147,6 +147,39 @@ fn render(ed: &Editor, query: &str) -> Result<Response, Response> {
     })
 }
 
+/// One tile of a procedural texture as PNG, so the viewport shows exactly
+/// what the renderer and glTF export use. Colours may omit the `#`.
+fn texture(query: &str) -> Result<Response, Response> {
+    let color = |key: &str, default: &str| -> Result<String, Response> {
+        let c = query_param(query, key).unwrap_or_else(|| default.into());
+        let c = if c.starts_with('#') {
+            c
+        } else {
+            format!("#{c}")
+        };
+        Ok(engine::check_color(&c)?)
+    };
+    let pattern: crate::texture::Pattern =
+        serde_json::from_value(json!(query_param(query, "pattern").unwrap_or_default()))
+            .map_err(|_| Response::error(400, "unknown texture pattern"))?;
+    let size = match query_param(query, "size") {
+        Some(s) => s
+            .parse::<u32>()
+            .ok()
+            .filter(|s| (8..=1024).contains(s))
+            .ok_or_else(|| Response::error(400, "size must be 8-1024"))?,
+        None => 256,
+    };
+    let t = crate::texture::Texture::new(pattern, &color("color2", "#3b2a22")?, 1.0);
+    Ok(Response {
+        status: 200,
+        content_type: "image/png",
+        body: crate::texture::bake_png(&color("color", "#9aa0a6")?, &t, size),
+        changed: None,
+        disposition: None,
+    })
+}
+
 /// Route one request. `path` may include a query string; it is relative to
 /// `/api` (e.g. `/commands`). `ai` reports whether chat is configured.
 pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) -> Response {
@@ -234,6 +267,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
             .changed(r.revision))
         }
         ("GET", "/render") => render(ed, query),
+        ("GET", "/texture") => texture(query),
         _ => Err(Response::error(
             404,
             format!("no route for {method} /api{path}"),
@@ -314,6 +348,18 @@ mod tests {
         assert_eq!(imported.status, 200);
         assert_eq!(imported.changed, Some(ed.scene().revision));
         assert_eq!(call(&mut ed, "GET", "/nope", Value::Null).0, 404);
+        let tex = handle(
+            &mut ed,
+            "GET",
+            "/texture?pattern=brick&color=a4452c&color2=%23d8d0c4&size=32",
+            &[],
+            false,
+        );
+        assert_eq!((tex.status, tex.content_type), (200, "image/png"));
+        assert_eq!(
+            handle(&mut ed, "GET", "/texture?pattern=plaid", &[], false).status,
+            400
+        );
     }
 
     #[test]

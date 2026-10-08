@@ -27,12 +27,12 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Ask</b> — chat turns into an atomic, undoable command batch.</td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/media/sculpt.gif" alt="In sculpt mode a clay ball becomes a goblin head: mirrored draw strokes raise a nose and brow, Ctrl-strokes carve eyes and a mouth, the grab brush pulls out pointed ears, inflate swells the cheeks and a Shift-stroke smooths the face"></td>
     <td width="50%"><img src="docs/media/materials.gif" alt="Four plain objects become glass, gold, jade and a neon ring with one click each; the neon glow is turned up, its colour is keyed from pink to cyan to amber and the animation plays back with bloom"></td>
+    <td width="50%"><img src="docs/media/textures.gif" alt="A plain room corner gets a tiled floor and a brick wall from presets, the bricks are resized with the tile-size slider, the vase on the wooden table turns to marble and a crate cycles through wood and checker patterns, then the scene turns"></td>
   </tr>
   <tr>
-    <td><b>Sculpt</b> — draw, carve, grab, inflate and smooth with mirror symmetry.</td>
     <td><b>Shade</b> — glass, metal, jade and neon presets; glowing surfaces bloom and are keyable.</td>
+    <td><b>Texture</b> — wood, marble, brick and tile patterns with no UV unwrapping, baked into glTF.</td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/media/editing.gif" alt="In edit mode a cube gets a loop cut, its ridge vertices are raised into a gable roof, two front panels are inset and pushed in, then every edge is bevelled and smoothed"></td>
@@ -43,11 +43,11 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Model</b> — Alt+click a face, extrude, subdivide, glaze.</td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/media/mcp.gif" alt="An external agent calls tatara --mcp tools; a stale edit is rejected and undo/redo work from the agent"></td>
+    <td width="50%"><img src="docs/media/sculpt.gif" alt="In sculpt mode a clay ball becomes a goblin head: mirrored draw strokes raise a nose and brow, Ctrl-strokes carve eyes and a mouth, the grab brush pulls out pointed ears, inflate swells the cheeks and a Shift-stroke smooths the face"></td>
     <td width="50%"><img src="docs/media/boolean.gif" alt="A cylinder is subtracted from a block to drill a hole, a cube is intersected with a sphere to make a rounded die, then an agent drills six pips into it with boolean difference commands over MCP"></td>
   </tr>
   <tr>
-    <td><b>Connect</b> — any MCP agent edits the scene you are looking at.</td>
+    <td><b>Sculpt</b> — draw, carve, grab, inflate and smooth with mirror symmetry.</td>
     <td><b>Cut</b> — boolean difference, union and intersect, from the panel or an agent.</td>
   </tr>
   <tr>
@@ -57,6 +57,14 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
   <tr>
     <td><b>Animate</b> — key a pose, scrub, edit (auto-key), play; exports as a glTF animation.</td>
     <td><b>Stack</b> — non-destructive modifiers; edit the base and every layer follows.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/mcp.gif" alt="An external agent calls tatara --mcp tools; a stale edit is rejected and undo/redo work from the agent"></td>
+    <td width="50%"></td>
+  </tr>
+  <tr>
+    <td><b>Connect</b> — any MCP agent edits the scene you are looking at.</td>
+    <td></td>
   </tr>
 </table>
 
@@ -101,12 +109,13 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **Sculpt mode:** draw, inflate, smooth, flatten and grab brushes with a smooth falloff and X mirror symmetry. Ctrl carves, Shift smooths and `[` `]` resize the brush. The stroke previews live while you drag and is committed as one `sculpt` command (one undo step), so agents sculpt with exactly the same operation. **Smooth shading** blends normals across edges, in the viewport, agent renders and glTF export alike.
 - **Booleans:** `boolean` cuts one object out of another (`difference`), merges them (`union`) or keeps their overlap (`intersect`), with a BSP-tree CSG in Rust. The result is welded and its T-junctions repaired, so it stays watertight and renders without cracks. The Properties panel has a Boolean card, and the cutter is consumed unless you keep it.
 - **Edit mode (Tab):** vertex, edge and face selection with Shift+click and select all; move a selection with the gizmo; loop cut; bevel selected edges or every edge; extrude and inset several faces at once.
-- **Materials:** PBR colour, roughness and metalness, plus emission (with a strength above 1 for glow), opacity and transmission for glass. Twelve presets cover glass, frosted glass, chrome, steel, gold, copper, jade, ceramic, clay, plastic, rubber and neon; any field given alongside a preset overrides it. Emissive surfaces bloom in the viewport and in agent renders, and glass shows what is behind it in both.
+- **Materials:** PBR colour, roughness and metalness, plus emission (with a strength above 1 for glow), opacity and transmission for glass. Sixteen presets cover glass, frosted glass, chrome, steel, gold, copper, jade, ceramic, clay, plastic, rubber, neon, wood, marble, brick and tiles; any field given alongside a preset overrides it. Emissive surfaces bloom in the viewport and in agent renders, and glass shows what is behind it in both.
+- **Textures:** procedural wood, marble, brick, tile, checker and stripe patterns mix the material colour with a second colour. Faces are box-projected along their dominant axis in object space, so nothing needs UV unwrapping, and `scale` is the size of one tile in metres. The pattern is defined once in Rust (`src/texture.rs`): the viewport shows a tile baked by the core, agent renders sample the same function, and glTF export bakes it into a PNG with `TEXCOORD_0`, so the model looks the same in any viewer. Furniture from `build` comes in wood grain.
 - **Animation:** keyframes for location, rotation, scale, colour, roughness, metalness, emission and opacity, with ease, linear or step interpolation. The timeline plays back, scrubs and marks keys with diamonds. **K** keys every property, and editing a value that already has keys adds a key at the current frame (auto-key). Transform tracks export as glTF animation channels, which pass the Khronos validator. Agents can read a pose (`get_scene` with `frame`) and render any frame (`render_view` with `frame`).
 - **Modifier stack:** non-destructive Mirror, Subdivision, Array, Twist and Taper, evaluated in Rust in order. The base mesh stays editable and is drawn as an orange cage. **Apply** bakes the stack into the base mesh.
 - **History:** each batch is one undo step, and an invalid batch changes nothing.
 - **Files:** validated JSON scene save/open, and OBJ export with transforms applied.
-- **glTF 2.0:** export a binary `.glb` with one node, mesh and PBR material per object (emission, `KHR_materials_emissive_strength`, `KHR_materials_transmission` and alpha blending included), modifiers applied and normals split at creases; it passes the Khronos glTF Validator with no issues. Import `.glb` or `.gltf` with embedded buffers through the node hierarchy. Split vertices are welded and coplanar triangle pairs become quads again, so imported models stay editable. The whole import is one undo step.
+- **glTF 2.0:** export a binary `.glb` with one node, mesh and PBR material per object (emission, `KHR_materials_emissive_strength`, `KHR_materials_transmission`, alpha blending and baked texture images with UVs included), modifiers applied and normals split at creases; it passes the Khronos glTF Validator with no issues. Import `.glb` or `.gltf` with embedded buffers through the node hierarchy. Split vertices are welded and coplanar triangle pairs become quads again, so imported models stay editable. The whole import is one undo step.
 - **Agents:** a stdio MCP bridge, generated command schemas, scene bounds, optional full mesh reads and `render_view`. That tool gives agents eyes: a headless Rust renderer returns labelled multi-view PNGs, and the Agent panel shows the same image to you. `inspect_scene` gives them a ruler: it measures intersections (with depth), objects floating above their support (with the gap) and anything sunk below the floor, and the **Checks** card shows the same report with the culprits outlined in red. The `drop` command settles an object on whatever is beneath it.
 - **Layout by relation:** `build` makes furniture from primitives at real-world size (table, chair, lamp, mug, plant, shelf), each piece one **group** that `move`, `drop`, `delete`, `place` and `arrange` treat as a unit. `place` puts something on another object (`at` a spot of its top) or beside it; `arrange` lays items out in a row, a grid or a circle around something, turned to face it. Everything settles onto what is below it, so agents never compute coordinates. The outliner folds each group into one row, and the empty Properties panel builds the same pieces with one click.
 - **Chat (optional):** an OpenAI-compatible Chat Completions endpoint translates requests into validated commands.
@@ -181,7 +190,7 @@ curl http://127.0.0.1:3000/api/commands \
 | `move` | `id`, optional `offset` and `rotate_y` (radians, about its centre) |
 | `boolean` | `id`, `with`, `operation` (`difference`, `union`, `intersect`), optional `keep` (keep the other object) |
 | groups | every command that takes an `id` (`move`, `place`, `arrange`, `drop`, `delete`) also accepts a group name |
-| material fields | `preset` (`glass`, `frosted`, `chrome`, `steel`, `gold`, `copper`, `jade`, `ceramic`, `clay`, `plastic`, `rubber`, `neon`), `color`, `roughness`, `metalness`, `emissive` (`#rrggbb`), `emissive_strength` (0–20), `opacity`, `transmission` |
+| material fields | `preset` (`glass`, `frosted`, `chrome`, `steel`, `gold`, `copper`, `jade`, `ceramic`, `clay`, `plastic`, `rubber`, `neon`, `wood`, `marble`, `brick`, `tiles`), `color`, `roughness`, `metalness`, `emissive` (`#rrggbb`), `emissive_strength` (0–20), `opacity`, `transmission`, `texture` (`{"pattern": "wood" \| "marble" \| "brick" \| "tiles" \| "checker" \| "stripes" \| "none", "color2": "#rrggbb", "scale": metres per tile}`) |
 | `duplicate` / `array` | `id`, `offset` (and `count` for `array`) |
 | `extrude` / `inset` | `id`, `face`, and `distance` or `fraction` (0–1) |
 | `move_vertices` | `id`, `vertices` (indices), `offset` |
@@ -250,10 +259,9 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Scene inspection and `drop` | Rust: `src/inspect.rs` (point-in-mesh, penetration depth, support search) |
 | Assemblies and relational layout | Rust: `src/assembly.rs` (templates, `place`, `arrange`, group moves) |
 | Boolean operations | Rust: `src/csg.rs` (arena BSP trees after csg.js, T-junction repair) |
+| Procedural textures and box projection | Rust: `src/texture.rs` (served as PNG tiles by `/api/texture`) |
 | Shared API router (server and browser) | Rust: `src/api.rs` |
 | Browser-only build | Rust → WebAssembly: `wasm/` (plain C ABI, no bindgen) + `web/src/backend.js` |
-
-The native server and the WebAssembly build answer `/api` through the same `api::handle` router. In the browser build, `backend.js` sends the editor's `/api` requests into the module, so the UI is identical in both. Build the static site with `node scripts/build-static.mjs` (output in `web/dist-static/`), and check it with `node scripts/static-check.mjs`. The `Pages` workflow publishes it on every push to `main`.
 | Modifier stack evaluation | Rust: `src/modifiers.rs` |
 | Bevel, loop cut, vertex moves | Rust: `src/edit.rs` |
 | Keyframes and sampling | Rust: `src/anim.rs` (mirrored for playback in `web/src/anim.js`) |
@@ -262,6 +270,8 @@ The native server and the WebAssembly build answer `/api` through the same `api:
 | Stdio MCP bridge | Rust: `src/mcp.rs` |
 | Editor UI and WebGL presentation | JavaScript + Three.js: `web/src` |
 | Scripted workflows, recorder, smoke test | `web/src/scenarios.js`, `scripts/` |
+
+The native server and the WebAssembly build answer `/api` through the same `api::handle` router. In the browser build, `backend.js` sends the editor's `/api` requests into the module, so the UI is identical in both. Build the static site with `node scripts/build-static.mjs` (output in `web/dist-static/`), and check it with `node scripts/static-check.mjs`. The `Pages` workflow publishes it on every push to `main`.
 
 The browser is a presentation layer; geometry and authoritative edits run in Rust. The server binds to loopback and is single-user.
 
@@ -286,12 +296,12 @@ node scripts/static-check.mjs    # drives it under a /Tatara/ sub-path with no s
 The aim is a creation suite that surpasses Blender for human and agent collaboration, taken one verifiable step at a time:
 
 1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓, ~~sculpting~~ ✓; ~~booleans~~ ✓; next: dynamic topology and multires sculpting, multi-segment bevel, knife, merge and dissolve, and solidify/bevel/boolean modifiers.
-2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓; next: UVs and textures in glTF, and opening `.tatara.json` links directly in the web build.
-3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓; next: a node-based material system, UVs and textures, and a path-traced preview.
+2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓, ~~textures and UVs in glTF~~ ✓; next: importing image textures, and opening `.tatara.json` links directly in the web build.
+3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓, ~~procedural textures~~ ✓; next: a node-based material system, UV editing, image and normal maps, and a path-traced preview.
 4. **Motion:** ~~keyframes and timeline~~ ✓; next: a graph editor for curves, animating modifier parameters, constraints, then rigging.
 5. **Agents:** ~~visual feedback (`render_view`)~~ ✓, ~~measurements and collision reports (`inspect_scene`)~~ ✓; ~~layout by relation (`build`, `place`, `arrange`)~~ ✓; next: reviewable change proposals, constraints such as "keep on the table", more templates and multi-user sessions.
 
-Not yet available: `.blend` compatibility, UV editing, rigging and a production renderer. Extrusion moves a face along its normal and does not repair self-intersections. OBJ carries geometry only. glTF carries geometry, transforms, PBR factors with emission, transmission and alpha, and transform animation, but no textures, UVs or material animation yet. Importing a sheared node hierarchy bakes the transform into the vertices. Save the native scene to keep modifiers and edit history.
+Not yet available: `.blend` compatibility, UV editing, rigging and a production renderer. Extrusion moves a face along its normal and does not repair self-intersections. OBJ carries geometry only. glTF carries geometry, transforms, PBR factors with emission, transmission and alpha, and transform animation, and procedural textures baked to images with box-projected UVs, but no material animation yet; textures imported from other tools are dropped (their base colour stays). Importing a sheared node hierarchy bakes the transform into the vertices. Save the native scene to keep modifiers and edit history.
 
 ## License
 

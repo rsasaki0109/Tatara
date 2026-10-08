@@ -64,6 +64,10 @@ try {
   await page.click('[data-action=undo]')
   await page.waitForFunction(() => /6 faces/.test(document.querySelector('#status-mesh').textContent))
   check(true, 'undo works without a server')
+  await page.click('#outliner li')
+  await page.click('[data-pattern=wood]')
+  await page.waitForFunction(() => window.__tatara.debug().textured === 1)
+  check(true, 'textures are baked by the WebAssembly core')
 
   const [glb] = await Promise.all([page.waitForEvent('download'), page.click('[data-action=exportGlb]')])
   const bytes = fs.readFileSync(await glb.path())

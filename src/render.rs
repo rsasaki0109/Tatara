@@ -6,9 +6,10 @@
 //! browser is needed: the editor process answers `GET /api/render` directly.
 
 use glam::dcamera::rh::{proj::directx, view::look_at_mat4};
-use glam::{DMat4, DVec3, DVec4};
+use glam::{DMat4, DVec2, DVec3, DVec4};
 
 use crate::engine::{Editor, EngineError};
+use crate::texture::{self, Texture};
 
 const SUPERSAMPLE: usize = 2;
 const SHADOW_SIZE: usize = 1024;
@@ -69,11 +70,15 @@ impl Default for RenderOptions {
 struct Tri {
     p: [DVec3; 3],
     n: [DVec3; 3],
+    /// Texture coordinates in tiles (zero when untextured).
+    uv: [DVec2; 3],
     object: u32,
 }
 
 struct Shading {
     color: DVec3,
+    /// The base colour as written, and the pattern mixed into it.
+    texture: Option<(String, Texture)>,
     roughness: f64,
     metalness: f64,
     /// Linear emitted light, strength applied.
@@ -83,6 +88,17 @@ struct Shading {
 }
 
 impl Shading {
+    /// Linear base colour at texture coordinate `uv` (in tiles).
+    fn albedo(&self, uv: DVec2) -> DVec3 {
+        match &self.texture {
+            Some((base, t)) => {
+                let c = texture::color_at(base, t, uv.x, uv.y);
+                DVec3::from_array(c.map(srgb_to_linear))
+            }
+            None => self.color,
+        }
+    }
+
     /// Drawn in the blended pass instead of the opaque one.
     fn transparent(&self) -> bool {
         self.opacity < 0.999 || self.transmission > 0.0
@@ -143,10 +159,20 @@ fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepar
         };
         let m = transform.matrix();
         let normal_m = m.inverse().transpose();
-        let shaded = crate::gltf::shade(ed.evaluated(o), o.smooth);
+        let shaded = crate::gltf::shade(ed.evaluated(o), o.smooth, material.texture.is_some());
+        let tile = material.texture.as_ref().map_or(1.0, |t| t.scale);
+        let uvs: Vec<DVec2> = shaded
+            .uvs
+            .iter()
+            .map(|[u, v]| DVec2::new(*u as f64, *v as f64) / tile)
+            .collect();
         let index = materials.len() as u32;
         materials.push(Shading {
             color: hex(&material.color),
+            texture: material
+                .texture
+                .clone()
+                .map(|t| (material.color.clone(), t)),
             roughness: material.roughness,
             metalness: material.metalness,
             emissive: hex(&material.emissive) * material.emissive_strength,
@@ -180,6 +206,11 @@ fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepar
             tris.push(Tri {
                 p: [world[a], world[b], world[c]],
                 n: [normals[a], normals[b], normals[c]],
+                uv: if uvs.is_empty() {
+                    [DVec2::ZERO; 3]
+                } else {
+                    [uvs[a], uvs[b], uvs[c]]
+                },
                 object: index,
             });
         }
@@ -396,6 +427,7 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
     let mut id = vec![EMPTY; n * n];
     let mut normal = vec![DVec3::ZERO; n * n];
     let mut world = vec![DVec3::ZERO; n * n];
+    let mut uv = vec![DVec2::ZERO; n * n];
 
     let g = prep.radius * 8.0 + 4.0;
     let gy = prep.ground_y;
@@ -406,7 +438,7 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
         DVec3::new(c.x + g, gy, c.z + g),
         DVec3::new(c.x - g, gy, c.z + g),
     ];
-    let mut draw = |p: [DVec3; 3], nrm: [DVec3; 3], object: u32| {
+    let mut draw = |p: [DVec3; 3], nrm: [DVec3; 3], tuv: [DVec2; 3], object: u32| {
         let clip = p.map(|q| vp * q.extend(1.0));
         raster(clip, n, n, |x, y, z, b| {
             let i = y * n + x;
@@ -415,16 +447,27 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
                 id[i] = object;
                 normal[i] = (nrm[0] * b[0] + nrm[1] * b[1] + nrm[2] * b[2]).normalize_or_zero();
                 world[i] = p[0] * b[0] + p[1] * b[1] + p[2] * b[2];
+                uv[i] = tuv[0] * b[0] + tuv[1] * b[1] + tuv[2] * b[2];
             }
         });
     };
     if view.elevation > -5.0 {
-        draw([ground[0], ground[2], ground[1]], [DVec3::Y; 3], GROUND);
-        draw([ground[0], ground[3], ground[2]], [DVec3::Y; 3], GROUND);
+        draw(
+            [ground[0], ground[2], ground[1]],
+            [DVec3::Y; 3],
+            [DVec2::ZERO; 3],
+            GROUND,
+        );
+        draw(
+            [ground[0], ground[3], ground[2]],
+            [DVec3::Y; 3],
+            [DVec2::ZERO; 3],
+            GROUND,
+        );
     }
     for t in prep.tris.iter() {
         if !prep.materials[t.object as usize].transparent() {
-            draw(t.p, t.n, t.object);
+            draw(t.p, t.n, t.uv, t.object);
         }
     }
 
@@ -455,7 +498,8 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
                 }
                 o => {
                     let m = &prep.materials[o as usize];
-                    let (diffuse, gloss) = surface(m, world[i], normal[i], eye, shadow);
+                    let albedo = m.albedo(uv[i]);
+                    let (diffuse, gloss) = surface(m, albedo, world[i], normal[i], eye, shadow);
                     diffuse + gloss + m.emissive
                 }
             };
@@ -507,10 +551,11 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
             }
             let p = t.p[0] * b[0] + t.p[1] * b[1] + t.p[2] * b[2];
             let nn = (t.n[0] * b[0] + t.n[1] * b[1] + t.n[2] * b[2]).normalize_or_zero();
-            let (diffuse, gloss) = surface(m, p, nn, eye, shadow);
+            let albedo = m.albedo(t.uv[0] * b[0] + t.uv[1] * b[1] + t.uv[2] * b[2]);
+            let (diffuse, gloss) = surface(m, albedo, p, nn, eye, shadow);
             let facing = nn.dot((eye - p).normalize()).abs();
             let reflect = (1.0 - facing).powi(3);
-            let tint = DVec3::ONE.lerp(m.color, 0.55) * m.transmission * (1.0 - reflect);
+            let tint = DVec3::ONE.lerp(albedo, 0.55) * m.transmission * (1.0 - reflect);
             let pass = DVec3::splat(1.0 - m.opacity) + tint * m.opacity;
             out[i] =
                 out[i] * pass + (diffuse * (1.0 - m.transmission) + gloss + m.emissive) * m.opacity;
@@ -584,21 +629,29 @@ fn box_blur(img: &mut [DVec3], n: usize, r: usize) {
     }
 }
 
-/// Diffuse and glossy light leaving a surface point toward the eye.
-fn surface(m: &Shading, p: DVec3, n: DVec3, eye: DVec3, shadow: &ShadowMap) -> (DVec3, DVec3) {
+/// Diffuse and glossy light leaving a surface point toward the eye;
+/// `albedo` is the (possibly textured) base colour there.
+fn surface(
+    m: &Shading,
+    albedo: DVec3,
+    p: DVec3,
+    n: DVec3,
+    eye: DVec3,
+    shadow: &ShadowMap,
+) -> (DVec3, DVec3) {
     let v = (eye - p).normalize();
     let nn = if n.dot(v) < 0.0 { -n } else { n };
     let l = shadow.light;
     let rim = DVec3::new(-5.0, 4.0, -6.0).normalize();
     let lit = shadow.lit(p, nn);
-    let diffuse_col = m.color * (1.0 - m.metalness * 0.85);
+    let diffuse_col = albedo * (1.0 - m.metalness * 0.85);
     let hemi = DVec3::new(0.30, 0.31, 0.34).lerp(DVec3::new(0.62, 0.64, 0.70), 0.5 + 0.5 * nn.y);
     let key = nn.dot(l).max(0.0) * lit * 2.0;
     let fill = nn.dot(rim).max(0.0) * 0.55;
     let h = (l + v).normalize();
     let shininess = (2.0 / m.roughness.max(0.05).powi(4) - 2.0).clamp(2.0, 2048.0);
     let spec_strength = (1.0 - m.roughness).powi(2) * 0.9 + 0.04;
-    let spec_col = DVec3::splat(1.0).lerp(m.color, m.metalness);
+    let spec_col = DVec3::splat(1.0).lerp(albedo, m.metalness);
     let spec =
         nn.dot(h).max(0.0).powf(shininess) * spec_strength * lit * 2.3 * (shininess + 8.0) / 64.0;
     let grazing = 1.0 - nn.dot(v).max(0.0);
@@ -785,6 +838,34 @@ mod tests {
         let (left, right) = (sample(30, 52), sample(66, 52));
         assert!(left[0] > left[2] + 30, "left is red: {left:?}");
         assert!(right[2] > right[0] + 30, "right is blue: {right:?}");
+    }
+
+    #[test]
+    fn samples_textures() {
+        let dark_pixels = |texture: serde_json::Value| {
+            let mut ed = Editor::new();
+            let batch: CommandBatch = serde_json::from_value(serde_json::json!({"commands": [
+                {"op": "add", "primitive": {"kind": "cube"}, "translation": [0, 0.5, 0], "color": "#f0f0f0", "texture": texture}
+            ]}))
+            .unwrap();
+            ed.apply(&batch).unwrap();
+            let opts = RenderOptions {
+                views: parse_views("front").unwrap(),
+                size: 64,
+                focus: None,
+                frame: None,
+            };
+            let (_, _, px) = decode(&render_png(&ed, &opts).unwrap());
+            px.chunks(3).filter(|c| c.iter().all(|&v| v < 40)).count()
+        };
+        let plain = dark_pixels(serde_json::Value::Null);
+        let checker = dark_pixels(
+            serde_json::json!({"pattern": "checker", "color2": "#000000", "scale": 0.5}),
+        );
+        assert!(
+            checker > plain + 300,
+            "dark squares show: {plain} vs {checker}"
+        );
     }
 
     #[test]

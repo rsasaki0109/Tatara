@@ -710,6 +710,17 @@ button.primary:disabled {
   color: var(--muted);
 }
 
+.row.texture-row {
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.row.texture-row span {
+  width: 100%;
+}
+
 .row.emission b {
   font-weight: 500;
   color: var(--text);

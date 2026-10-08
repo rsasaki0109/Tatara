@@ -654,4 +654,42 @@ export const boolean = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean }
+// Procedural textures through the real UI: presets, pattern chips and the
+// tile-size slider, on a room corner with furniture from `build`.
+export const textures = {
+  title: 'Textures',
+  width: 800,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Floor', primitive: { kind: 'cube' }, translation: [0, -0.01, 0], scale: [3.4, 0.02, 2.6], color: '#d9d4cb', roughness: 0.6 },
+    { op: 'add', name: 'Wall', primitive: { kind: 'cube' }, translation: [0, 0.8, -1.3], scale: [3.4, 1.6, 0.08], color: '#c8c2b8', roughness: 0.9 },
+    { op: 'build', template: 'table' },
+    { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 64 }, translation: [0.25, 0.75, 0], scale: [0.6, 0.6, 0.6], color: '#e8e4dc', roughness: 0.3 },
+    { op: 'add', name: 'Crate', primitive: { kind: 'cube' }, translation: [-1.15, 0.25, 0.55], rotation: [0, 0.35, 0], scale: [0.5, 0.5, 0.5], color: '#b88a5a', roughness: 0.7 },
+  ],
+  camera: { azimuth: 22, elevation: 16, distance: 5.2, target: [-0.1, 0.6, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Procedural textures: no UV unwrapping', hint: 'material · preset' },
+    { pick: 'Floor', after: 100 },
+    { click: '[data-preset=tiles]', after: 450 },
+    { pick: 'Wall', after: 100 },
+    { click: '[data-preset=brick]', after: 450 },
+    { caption: 'Tile size is in metres', hint: 'texture.scale' },
+    { slide: '#p-tscale', to: 0.45, ms: 800, after: 350 },
+    { pick: 'Vase', after: 100 },
+    { click: '[data-preset=marble]', after: 450 },
+    { caption: 'Any colour, any pattern', hint: 'texture.pattern · color2' },
+    { pick: 'Crate', after: 100 },
+    { click: '[data-pattern=wood]', after: 450 },
+    { click: '[data-pattern=checker]', after: 450 },
+    { click: '[data-pattern=wood]', after: 400 },
+    { select: null },
+    { cursor: false },
+    { caption: 'Baked into glTF, the same in any viewer', hint: 'GLB · baseColorTexture' },
+    { spin: 7 },
+    { wait: 2200 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures }

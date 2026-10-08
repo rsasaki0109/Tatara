@@ -11,7 +11,10 @@ use glam::{DMat4, DQuat, DVec3, EulerRot};
 use serde_json::{Value, json};
 
 use crate::anim::{Property, sample_track};
-use crate::engine::{Command, Editor, EngineError, MAX_FACES, MAX_OBJECTS, Material, Mesh, Vec3};
+use crate::engine::{
+    Command, Editor, EngineError, MAX_FACES, MAX_OBJECTS, Material, Mesh, Vec3, check_color,
+};
+use crate::texture::{self, Pattern, Texture};
 
 const CREASE_DEGREES: f64 = 38.0;
 const GLB_MAGIC: &[u8; 4] = b"glTF";
@@ -70,11 +73,15 @@ fn newell(mesh: &Mesh, face: &[u32]) -> DVec3 {
 pub(crate) struct Shaded {
     pub(crate) positions: Vec<[f32; 3]>,
     pub(crate) normals: Vec<[f32; 3]>,
+    /// Box-projected texture coordinates in metres (empty unless asked for).
+    pub(crate) uvs: Vec<[f32; 2]>,
     pub(crate) indices: Vec<u32>,
 }
 
-/// `smooth` blends normals across every edge (smooth shading).
-pub(crate) fn shade(mesh: &Mesh, smooth: bool) -> Shaded {
+/// `smooth` blends normals across every edge (smooth shading); `uv` adds
+/// box-projected texture coordinates, splitting vertices where the
+/// projection axis changes.
+pub(crate) fn shade(mesh: &Mesh, smooth: bool, uv: bool) -> Shaded {
     let normals: Vec<DVec3> = mesh.faces.iter().map(|f| newell(mesh, f)).collect();
     let mut around: Vec<Vec<usize>> = vec![Vec::new(); mesh.vertices.len()];
     for (fi, f) in mesh.faces.iter().enumerate() {
@@ -90,10 +97,12 @@ pub(crate) fn shade(mesh: &Mesh, smooth: bool) -> Shaded {
     let mut out = Shaded {
         positions: Vec::new(),
         normals: Vec::new(),
+        uvs: Vec::new(),
         indices: Vec::new(),
     };
-    let mut ids: HashMap<(u32, [i32; 3]), u32> = HashMap::new();
+    let mut ids: HashMap<(u32, [i32; 3], u8), u32> = HashMap::new();
     for (fi, f) in mesh.faces.iter().enumerate() {
+        let axis = if uv { projection_axis(normals[fi]) } else { 0 };
         let corner: Vec<u32> = f
             .iter()
             .map(|&v| {
@@ -103,10 +112,14 @@ pub(crate) fn shade(mesh: &Mesh, smooth: bool) -> Shaded {
                     .fold(DVec3::ZERO, |acc, &g| acc + normals[g])
                     .normalize_or(normals[fi]);
                 let q = (n * 1e4).round().as_ivec3().to_array();
-                *ids.entry((v, q)).or_insert_with(|| {
-                    out.positions
-                        .push(mesh.vertices[v as usize].map(|x| x as f32));
+                *ids.entry((v, q, axis)).or_insert_with(|| {
+                    let p = mesh.vertices[v as usize];
+                    out.positions.push(p.map(|x| x as f32));
                     out.normals.push(n.as_vec3().to_array());
+                    if uv {
+                        let [u, w] = texture::box_uv(DVec3::from_array(p), normals[fi]);
+                        out.uvs.push([u as f32, w as f32]);
+                    }
                     (out.positions.len() - 1) as u32
                 })
             })
@@ -118,9 +131,33 @@ pub(crate) fn shade(mesh: &Mesh, smooth: bool) -> Shaded {
     out
 }
 
+/// Which of the six box-projection sides a face normal falls on.
+fn projection_axis(n: DVec3) -> u8 {
+    let a = n.abs();
+    let (k, c) = if a.x >= a.y && a.x >= a.z {
+        (0, n.x)
+    } else if a.y >= a.z {
+        (1, n.y)
+    } else {
+        (2, n.z)
+    };
+    k * 2 + u8::from(c < 0.0)
+}
+
 /// A glTF PBR material, with the KHR extensions it needs added to `used`.
-fn material_json(name: &str, m: &Material, used: &mut BTreeSet<String>) -> Value {
-    let [r, g, b] = hex_to_linear(&m.color);
+/// `texture` is the glTF texture holding the baked pattern, if any: it
+/// already contains the base colour, so the factor turns white and the
+/// procedural parameters ride along in `extras` for a lossless re-import.
+fn material_json(
+    name: &str,
+    m: &Material,
+    texture: Option<usize>,
+    used: &mut BTreeSet<String>,
+) -> Value {
+    let [r, g, b] = match texture {
+        Some(_) => [1.0; 3],
+        None => hex_to_linear(&m.color),
+    };
     let mut out = json!({
         "name": name,
         "pbrMetallicRoughness": {
@@ -129,6 +166,10 @@ fn material_json(name: &str, m: &Material, used: &mut BTreeSet<String>) -> Value
             "roughnessFactor": m.roughness,
         },
     });
+    if let (Some(index), Some(t)) = (texture, &m.texture) {
+        out["pbrMetallicRoughness"]["baseColorTexture"] = json!({ "index": index });
+        out["extras"] = json!({ "tatara_texture": { "color": m.color, "texture": t } });
+    }
     let mut ext = serde_json::Map::new();
     let emissive = hex_to_linear(&m.emissive);
     if m.emissive_strength > 0.0 && emissive.iter().any(|&c| c > 0.0) {
@@ -168,6 +209,9 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     let mut channels = Vec::new();
     let mut samplers = Vec::new();
     let mut extensions = BTreeSet::new();
+    let mut images = Vec::new();
+    let mut textures = Vec::new();
+    let mut baked: HashMap<String, usize> = HashMap::new();
     let fps = ed.scene().animation.fps;
     let mut push_view = |bin: &mut Vec<u8>, bytes: &[u8], target: u32| -> usize {
         while !bin.len().is_multiple_of(4) {
@@ -182,7 +226,8 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         views.len() - 1
     };
     for o in &ed.scene().objects {
-        let shaded = shade(ed.evaluated(o), o.smooth);
+        let tex = o.material.texture.as_ref();
+        let shaded = shade(ed.evaluated(o), o.smooth, tex.is_some());
         if shaded.indices.is_empty() {
             continue;
         }
@@ -217,10 +262,38 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         accessors.push(json!({ "bufferView": pv, "componentType": 5126, "count": shaded.positions.len(), "type": "VEC3", "min": min, "max": max }));
         accessors.push(json!({ "bufferView": nv, "componentType": 5126, "count": shaded.normals.len(), "type": "VEC3" }));
         accessors.push(json!({ "bufferView": iv, "componentType": 5125, "count": shaded.indices.len(), "type": "SCALAR" }));
-        materials.push(material_json(&o.name, &o.material, &mut extensions));
+        let mut attributes = json!({ "POSITION": a, "NORMAL": a + 1 });
+        let texture = tex.map(|t| {
+            // One tile of the pattern spans `scale` metres. glTF's V runs
+            // down the image while ours runs up, hence the minus.
+            let s = t.scale as f32;
+            let uv_bytes: Vec<u8> = shaded
+                .uvs
+                .iter()
+                .flat_map(|[u, v]| [u / s, -v / s])
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            let uvv = push_view(&mut bin, &uv_bytes, 34962);
+            attributes["TEXCOORD_0"] = json!(accessors.len());
+            accessors.push(json!({ "bufferView": uvv, "componentType": 5126, "count": shaded.uvs.len(), "type": "VEC2" }));
+            let key = serde_json::to_string(&(&o.material.color, t)).expect("json serializes");
+            *baked.entry(key).or_insert_with(|| {
+                let png = texture::bake_png(&o.material.color, t, 256);
+                let view = push_view(&mut bin, &png, 0);
+                images.push(json!({ "bufferView": view, "mimeType": "image/png" }));
+                textures.push(json!({ "sampler": 0, "source": images.len() - 1 }));
+                textures.len() - 1
+            })
+        });
+        materials.push(material_json(
+            &o.name,
+            &o.material,
+            texture,
+            &mut extensions,
+        ));
         meshes.push(json!({
             "name": o.name,
-            "primitives": [{ "attributes": { "POSITION": a, "NORMAL": a + 1 }, "indices": a + 2, "material": materials.len() - 1, "mode": 4 }],
+            "primitives": [{ "attributes": attributes, "indices": a + 2, "material": materials.len() - 1, "mode": 4 }],
         }));
         let t = &o.transform;
         let [rx, ry, rz] = t.rotation;
@@ -292,6 +365,12 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     if !bin.is_empty() {
         doc["buffers"] = json!([{ "byteLength": bin.len() }]);
     }
+    if !textures.is_empty() {
+        doc["images"] = json!(images);
+        doc["textures"] = json!(textures);
+        doc["samplers"] =
+            json!([{ "magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497 }]);
+    }
     if !extensions.is_empty() {
         doc["extensionsUsed"] = json!(extensions);
     }
@@ -339,8 +418,21 @@ fn imported_material(m: Option<&Value>) -> Option<Material> {
     let emissive = &m["emissiveFactor"];
     let ext = &m["extensions"];
     let blend = m["alphaMode"].as_str() == Some("BLEND");
+    // Our own exports carry the procedural pattern; other textures are
+    // dropped (the base colour factor stays).
+    let ours = &m["extras"]["tatara_texture"];
+    let texture = serde_json::from_value::<Texture>(ours["texture"].clone())
+        .ok()
+        .filter(|t| t.pattern != Pattern::None && t.validate().is_ok());
+    let own_color = ours["color"]
+        .as_str()
+        .filter(|_| texture.is_some())
+        .and_then(|c| check_color(c).ok());
     Some(Material {
-        color: linear_to_hex([0, 1, 2].map(|k| factor(base, k, 1.0))),
+        color: match own_color {
+            Some(c) => c,
+            None => linear_to_hex([0, 1, 2].map(|k| factor(base, k, 1.0))),
+        },
         roughness: num(&pbr["roughnessFactor"], 1.0).clamp(0.0, 1.0),
         metalness: num(&pbr["metallicFactor"], 1.0).clamp(0.0, 1.0),
         emissive: linear_to_hex([0, 1, 2].map(|k| factor(emissive, k, 0.0))),
@@ -359,6 +451,7 @@ fn imported_material(m: Option<&Value>) -> Option<Material> {
             0.0,
         )
         .clamp(0.0, 1.0),
+        texture,
     })
 }
 
@@ -773,6 +866,7 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
                 emissive_strength: m.as_ref().map(|m| m.emissive_strength),
                 opacity: m.as_ref().map(|m| m.opacity),
                 transmission: m.as_ref().map(|m| m.transmission),
+                texture: m.as_ref().and_then(|m| m.texture.clone()),
                 preset: None,
             });
             if commands.len() > MAX_OBJECTS {
@@ -822,9 +916,13 @@ mod tests {
                 )
                 .unwrap();
             }
-            shade(&ed.scene().objects[0].mesh, ed.scene().objects[0].smooth)
-                .positions
-                .len()
+            shade(
+                &ed.scene().objects[0].mesh,
+                ed.scene().objects[0].smooth,
+                false,
+            )
+            .positions
+            .len()
         };
         assert_eq!(cube(false), 24, "creased: four corners per face");
         assert_eq!(cube(true), 8, "smooth: one normal per vertex");
@@ -859,6 +957,52 @@ mod tests {
         assert_eq!(m(1).transmission, 1.0);
         assert!((m(2).opacity - 0.4).abs() < 1e-9);
         assert_eq!(m(3), crate::engine::Material::default());
+    }
+
+    #[test]
+    fn glb_bakes_textures_and_round_trips_them() {
+        let ed = editor_with(json!([
+            {"op": "add", "name": "Floor", "primitive": {"kind": "cube"}, "preset": "tiles"},
+            {"op": "add", "name": "Table", "primitive": {"kind": "cube"}, "preset": "wood"},
+            {"op": "add", "name": "Shelf", "primitive": {"kind": "cube"}, "preset": "wood"},
+            {"op": "add", "name": "Plain", "primitive": {"kind": "cube"}}
+        ]));
+        let glb = export_glb(&ed);
+        let len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let doc: Value = serde_json::from_slice(&glb[20..20 + len]).unwrap();
+        assert_eq!(
+            doc["images"].as_array().unwrap().len(),
+            2,
+            "identical textures share an image"
+        );
+        assert_eq!(doc["images"][0]["mimeType"], "image/png");
+        let pbr = &doc["materials"][0]["pbrMetallicRoughness"];
+        assert_eq!(
+            pbr["baseColorFactor"],
+            json!([1.0, 1.0, 1.0, 1.0]),
+            "the colour is in the image"
+        );
+        assert_eq!(pbr["baseColorTexture"]["index"], 0);
+        let uv = doc["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(
+            doc["accessors"][uv as usize]["count"], 24,
+            "a cube's sides project separately"
+        );
+        assert!(
+            doc["meshes"][3]["primitives"][0]["attributes"]
+                .get("TEXCOORD_0")
+                .is_none()
+        );
+
+        let back = reimport(&glb);
+        for i in 0..4 {
+            assert_eq!(
+                back.scene().objects[i].material,
+                ed.scene().objects[i].material
+            );
+        }
     }
 
     #[test]
