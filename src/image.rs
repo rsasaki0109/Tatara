@@ -344,9 +344,8 @@ pub fn decode_hdr(bytes: &[u8]) -> Result<(u32, u32, Vec<[f32; 3]>), EngineError
             if data.len() < wu * 4 {
                 return Err(bad());
             }
-            for (px, c) in row.iter_mut().zip(data.chunks_exact(4)) {
-                *px = [c[0], c[1], c[2], c[3]];
-            }
+            let (pixels, _) = data[..wu * 4].as_chunks::<4>();
+            row.copy_from_slice(pixels);
             data = &data[wu * 4..];
         }
         out.extend(row.iter().map(|&[r, g, b, e]| {

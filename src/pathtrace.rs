@@ -213,6 +213,8 @@ pub struct Traced {
     /// The image being refined for the latest camera.
     progress: Mutex<Option<Progressive>>,
     env: Env,
+    /// The world's directional lights.
+    lights: Vec<Light>,
 }
 
 /// Samples gathered so far for one camera.
@@ -331,6 +333,7 @@ impl Traced {
             prep,
             nodes,
             packed,
+            lights: env.lights(),
             env,
         }
     }
@@ -429,7 +432,6 @@ impl Traced {
     pub fn render(&self, camera: &Camera, samples: u32, seed: u32) -> Vec<[f32; 4]> {
         let (w, h) = (camera.width, camera.height);
         let frame = Frame::new(camera);
-        let lights = self.env.lights();
         rows(w, h, |x, y| {
             let mut acc = [0f64; 4];
             for s in 0..samples {
@@ -441,7 +443,7 @@ impl Traced {
                 let jx = (x as f64 + rng.next()) / w as f64;
                 let jy = (y as f64 + rng.next()) / h as f64;
                 let (o, d) = frame.shoot(jx, jy, &mut rng);
-                let (c, a) = self.path(o, d, &lights, &mut rng);
+                let (c, a) = self.path(o, d, &mut rng);
                 acc[0] += c.x;
                 acc[1] += c.y;
                 acc[2] += c.z;
@@ -569,7 +571,7 @@ impl Traced {
     }
 
     /// One path: (premultiplied radiance, coverage).
-    fn path(&self, eye: DVec3, dir: DVec3, lights: &[Light], rng: &mut Rng) -> (DVec3, f64) {
+    fn path(&self, eye: DVec3, dir: DVec3, rng: &mut Rng) -> (DVec3, f64) {
         let mut o = eye;
         let mut d = dir;
         let mut throughput = DVec3::ONE;
@@ -597,7 +599,7 @@ impl Traced {
                     let p = o + d * t;
                     if film {
                         if bounce == 0 && steps == 1 {
-                            let (c, shadow) = self.floor(p, lights, rng);
+                            let (c, shadow) = self.floor(p, rng);
                             if self.env.background {
                                 return (self.env.radiance(d) * (1.0 - shadow), 1.0);
                             }
@@ -617,7 +619,6 @@ impl Traced {
                                 -d,
                                 |_v, l, _| albedo / std::f64::consts::PI * n.dot(l).max(0.0),
                                 |l| n.dot(l).max(0.0) / std::f64::consts::PI,
-                                lights,
                                 rng,
                             ),
                         bounce,
@@ -742,7 +743,6 @@ impl Traced {
                             principled(n, v, l, diffuse, spec, alpha.max(0.02))
                         },
                         |l| bsdf_pdf(n, v, l, alpha, p_spec, mirror),
-                        lights,
                         rng,
                     ),
                 bounce,
@@ -790,7 +790,6 @@ impl Traced {
         v: DVec3,
         bsdf: impl Fn(DVec3, DVec3, bool) -> DVec3,
         pdf: impl Fn(DVec3) -> f64,
-        lights: &[Light],
         rng: &mut Rng,
     ) -> DVec3 {
         let mut sum = DVec3::ZERO;
@@ -806,7 +805,7 @@ impl Traced {
                 sum += bsdf(v, l, true) * self.env.radiance(l) * through * (weight / density);
             }
         }
-        for light in lights {
+        for light in &self.lights {
             let l = cone(light.dir, light.spread, rng);
             if n.dot(l) <= 0.0 {
                 continue;
@@ -853,10 +852,10 @@ impl Traced {
 
     /// The floor seen directly: its grid plus the shadows on it, over the
     /// transparent backdrop.
-    fn floor(&self, p: DVec3, lights: &[Light], rng: &mut Rng) -> (DVec3, f64) {
+    fn floor(&self, p: DVec3, rng: &mut Rng) -> (DVec3, f64) {
         // The main light: the key light, or a bright direction of the
         // world (mostly its sun, if it has one).
-        let l = match (lights.first(), self.env.sample(rng)) {
+        let l = match (self.lights.first(), self.env.sample(rng)) {
             (Some(key), _) => cone(key.dir, key.spread, rng),
             (None, Some((l, _))) if l.y > 0.0 => l,
             _ => DVec3::Y,

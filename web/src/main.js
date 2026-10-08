@@ -1665,6 +1665,8 @@ window.__tatara = {
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
     pathSamples: preview.active ? preview.samples : null,
     finalSamples: finalRender.open ? finalRender.samples : null,
+    world: viewport.worldMap?.source ?? null,
+    worldBackground: Boolean(viewport.scene.background),
     bonesShown: [...viewport.nodes.values()].filter((n) => n.bones.visible).length,
     reachHandle: viewport.ikHandle.visible,
     triplanar: [...viewport.nodes.values()].filter((n) => 'TRIPLANAR' in n.mesh.material.defines).length,

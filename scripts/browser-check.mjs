@@ -342,8 +342,22 @@ try {
   await page.waitForFunction(() => document.querySelector('#activity li .what')?.textContent === 'difference')
   check((await count()) === 1, 'boolean difference consumes the cutter')
 
-  // Assemblies: build a chair from the empty panel; it lists as one group.
+  // World: a sky chip lights the view with the core's environment map;
+  // the background checkbox shows it behind the scene.
   await page.keyboard.press('Escape')
+  await page.click('[data-sky=sunset]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.world?.sky === 'sunset'))
+  await page.waitForFunction(() => window.__tatara.debug().world === 'sky:sunset')
+  await page.check('#w-bg')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.world?.background === true))
+  await page.waitForFunction(() => window.__tatara.debug().worldBackground)
+  check(true, 'a World sky lights the viewport and shows behind the scene')
+  await page.click('[data-sky=studio]')
+  await page.uncheck('#w-bg')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => !s.world))
+  await page.waitForFunction(() => !window.__tatara.debug().worldBackground)
+
+  // Assemblies: build a chair from the empty panel; it lists as one group.
   await page.click('[data-build=chair]')
   await page.waitForSelector('#outliner li[data-group="Chair"]')
   check((await page.textContent('#outliner li[data-group="Chair"] .count')) === '6', 'build makes a six-part chair group')

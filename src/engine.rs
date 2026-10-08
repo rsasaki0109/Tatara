@@ -848,8 +848,9 @@ pub enum Command {
     },
     /// Remove every object.
     Clear {},
-    /// Store a PNG or JPEG image under `name` (replacing one of that name),
-    /// for textures (`{"pattern": "image", "image": name}`) and normal maps.
+    /// Store a PNG, JPEG or Radiance HDR image under `name` (replacing one
+    /// of that name), for textures (`{"pattern": "image", "image": name}`),
+    /// normal maps and the world's environment.
     AddImage {
         name: String,
         /// The file as base64 (a `data:` URL works too).
