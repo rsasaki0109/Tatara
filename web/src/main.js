@@ -359,6 +359,8 @@ function summarize(commands) {
                 ? `${c.texture.pattern} texture`
                 : c.op === 'add_image'
                 ? `image ${c.name}`
+                : c.op === 'world'
+                ? `world${c.image ? ` ${c.image}` : c.sky ? ` ${c.sky}` : ''}`
                 : c.op === 'add_modifier'
                 ? `+ ${c.modifier.type}`
                 : c.op === 'set_modifier'
@@ -612,6 +614,25 @@ $('image-input').addEventListener('change', async (e) => {
   run([{ op: 'add_image', name, data }, { op: 'material', id: o.id, texture }]).catch(() => {})
 })
 
+// A panorama becomes a scene image that lights the world.
+$('world-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0]
+  e.target.value = ''
+  if (!file) return
+  const name = file.name.replace(/\.[^.]+$/, '').replace(/[^\w .-]+/g, ' ').trim().slice(0, 60) || 'Environment'
+  const data = await track(() =>
+    clock.track(
+      new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result)
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(file)
+      }),
+    ),
+  )
+  run([{ op: 'add_image', name, data }, { op: 'world', image: name }]).catch(() => {})
+})
+
 // ---------------------------------------------------------------------------
 // UI
 // ---------------------------------------------------------------------------
@@ -801,6 +822,33 @@ $('outliner').addEventListener('click', (e) => {
   if (li) select(Number(li.dataset.id))
 })
 
+// The world: built-in skies, environment images and their settings.
+const SKIES = [
+  ['studio', 'Studio', '#5a5c64'],
+  ['daylight', 'Daylight', '#78aee8'],
+  ['sunset', 'Sunset', '#f0894a'],
+  ['overcast', 'Overcast', '#b9bec7'],
+  ['night', 'Night', '#2a3558'],
+]
+const worldOf = () => ({ sky: 'studio', image: null, strength: 1, rotation: 0, background: false, ...app.scene.world })
+
+function worldCard() {
+  const w = worldOf()
+  const images = Object.entries(app.scene.images || {})
+  // Panoramas: HDR files, and any 2:1 picture.
+  const panoramas = images.filter(([, i]) => i.mime === 'image/vnd.radiance' || i.width === i.height * 2)
+  const skies = SKIES.map(([id, label, c]) => `<button class="chip preset ${!w.image && w.sky === id ? 'on' : ''}" data-sky="${id}" title="${label} sky"><i style="--c:${c}"></i>${label}</button>`).join('')
+  const maps = panoramas
+    .map(([name]) => `<button class="chip preset ${w.image === name ? 'on' : ''}" data-world-image="${escapeHtml(name)}" title="Light with ${escapeHtml(name)}"><i style="--c:#c9a35a"></i>${escapeHtml(name)}</button>`)
+    .join('')
+  return `<div class="card world-card"><div class="card-title">World <span class="muted small">${escapeHtml(w.image ?? w.sky)} · lighting</span></div>
+    <div class="presets">${skies}${maps}<button class="chip" data-world-hdri title="Light the scene with an HDRI panorama (.hdr, or a 2:1 PNG/JPEG)">+ HDRI…</button></div>
+    <label class="slider"><span>Strength</span><input type="range" min="0" max="4" step="0.05" id="w-strength" value="${w.strength}"><b>${fmt(w.strength)}</b></label>
+    <label class="slider"><span>Rotation</span><input type="range" min="0" max="360" step="1" id="w-rotation" value="${Math.round(w.rotation)}"><b>${Math.round(w.rotation)}°</b></label>
+    <label class="inline world-bg"><input type="checkbox" id="w-bg" ${w.background ? 'checked' : ''}> Show as background</label>
+  </div>`
+}
+
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 }
@@ -812,14 +860,15 @@ function renderProperties(o) {
   const el = $('properties')
   const key = o
     ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, app.ik, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
-    : 'none'
+    : `none:${JSON.stringify([app.scene.world, Object.keys(app.scene.images || {})])}`
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
   renderedKey = key
   if (!o) {
     el.innerHTML = `<div class="empty-props">${icon('cursor')}<p>Select an object in the viewport or outliner.</p><p class="muted">Alt+click selects a single face for extrusion.</p></div>
       <div class="card"><div class="card-title">Build an assembly <span class="muted small">build · place · arrange</span></div>
-      <div class="brushes">${TEMPLATES.map(([t, label]) => `<button class="chip" data-build="${t}">+ ${label}</button>`).join('')}</div></div>`
+      <div class="brushes">${TEMPLATES.map(([t, label]) => `<button class="chip" data-build="${t}">+ ${label}</button>`).join('')}</div></div>
+      ${worldCard()}`
     return
   }
   // Animated properties show their value at the current frame, marked ◆.
@@ -1070,6 +1119,13 @@ function modifierField(m, name, raw) {
 }
 
 $('properties').addEventListener('input', (e) => {
+  const t = e.target
+  if (t.id === 'w-strength' || t.id === 'w-rotation') {
+    // Preview the light while dragging; the change commits it.
+    t.nextElementSibling.textContent = t.id === 'w-rotation' ? `${t.value}°` : fmt(Number(t.value))
+    viewport.setWorld({ ...worldOf(), [t.id === 'w-strength' ? 'strength' : 'rotation']: Number(t.value) })
+    return
+  }
   const o = objectById(app.selected)
   if (!o || !/^p-bone-\d$/.test(e.target.id)) return
   // Show the turn while dragging; the change commits it.
@@ -1077,9 +1133,12 @@ $('properties').addEventListener('input', (e) => {
   viewport.previewBone(o.id, currentBone(o).name, boneSliders())
 })
 $('properties').addEventListener('change', (e) => {
+  const target = e.target
+  if (target.id === 'w-strength') return run([{ op: 'world', strength: Number(target.value) }]).catch(() => {})
+  if (target.id === 'w-rotation') return run([{ op: 'world', rotation: Number(target.value) }]).catch(() => {})
+  if (target.id === 'w-bg') return run([{ op: 'world', background: target.checked }]).catch(() => {})
   const o = objectById(app.selected)
   if (!o) return
-  const target = e.target
   if (/^p-bone-\d$/.test(target.id)) return run(poseCommands(o, currentBone(o).name, boneSliders())).catch(() => {})
   if (target.id === 'p-name') return run([{ op: 'rename', id: o.id, name: target.value }]).catch(() => {})
   if (target.id === 'p-dist') {
@@ -1161,6 +1220,11 @@ $('properties').addEventListener('click', (e) => {
     if (rigAction === 'reset') return run(rigObject.bones.flatMap((b) => poseCommands(rigObject, b.name, [0, 0, 0]))).catch(() => {})
     if (rigAction === 'remove') return run([{ op: 'rig', id: rigObject.id, bones: [] }]).catch(() => {})
   }
+  const sky = e.target.closest('[data-sky]')
+  if (sky) return run([{ op: 'world', sky: sky.dataset.sky }]).catch(() => {})
+  const worldImage = e.target.closest('[data-world-image]')
+  if (worldImage) return run([{ op: 'world', image: worldImage.dataset.worldImage }]).catch(() => {})
+  if (e.target.closest('[data-world-hdri]')) return $('world-input').click()
   const build = e.target.closest('[data-build]')
   if (build) return run([{ op: 'build', template: build.dataset.build, translation: [freeSpot(0.7), 0, 0] }]).then((r) => r && select(r.created[0])).catch(() => {})
   const o0 = objectById(app.selected)

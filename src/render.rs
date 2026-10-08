@@ -223,7 +223,7 @@ pub(crate) struct Prepared {
     ground_y: f64,
 }
 
-fn srgb_to_linear(c: f64) -> f64 {
+pub(crate) fn srgb_to_linear(c: f64) -> f64 {
     if c <= 0.04045 {
         c / 12.92
     } else {
@@ -955,6 +955,8 @@ pub fn render_png(ed: &Editor, opts: &RenderOptions) -> Result<Vec<u8>, EngineEr
 pub struct RenderJob {
     prep: Prepared,
     opts: RenderOptions,
+    /// The world, for path-traced views.
+    env: Option<crate::pathtrace::Env>,
 }
 
 /// Check `opts` and gather what the render needs from `ed`.
@@ -968,15 +970,20 @@ pub fn render_job(ed: &Editor, opts: &RenderOptions) -> Result<RenderJob, Engine
     if opts.samples.is_some_and(|n| !(1..=256).contains(&n)) {
         return Err(EngineError::new("samples must be between 1 and 256"));
     }
+    let env = match opts.samples {
+        Some(_) => Some(crate::pathtrace::Env::new(&ed.scene().world, ed.scene())?),
+        None => None,
+    };
     Ok(RenderJob {
         prep: prepare(ed, opts.focus, opts.frame)?,
         opts: opts.clone(),
+        env,
     })
 }
 
 impl RenderJob {
     pub fn png(self) -> Result<Vec<u8>, EngineError> {
-        let RenderJob { prep, opts } = self;
+        let RenderJob { prep, opts, env } = self;
         let size = opts.size as usize;
         let tiles: Vec<Vec<[u8; 3]>> = match opts.samples {
             Some(samples) => {
@@ -985,7 +992,8 @@ impl RenderJob {
                     .iter()
                     .map(|v| (view_eye(&prep, v).0, prep.center))
                     .collect();
-                let traced = crate::pathtrace::Traced::new(prep);
+                let env = env.unwrap_or_else(crate::pathtrace::Env::studio);
+                let traced = crate::pathtrace::Traced::new(prep, env);
                 opts.views
                     .iter()
                     .zip(cameras)

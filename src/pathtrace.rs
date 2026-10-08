@@ -6,18 +6,22 @@
 //! Triangles come from the agent renderer's preparation (modifiers, poses,
 //! textures and node materials) and sit in a bounding volume hierarchy.
 //! One call traces a few samples per pixel; callers average calls with
-//! different seeds, so the image refines progressively. The lighting
-//! matches the viewport: a warm key light, a cool rim light and a studio
-//! dome. The floor only catches shadows and shows the grid over a
-//! transparent background, so the result composites onto the viewport's
-//! backdrop.
+//! different seeds, so the image refines progressively. The lighting is
+//! the scene's world (`world.rs`): by default the viewport's warm key
+//! light, cool rim light and studio dome; otherwise an environment map,
+//! sampled by brightness and weighed against the surfaces' own sampling
+//! (multiple importance sampling), so suns and skies both converge. The
+//! floor only catches shadows and shows the grid over a transparent
+//! background, so the result composites onto the viewport's backdrop,
+//! unless the world is shown behind the scene.
 
 use std::sync::{Arc, Mutex};
 
 use glam::{DVec2, DVec3};
 
-use crate::engine::{Editor, EngineError};
+use crate::engine::{Editor, EngineError, Scene};
 use crate::render::{Prepared, hex, prepare};
+use crate::world::{EnvMap, World, env_map, turn};
 
 /// A viewport-like camera; `fov` is the vertical field of view in degrees.
 /// A lens of radius `aperture` (metres; 0 for a pinhole) blurs what is not
@@ -68,7 +72,7 @@ struct Light {
     spread: f64,
 }
 
-fn lights() -> [Light; 2] {
+fn studio_lights() -> [Light; 2] {
     [
         Light {
             dir: DVec3::new(4.5, 8.0, 3.5).normalize(),
@@ -85,7 +89,7 @@ fn lights() -> [Light; 2] {
 
 /// Studio dome: a soft gradient with two large softboxes, so metals and
 /// glass have something to mirror.
-fn environment(d: DVec3) -> DVec3 {
+pub(crate) fn studio_dome(d: DVec3) -> DVec3 {
     let t = ((d.y + 0.25) / 1.15).clamp(0.0, 1.0);
     let t = t * t * (3.0 - 2.0 * t);
     let mut c = DVec3::new(0.10, 0.10, 0.11).lerp(DVec3::new(0.62, 0.63, 0.67), t);
@@ -99,6 +103,83 @@ fn environment(d: DVec3) -> DVec3 {
         }
     }
     c * 0.55
+}
+
+/// The world as the tracer sees it.
+pub(crate) struct Env {
+    /// None: the studio lights and dome.
+    map: Option<Arc<EnvMap>>,
+    strength: f64,
+    rotation: f64,
+    background: bool,
+}
+
+impl Env {
+    pub(crate) fn new(world: &World, scene: &Scene) -> Result<Self, EngineError> {
+        Ok(Self {
+            map: env_map(world, scene)?,
+            strength: world.strength,
+            rotation: world.rotation,
+            background: world.background,
+        })
+    }
+
+    /// The studio, as the viewport lights it.
+    pub(crate) fn studio() -> Self {
+        Self {
+            map: None,
+            strength: 1.0,
+            rotation: 0.0,
+            background: false,
+        }
+    }
+
+    /// Directional lights: the studio's key and rim (turned and scaled
+    /// with the world); none for environment maps, which light by
+    /// themselves.
+    fn lights(&self) -> Vec<Light> {
+        if self.map.is_some() {
+            return Vec::new();
+        }
+        studio_lights()
+            .into_iter()
+            .map(|l| Light {
+                dir: turn(l.dir, self.rotation),
+                radiance: l.radiance * self.strength,
+                spread: l.spread,
+            })
+            .collect()
+    }
+
+    /// Light arriving from direction `d` (pointing away from the scene).
+    fn radiance(&self, d: DVec3) -> DVec3 {
+        let local = turn(d, -self.rotation);
+        let c = match &self.map {
+            Some(map) => map.radiance(local),
+            None => studio_dome(local),
+        };
+        c * self.strength
+    }
+
+    /// A direction drawn by brightness and its density (maps only).
+    fn sample(&self, rng: &mut Rng) -> Option<(DVec3, f64)> {
+        let map = self.map.as_ref()?;
+        let (d, pdf) = map.sample(rng.next(), rng.next(), rng.next(), rng.next());
+        Some((turn(d, self.rotation), pdf))
+    }
+
+    fn pdf(&self, d: DVec3) -> f64 {
+        self.map
+            .as_ref()
+            .map_or(0.0, |m| m.pdf(turn(d, -self.rotation)))
+    }
+}
+
+/// Weight of a sample with density `a` against another strategy's `b`
+/// (the power heuristic).
+fn mis(a: f64, b: f64) -> f64 {
+    let (a2, b2) = (a * a, b * b);
+    if a2 + b2 > 0.0 { a2 / (a2 + b2) } else { 0.0 }
 }
 
 #[derive(Clone, Copy)]
@@ -131,6 +212,7 @@ pub struct Traced {
     emitters: Vec<(u32, f64)>,
     /// The image being refined for the latest camera.
     progress: Mutex<Option<Progressive>>,
+    env: Env,
 }
 
 /// Samples gathered so far for one camera.
@@ -179,7 +261,8 @@ pub fn traced(ed: &Editor, frame: Option<f64>) -> Result<Arc<Traced>, EngineErro
     {
         return Ok(t.clone());
     }
-    let t = Arc::new(Traced::new(prepare(ed, None, frame)?));
+    let env = Env::new(&ed.scene().world, ed.scene())?;
+    let t = Arc::new(Traced::new(prepare(ed, None, frame)?, env));
     *cache = Some((key.0, key.1, t.clone()));
     Ok(t)
 }
@@ -187,7 +270,8 @@ pub fn traced(ed: &Editor, frame: Option<f64>) -> Result<Arc<Traced>, EngineErro
 /// The scene posed at `frame`, prepared afresh (for one-off renders that
 /// should not displace the preview's cached scene).
 pub fn traced_uncached(ed: &Editor, frame: Option<f64>) -> Result<Arc<Traced>, EngineError> {
-    Ok(Arc::new(Traced::new(prepare(ed, None, frame)?)))
+    let env = Env::new(&ed.scene().world, ed.scene())?;
+    Ok(Arc::new(Traced::new(prepare(ed, None, frame)?, env)))
 }
 
 struct Hit {
@@ -198,7 +282,7 @@ struct Hit {
 }
 
 impl Traced {
-    pub(crate) fn new(prep: Prepared) -> Self {
+    pub(crate) fn new(prep: Prepared, env: Env) -> Self {
         let n = prep.tris.len();
         let bounds: Vec<(DVec3, DVec3)> = prep
             .tris
@@ -247,6 +331,7 @@ impl Traced {
             prep,
             nodes,
             packed,
+            env,
         }
     }
 
@@ -344,7 +429,7 @@ impl Traced {
     pub fn render(&self, camera: &Camera, samples: u32, seed: u32) -> Vec<[f32; 4]> {
         let (w, h) = (camera.width, camera.height);
         let frame = Frame::new(camera);
-        let lights = lights();
+        let lights = self.env.lights();
         rows(w, h, |x, y| {
             let mut acc = [0f64; 4];
             for s in 0..samples {
@@ -495,6 +580,9 @@ impl Traced {
         // Whether hitting a glowing surface counts: not after diffuse or
         // glossy bounces, whose light from it was already sampled directly.
         let mut emission = true;
+        // Density of the last bounce's direction, to weigh the world's
+        // light it finds against sampling the world directly.
+        let mut last_pdf = 0.0;
         let mut bounce = 0;
         let mut steps = 0;
         let floor_visible = eye.y > 0.0;
@@ -509,9 +597,13 @@ impl Traced {
                     let p = o + d * t;
                     if film {
                         if bounce == 0 && steps == 1 {
-                            return self.floor(p, lights, rng);
+                            let (c, shadow) = self.floor(p, lights, rng);
+                            if self.env.background {
+                                return (self.env.radiance(d) * (1.0 - shadow), 1.0);
+                            }
+                            return (c, shadow);
                         }
-                        color += throughput * BACKDROP;
+                        color += throughput * self.backdrop(d);
                         return (color, 1.0);
                     }
                     // A dim matte floor in reflections and bounce light.
@@ -524,6 +616,7 @@ impl Traced {
                                 n,
                                 -d,
                                 |_v, l, _| albedo / std::f64::consts::PI * n.dot(l).max(0.0),
+                                |l| n.dot(l).max(0.0) / std::f64::consts::PI,
                                 lights,
                                 rng,
                             ),
@@ -533,6 +626,7 @@ impl Traced {
                     throughput *= albedo;
                     o = p + n * EPS;
                     d = cosine(n, rng);
+                    last_pdf = n.dot(d).max(0.0) / std::f64::consts::PI;
                     bounce += 1;
                     if bounce > MAX_BOUNCES || !survive(&mut throughput, bounce, rng) {
                         break;
@@ -540,12 +634,21 @@ impl Traced {
                     continue;
                 }
                 if film {
-                    if steps == 1 {
+                    if steps == 1 && !self.env.background {
                         return (DVec3::ZERO, 0.0);
                     }
-                    color += throughput * BACKDROP;
+                    color += throughput * self.backdrop(d);
                 } else {
-                    color += clamp(throughput * environment(d), bounce);
+                    // Light the world gave by direct sampling is counted
+                    // there, in proportion (mirrors and glass see it here).
+                    let weight = if emission {
+                        1.0
+                    } else if self.env.map.is_some() {
+                        mis(last_pdf, self.env.pdf(d))
+                    } else {
+                        1.0
+                    };
+                    color += clamp(throughput * self.env.radiance(d) * weight, bounce);
                 }
                 return (color, 1.0);
             };
@@ -622,6 +725,12 @@ impl Traced {
             let f0 = DVec3::splat(0.04).lerp(pt.albedo, pt.metalness);
             let nv = n.dot(v).max(1e-4);
             let diffuse = pt.albedo * (1.0 - pt.metalness);
+            let fv = schlick(f0, nv);
+            let p_spec = if diffuse.max_element() < 1e-4 {
+                1.0
+            } else {
+                (lum(fv) + 0.5 * pt.metalness).clamp(0.1, 0.9)
+            };
             color += clamp(
                 throughput
                     * self.direct(
@@ -632,17 +741,12 @@ impl Traced {
                             let spec = if area && mirror { DVec3::ZERO } else { f0 };
                             principled(n, v, l, diffuse, spec, alpha.max(0.02))
                         },
+                        |l| bsdf_pdf(n, v, l, alpha, p_spec, mirror),
                         lights,
                         rng,
                     ),
                 bounce,
             );
-            let fv = schlick(f0, nv);
-            let p_spec = if diffuse.max_element() < 1e-4 {
-                1.0
-            } else {
-                (lum(fv) + 0.5 * pt.metalness).clamp(0.1, 0.9)
-            };
             if rng.next() < p_spec {
                 let h = to_world(
                     n,
@@ -664,6 +768,7 @@ impl Traced {
                 throughput *= diffuse * (DVec3::ONE - fv) / (1.0 - p_spec);
                 emission = false;
             }
+            last_pdf = bsdf_pdf(n, v, d, alpha, p_spec, mirror);
             o = p + ng * EPS;
             bounce += 1;
             if bounce > MAX_BOUNCES || !survive(&mut throughput, bounce, rng) {
@@ -673,19 +778,34 @@ impl Traced {
         (color, 1.0)
     }
 
-    /// Light reaching `p` straight from the key and rim lights and from
-    /// one sampled glowing triangle, shaped by `bsdf(v, l, from_area)`
-    /// (which includes the cosine).
+    /// Light reaching `p` straight from the key and rim lights, from one
+    /// direction of the world's environment map and from one sampled
+    /// glowing triangle, shaped by `bsdf(v, l, from_area)` (which includes
+    /// the cosine). `pdf(l)` is how likely the surface's own sampling is to
+    /// pick `l`, to share the world's light with it.
     fn direct(
         &self,
         p: DVec3,
         n: DVec3,
         v: DVec3,
         bsdf: impl Fn(DVec3, DVec3, bool) -> DVec3,
+        pdf: impl Fn(DVec3) -> f64,
         lights: &[Light],
         rng: &mut Rng,
     ) -> DVec3 {
         let mut sum = DVec3::ZERO;
+        if let Some((l, density)) = self.env.sample(rng)
+            // The floor hides the world below the horizon.
+            && !(l.y < 0.0 && p.y > 0.0)
+            && n.dot(l) > 0.0
+            && density > 0.0
+        {
+            let through = self.transmittance(p, l, f64::INFINITY);
+            if through != DVec3::ZERO {
+                let weight = mis(density, pdf(l));
+                sum += bsdf(v, l, true) * self.env.radiance(l) * through * (weight / density);
+            }
+        }
         for light in lights {
             let l = cone(light.dir, light.spread, rng);
             if n.dot(l) <= 0.0 {
@@ -734,8 +854,13 @@ impl Traced {
     /// The floor seen directly: its grid plus the shadows on it, over the
     /// transparent backdrop.
     fn floor(&self, p: DVec3, lights: &[Light], rng: &mut Rng) -> (DVec3, f64) {
-        let key = &lights[0];
-        let l = cone(key.dir, key.spread, rng);
+        // The main light: the key light, or a bright direction of the
+        // world (mostly its sun, if it has one).
+        let l = match (lights.first(), self.env.sample(rng)) {
+            (Some(key), _) => cone(key.dir, key.spread, rng),
+            (None, Some((l, _))) if l.y > 0.0 => l,
+            _ => DVec3::Y,
+        };
         let sun = self.transmittance(p + DVec3::Y * EPS, l, f64::INFINITY);
         let sun = sun.dot(DVec3::splat(1.0 / 3.0));
         // Contact shadow: is the sky above this point blocked nearby?
@@ -798,6 +923,37 @@ impl Traced {
     fn radius(&self) -> f64 {
         self.prep.radius.max(0.5)
     }
+
+    /// What shows straight through glass and see-through surfaces: the
+    /// world when it is the background, else the viewport's backdrop.
+    fn backdrop(&self, d: DVec3) -> DVec3 {
+        if self.env.background {
+            self.env.radiance(d)
+        } else {
+            BACKDROP
+        }
+    }
+}
+
+/// How likely a surface's sampling (GGX visible normals with probability
+/// `p_spec`, else cosine) is to pick `l`, over solid angle. Near-mirror
+/// reflection is left out: it finds lights by hitting them.
+fn bsdf_pdf(n: DVec3, v: DVec3, l: DVec3, alpha: f64, p_spec: f64, mirror: bool) -> f64 {
+    let nl = n.dot(l);
+    if nl <= 0.0 {
+        return 0.0;
+    }
+    let diffuse = (1.0 - p_spec) * nl / std::f64::consts::PI;
+    if mirror {
+        return diffuse;
+    }
+    let nv = n.dot(v).max(1e-4);
+    let h = (v + l).normalize();
+    let nh = n.dot(h).max(0.0);
+    let a2 = alpha * alpha;
+    let den = nh * nh * (a2 - 1.0) + 1.0;
+    let dist = a2 / (std::f64::consts::PI * den * den);
+    diffuse + p_spec * dist * smith(alpha, nv) / (4.0 * nv)
 }
 
 /// Grid lines every half metre within 8 m (the viewport's grid): colour
@@ -1625,5 +1781,50 @@ mod tests {
         };
         assert!(through("glass").min_element() > 0.3, "{}", through("glass"));
         assert_eq!(through("clay"), DVec3::ZERO);
+    }
+
+    #[test]
+    fn the_world_lights_the_scene_and_can_show_behind_it() {
+        let ball = serde_json::json!({"op": "add", "primitive": {"kind": "sphere", "radius": 0.5, "segments": 32, "rings": 16}, "translation": [0, 0.5, 0], "color": "#ffffff", "roughness": 0.9});
+        let cam = Camera {
+            eye: DVec3::new(0.0, 0.5, 3.0),
+            target: DVec3::new(0.0, 0.5, 0.0),
+            ..camera(40, 40)
+        };
+        let lum = |p: [f32; 4]| p[0] + p[1] + p[2];
+        // The daylight sun stands at azimuth 35 degrees: turned by -35 it
+        // shines from +x, turned by 145 from -x.
+        let side = |rotation: f64| {
+            let ed = editor(
+                serde_json::json!([ball, {"op": "world", "sky": "daylight", "rotation": rotation}]),
+            );
+            let img = traced(&ed, None).unwrap().render(&cam, 48, 5);
+            (lum(img[20 * 40 + 27]), lum(img[20 * 40 + 13]))
+        };
+        let (right, left) = side(-35.0);
+        assert!(right > left * 1.5, "{right} vs {left}");
+        let (right, left) = side(145.0);
+        assert!(left > right * 1.5, "{right} vs {left}");
+
+        // Strength scales the light.
+        let centre = |world: serde_json::Value| {
+            let ed = editor(serde_json::json!([ball, world]));
+            lum(traced(&ed, None).unwrap().render(&cam, 32, 5)[20 * 40 + 20])
+        };
+        let dim = centre(serde_json::json!({"op": "world", "sky": "overcast"}));
+        let bright = centre(serde_json::json!({"op": "world", "sky": "overcast", "strength": 2}));
+        assert!((bright / dim - 2.0).abs() < 0.1, "{dim} -> {bright}");
+
+        // Behind the scene: transparent, or the world itself.
+        let corner = |background: bool| {
+            let ed = editor(
+                serde_json::json!([ball, {"op": "world", "sky": "sunset", "background": background}]),
+            );
+            traced(&ed, None).unwrap().render(&cam, 4, 5)[40 + 1]
+        };
+        assert_eq!(corner(false)[3], 0.0);
+        let sky = corner(true);
+        assert_eq!(sky[3], 1.0);
+        assert!(sky[0] > sky[2], "a warm sunset sky: {sky:?}");
     }
 }

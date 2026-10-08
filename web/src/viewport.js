@@ -388,8 +388,9 @@ export class Viewport {
     el.prepend(r.domElement)
 
     const scene = (this.scene = new THREE.Scene())
-    const pmrem = new THREE.PMREMGenerator(r)
-    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+    const pmrem = (this.pmrem = new THREE.PMREMGenerator(r))
+    this.studioEnv = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+    scene.environment = this.studioEnv
     scene.environmentIntensity = 0.55
 
     const key = new THREE.DirectionalLight(0xfff1e0, 2.4)
@@ -404,12 +405,17 @@ export class Viewport {
     const rim = new THREE.DirectionalLight(0xcfe0ff, 0.9)
     rim.position.set(-5, 4, -6)
     scene.add(rim)
+    this.key = key
+    this.rim = rim
+    // The world (see setWorld): the studio until the scene says otherwise.
+    this.world = null
+    this.worldMap = null
 
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.ShadowMaterial({ opacity: 0.28 }))
     ground.rotation.x = -Math.PI / 2
     ground.receiveShadow = true
     scene.add(ground)
-    const grid = new THREE.GridHelper(16, 32, 0x8a8f99, 0x5a5f69)
+    const grid = (this.grid = new THREE.GridHelper(16, 32, 0x8a8f99, 0x5a5f69))
     grid.material.transparent = true
     grid.material.opacity = 0.16
     grid.material.depthWrite = false
@@ -526,6 +532,7 @@ export class Viewport {
 
   sync(scene, animate) {
     this.images = scene.images || {}
+    this.setWorld(scene.world)
     const seen = new Set()
     for (const o of scene.objects) {
       seen.add(o.id)
@@ -872,6 +879,94 @@ export class Viewport {
       if (slot === 'map' && m.userData.bakedColor) m.color.set('#ffffff')
       m.needsUpdate = true
     })
+  }
+
+  /**
+   * Light the view like the scene's world (src/world.rs): the studio's
+   * room environment, key and rim lights; or an environment map from the
+   * core, with its sun (if it has one) as the shadow-casting key light.
+   * `background` shows the world behind the scene.
+   */
+  setWorld(world) {
+    const w = { sky: 'studio', image: null, strength: 1, rotation: 0, background: false, ...world }
+    const studio = w.sky === 'studio' && !w.image
+    const source = studio ? 'studio' : w.image ? `image:${w.image}:${this.images[w.image]?.hash}` : `sky:${w.sky}`
+    const prev = this.world
+    this.world = w
+    if (prev && prev.source === source && JSON.stringify(prev.settings) === JSON.stringify(w)) return
+    w.source = source
+    w.settings = { ...w }
+    delete w.settings.source
+    const map = this.worldMap
+    if (map?.source === source) return this.applyWorld()
+    // Studio lighting needs no map unless its dome shows as background.
+    if (studio && !w.background) {
+      this.applyWorld()
+      return
+    }
+    const ask = this.clock.track(
+      fetch('/api/environment?w=512')
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.statusText))))
+        .catch(() => null),
+    )
+    ask.then((buf) => {
+      if (!buf || this.world?.source !== source) return
+      const head = new DataView(buf)
+      const [width, height] = [head.getUint32(0, true), head.getUint32(4, true)]
+      const f = new Float32Array(buf, 8, 6)
+      const texels = new Float32Array(buf, 32, width * height * 4)
+      const half = new Uint16Array(texels.length)
+      for (let i = 0; i < texels.length; i++) half[i] = THREE.DataUtils.toHalfFloat(texels[i])
+      const tex = new THREE.DataTexture(half, width, height, THREE.RGBAFormat, THREE.HalfFloatType)
+      tex.mapping = THREE.EquirectangularReflectionMapping
+      tex.colorSpace = THREE.LinearSRGBColorSpace
+      tex.magFilter = tex.minFilter = THREE.LinearFilter
+      tex.needsUpdate = true
+      this.worldMap?.texture.dispose()
+      this.worldMap?.env?.dispose()
+      const sun = f[3] + f[4] + f[5] > 0 ? { dir: new THREE.Vector3(f[0], f[1], f[2]), power: [f[3], f[4], f[5]] } : null
+      this.worldMap = { source, texture: tex, env: studio ? null : this.pmrem.fromEquirectangular(tex).texture, sun }
+      this.applyWorld()
+    })
+    this.applyWorld()
+  }
+
+  /** Apply the current world's settings to the lights and backdrop. */
+  applyWorld() {
+    const w = this.world
+    if (!w) return
+    const scene = this.scene
+    const map = this.worldMap?.source === w.source ? this.worldMap : null
+    const studio = w.source === 'studio'
+    // Turns match the core's: a world turned by +r is looked up at -r.
+    const turn = THREE.MathUtils.degToRad(w.rotation)
+    const up = new THREE.Vector3(0, 1, 0)
+    if (studio) {
+      scene.environment = this.studioEnv
+      scene.environmentIntensity = 0.55 * w.strength
+      scene.environmentRotation.set(0, 0, 0)
+      this.key.color.set(0xfff1e0)
+      this.key.intensity = 2.4 * w.strength
+      this.key.position.set(4.5, 8, 3.5).applyAxisAngle(up, -turn)
+      this.rim.intensity = 0.9 * w.strength
+      this.rim.position.set(-5, 4, -6).applyAxisAngle(up, -turn)
+    } else if (map) {
+      scene.environment = map.env
+      scene.environmentIntensity = w.strength
+      scene.environmentRotation.set(0, -turn, 0)
+      this.rim.intensity = 0
+      if (map.sun) {
+        const peak = Math.max(...map.sun.power, 1e-6)
+        this.key.color.setRGB(...map.sun.power.map((v) => v / peak), THREE.LinearSRGBColorSpace)
+        this.key.intensity = peak * w.strength
+        this.key.position.copy(map.sun.dir).applyAxisAngle(up, -turn).multiplyScalar(10)
+      } else this.key.intensity = 0
+    }
+    const shown = w.background && map
+    scene.background = shown ? map.texture : null
+    scene.backgroundIntensity = w.strength
+    scene.backgroundRotation.set(0, -turn, 0)
+    this.grid.visible = !shown
   }
 
   loadImage(url) {

@@ -409,12 +409,9 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
                 };
             let stored = |name: &str| -> (Vec<u8>, &'static str, String) {
                 let img = &scene_images[name];
-                let mime = if img.mime == "image/png" {
-                    "image/png"
-                } else {
-                    "image/jpeg"
-                };
-                (img.data.to_vec(), mime, name.to_string())
+                // HDR images go out as PNGs (glTF viewers read no HDR).
+                let (mime, data) = img.portable().unwrap_or(("image/png", img.data.to_vec()));
+                (data, mime, name.to_string())
             };
             color_map = match (t.pattern, &t.image) {
                 (Pattern::None, _) => None,

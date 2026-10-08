@@ -19,3 +19,4 @@ pub mod sculpt;
 pub mod server;
 pub mod texture;
 pub mod uv;
+pub mod world;

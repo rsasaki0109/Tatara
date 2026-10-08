@@ -23,6 +23,7 @@ use crate::rig;
 use crate::sculpt::{self, Brush};
 use crate::texture::{Pattern, Texture};
 use crate::uv;
+use crate::world::{Sky, World};
 
 fn d_uv_margin() -> f64 {
     0.02
@@ -289,6 +290,9 @@ pub struct Scene {
     /// Image files by name, for textures and normal maps.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub images: BTreeMap<String, ImageAsset>,
+    /// What lights the scene from afar (the studio unless set).
+    #[serde(default, skip_serializing_if = "World::is_default")]
+    pub world: World,
 }
 
 impl Default for Scene {
@@ -299,6 +303,7 @@ impl Default for Scene {
             revision: 0,
             animation: Animation::default(),
             images: BTreeMap::new(),
+            world: World::default(),
         }
     }
 }
@@ -821,6 +826,25 @@ pub enum Command {
         start: Option<f64>,
         #[serde(default)]
         end: Option<f64>,
+    },
+    /// Light the scene: the studio (default), a built-in `sky` or an
+    /// environment `image` (an equirectangular scene image; Radiance
+    /// `.hdr` keeps real light levels). Choosing a `sky` drops the image
+    /// unless one is given too; `image: ""` goes back to the sky.
+    /// `strength` scales the light (0-16), `rotation` turns the world
+    /// around the up axis (degrees) and `background` shows it behind the
+    /// scene in renders.
+    World {
+        #[serde(default)]
+        sky: Option<Sky>,
+        #[serde(default)]
+        image: Option<String>,
+        #[serde(default)]
+        strength: Option<f64>,
+        #[serde(default)]
+        rotation: Option<f64>,
+        #[serde(default)]
+        background: Option<bool>,
     },
     /// Remove every object.
     Clear {},
@@ -1773,6 +1797,33 @@ fn apply_command(
             a.validate()?;
             scene.animation = a;
         }
+        Command::World {
+            sky,
+            image,
+            strength,
+            rotation,
+            background,
+        } => {
+            let mut w = scene.world.clone();
+            if let Some(v) = sky {
+                w.sky = *v;
+                w.image = None;
+            }
+            if let Some(v) = image {
+                w.image = (!v.is_empty()).then(|| v.clone());
+            }
+            if let Some(v) = strength {
+                w.strength = *v;
+            }
+            if let Some(v) = rotation {
+                w.rotation = v.rem_euclid(360.0);
+            }
+            if let Some(v) = background {
+                w.background = *v;
+            }
+            w.validate(scene)?;
+            scene.world = w;
+        }
         Command::Clear {} => scene.objects.clear(),
         Command::AddImage { name, data } => {
             let name = check_name(name)?;
@@ -1808,6 +1859,9 @@ fn apply_command(
                     .is_some_and(|t| t.images().any(|i| i == name))
             }) {
                 return err(format!("image {name:?} is used by {:?}", o.name));
+            }
+            if scene.world.image.as_deref() == Some(name.as_str()) {
+                return err(format!("image {name:?} lights the world"));
             }
             if scene.images.remove(name).is_none() {
                 return err(format!("no image named {name:?}"));
@@ -1850,7 +1904,7 @@ fn check_images(scene: &Scene) -> Result<(), EngineError> {
             return err(format!("{}: no image named {missing:?}", o.name));
         }
     }
-    Ok(())
+    scene.world.validate(scene)
 }
 
 fn duplicate(
@@ -2170,6 +2224,7 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
         "next_id": scene.next_id,
         "units": "meters, Y up, rotations in radians (XYZ euler)",
         "animation": scene.animation,
+        "world": scene.world,
         "frame": frame,
         "bounds": bounds,
         "objects": objects,
