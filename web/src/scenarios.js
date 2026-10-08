@@ -1071,7 +1071,7 @@ export const final = {
   gizmo: false,
   external: true,
   setup: render.setup,
-  camera: { azimuth: 30, elevation: 12, distance: 4.0, target: [0.05, 0.6, 0.1] },
+  camera: { azimuth: 28, elevation: 10, distance: 3.2, target: [0.02, 0.55, 0.15] },
   steps: [
     { wait: 300 },
     { caption: 'Render the view: path traced at full size', hint: 'F12 · Render panel' },
@@ -1083,7 +1083,7 @@ export const final = {
     { samples: 32, final: true, after: 900 },
     { caption: 'Depth of field focuses on the selection', hint: 'thin lens · aperture · focus' },
     { click: '#fr-dof', after: 150 },
-    { slide: '#fr-blur', to: 0.12, ms: 600, after: 150 },
+    { slide: '#fr-blur', to: 0.2, ms: 600, after: 150 },
     { click: '[data-fr=render]', after: 100 },
     { samples: 32, final: true, after: 1400 },
     { caption: 'Save a PNG, or the timeline as an animated PNG', hint: 'Save PNG · Animation' },
@@ -1091,7 +1091,7 @@ export const final = {
     { caption: 'Agents render files too', hint: 'render_image · PNG / APNG' },
     {
       mcp: [
-        { tool: 'render_image', arguments: { path: 'target/final.png', view: 'front', size: [640, 360], samples: 32, aperture: 0.08 }, after: 900 },
+        { tool: 'render_image', arguments: { path: 'target/final.png', view: 'front', size: [640, 360], samples: 32, aperture: 0.1 }, after: 900 },
       ],
     },
     { wait: 1500 },

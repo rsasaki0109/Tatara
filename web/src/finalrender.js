@@ -162,7 +162,7 @@ export class FinalRender {
       const buf = await this.clock.track(res.arrayBuffer())
       if (job !== this.job) return
       this.samples = new DataView(buf).getUint32(0, true)
-      this.canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(buf, 4, w * h * 4), w, h), 0, 0)
+      this.paint(new ImageData(new Uint8ClampedArray(buf, 4, w * h * 4), w, h))
       this.status()
     }
     if (job === this.job) {
@@ -172,20 +172,20 @@ export class FinalRender {
     }
   }
 
-  /** The image as shown, over the studio backdrop unless transparent. */
-  async png() {
-    const [w, h] = this.size
-    const out = document.createElement('canvas')
-    out.width = w
-    out.height = h
-    const g = out.getContext('2d')
-    if (!this.transparent) drawBackdrop(g, w, h)
-    g.drawImage(this.canvas, 0, 0)
-    return new Promise((resolve) => out.toBlob(resolve, 'image/png'))
+  /** Show a pass over the studio backdrop, or alone when transparent. */
+  paint(image) {
+    this.pass ??= document.createElement('canvas')
+    this.pass.width = image.width
+    this.pass.height = image.height
+    this.pass.getContext('2d').putImageData(image, 0, 0)
+    const g = this.canvas.getContext('2d')
+    g.clearRect(0, 0, image.width, image.height)
+    if (!this.transparent) drawBackdrop(g, image.width, image.height)
+    g.drawImage(this.pass, 0, 0)
   }
 
   async save() {
-    const blob = await this.png()
+    const blob = await new Promise((resolve) => this.canvas.toBlob(resolve, 'image/png'))
     this.download(blob, 'render.png')
   }
 

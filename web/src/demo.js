@@ -547,7 +547,7 @@ export class DemoRunner {
         } catch {}
         summary = `<span class="t-err">✗ ${escapeHtml(message.split('\n')[0])}</span>`
       }
-      else if (call.tool === 'render_image') summary = `<span class="t-ok">✓</span> ${escapeHtml(result.text)}`
+      else if (call.tool === 'render_image') summary = `<span class="t-ok">✓</span> wrote ${escapeHtml(call.arguments.path)}`
       else if (result.image) {
         summary = `<span class="t-ok">✓</span> image · ${escapeHtml((call.arguments?.views ?? ['iso']).join(', '))}`
       }
