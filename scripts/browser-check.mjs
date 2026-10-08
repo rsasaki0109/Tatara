@@ -240,6 +240,27 @@ try {
   await page.click('#shading-btn')
   await page.waitForFunction(() => window.__tatara.debug().pathSamples === null)
 
+  // Rigging: a bone chain from the Rig card; a Turn slider poses a bone.
+  await page.click('[data-rig-chain="2"]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].bones?.length === 2))
+  await page.waitForFunction(() => window.__tatara.debug().bonesShown === 1)
+  await page.click('[data-bone="Bone 2"]')
+  await page.waitForSelector('[data-bone="Bone 2"].on')
+  await page.$eval('#p-bone-2', (el) => {
+    el.value = '30'
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await until(page, () =>
+    fetch('/api/scene')
+      .then((r) => r.json())
+      .then((s) => Math.abs(s.objects[0].bones[1].rotation[2] - Math.PI / 6) < 1e-3),
+  )
+  check(true, 'the Rig card adds a bone chain and its sliders pose a bone')
+  await page.click('[data-rig=remove]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => !s.objects[0].bones))
+  await page.waitForFunction(() => window.__tatara.debug().bonesShown === 0)
+
   // UV editor: unwrap into islands, then move one island.
   await page.click('[data-uv-open]')
   await page.waitForSelector('#uv-editor:not([hidden]) .uv-canvas')

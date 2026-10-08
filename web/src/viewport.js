@@ -1347,7 +1347,8 @@ export class Viewport {
   /** Draw a rigged object's bones (posed), the chosen one highlighted. */
   setBones(node) {
     const o = node.data
-    const show = hasRig(o) && (node.id === this.selected || this.showBones)
+    // three.js only skips objects whose `visible` is exactly false.
+    const show = Boolean(hasRig(o) && (node.id === this.selected || this.showBones))
     node.bones.visible = node.boneEdges.visible = show
     if (!show) return
     const key = JSON.stringify([o.bones, this.currentFrame, (o.tracks || []).filter((t) => t.property === 'bone'), this.bone])

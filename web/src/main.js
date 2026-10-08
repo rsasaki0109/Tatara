@@ -1555,6 +1555,7 @@ window.__tatara = {
   debug: () => ({ pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
     pathSamples: preview.active ? preview.samples : null,
+    bonesShown: [...viewport.nodes.values()].filter((n) => n.bones.visible).length,
     triplanar: [...viewport.nodes.values()].filter((n) => 'TRIPLANAR' in n.mesh.material.defines).length,
     roughnessMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.roughnessMap?.image).length,
   }),
