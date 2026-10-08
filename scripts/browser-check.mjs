@@ -53,11 +53,14 @@ try {
   await page.goto(url)
   await page.evaluate(() => window.__tatara.ready)
   const count = () => page.locator('#outliner li').count()
+  // New objects grow in over half a second; wait before clicking their faces.
+  const settled = () => page.waitForFunction(() => window.__tatara.debug().anims.length === 0)
   const faces = async () => Number((await page.textContent('#status-mesh')).match(/([\d,]+) faces/)[1].replace(/,/g, ''))
 
   await page.click('[data-add=cube]')
   await page.waitForFunction(() => document.querySelectorAll('#outliner li').length === 1)
   check((await count()) === 1, 'toolbar adds a cube')
+  await settled()
 
   await page.keyboard.press('Escape') // detach the gizmo from the cube's centre
   const box = await page.locator('#viewport canvas').boundingBox()
@@ -115,6 +118,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('#outliner li').length === 0)
   await page.click('[data-add=cube]')
   await page.waitForFunction(() => /6 faces/.test(document.querySelector('#status-mesh').textContent))
+  await settled()
   await page.keyboard.press('Tab')
   await page.waitForSelector('[data-mode=edit].on')
   await page.keyboard.press('3')
