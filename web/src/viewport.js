@@ -12,6 +12,7 @@ import { ease } from './clock.js'
 import { isAnimated, pose } from './anim.js'
 import { createStroke } from './sculpt.js'
 import { uvGridCanvas } from './uveditor.js'
+import { boneSegments, hasRig, posedMesh } from './rig.js'
 
 const CREASE = THREE.MathUtils.degToRad(38)
 const SELECT = 0xff8a4c
@@ -596,15 +597,25 @@ export class Viewport {
     points.renderOrder = 4
     selEdges.renderOrder = 4
     selPoints.renderOrder = 5
-    group.add(mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges, seams)
+    // Bones, drawn in front like Blender's: octahedral shapes with edges.
+    const bones = new THREE.Mesh(
+      new THREE.BufferGeometry(),
+      new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, depthTest: false, side: THREE.DoubleSide }),
+    )
+    const boneEdges = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x14161a, depthTest: false }))
+    bones.visible = boneEdges.visible = false
+    bones.renderOrder = 6
+    boneEdges.renderOrder = 7
+    group.add(mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges, seams, bones, boneEdges)
     this.root.add(group)
-    const node = { id: o.id, group, mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges, seams, data: o, key: null, cageKey: null, triFace: [] }
+    const node = { id: o.id, group, mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges, seams, bones, boneEdges, data: o, key: null, cageKey: null, triFace: [] }
     this.nodes.set(o.id, node)
     const posed = pose(o, this.currentFrame)
     this.setTransform(node.group, posed.transform)
     this.setMaterial(node, posed.material)
-    this.setMesh(node, displayMesh(o))
+    this.setMesh(node, this.shownMesh(o))
     this.setCage(node, o.mesh)
+    this.setBones(node)
     if (animate) {
       const target = node.group.scale.clone()
       this.anim.add(`tf:${o.id}`, 520, (t) => node.group.scale.copy(target).multiplyScalar(Math.max(0.0001, t)), ease.back)
@@ -614,8 +625,10 @@ export class Viewport {
   update(node, o, animate) {
     const prev = node.data
     node.data = o
-    const plain = !o.display && !prev.display
-    const key = geometryKey(o, displayMesh(o))
+    // Rigged meshes show their pose; they swap in without a morph.
+    const plain = !o.display && !prev.display && !hasRig(o) && !hasRig(prev)
+    const shown = this.shownMesh(o)
+    const key = geometryKey(o, shown)
     // A committed stroke is already on screen: swap in the result, no morph.
     const sculpted = node.sculptPreview
     node.sculptPreview = false
@@ -634,10 +647,11 @@ export class Viewport {
           this.setCage(node, live, t < 1 ? null : meshKey(o.mesh))
         })
       } else {
-        this.setMesh(node, displayMesh(o), key)
-        if (animate) this.flash(node)
+        this.setMesh(node, shown, key)
+        if (animate && !(hasRig(o) && hasRig(prev))) this.flash(node)
       }
     }
+    this.setBones(node)
     if (meshKey(o.mesh) !== node.cageKey && !this.anim.has(`mesh:${o.id}`)) this.setCage(node, o.mesh)
     else if (JSON.stringify(o.mesh.seams || []) !== node.seamKey) this.setSeams(node, o.mesh)
     const posed = pose(o, this.currentFrame)
@@ -1046,6 +1060,7 @@ export class Viewport {
       node.outline.material.color.set(on ? SELECT : WARN)
       node.cageLines.visible = editing || (on && Boolean(node.data.display))
       node.seams.visible = node.seams.geometry.attributes.position?.count > 0 && (editing || this.uvPreview === node.id)
+      this.setBones(node)
       node.cageLines.material.opacity = editing ? 0.9 : 0.7
       node.cageLines.material.color.set(editing ? 0x111316 : SELECT)
       node.points.visible = editing && ed.mode === 'vertex'
@@ -1324,6 +1339,77 @@ export class Viewport {
     this.setMesh(node, displayMesh(node.data))
   }
 
+  /** What an object shows at the current frame: its displayed mesh, posed by its bones. */
+  shownMesh(o) {
+    return posedMesh(o, displayMesh(o), this.currentFrame)
+  }
+
+  /** Draw a rigged object's bones (posed), the chosen one highlighted. */
+  setBones(node) {
+    const o = node.data
+    // three.js only skips objects whose `visible` is exactly false.
+    const show = Boolean(hasRig(o) && (node.id === this.selected || this.showBones))
+    node.bones.visible = node.boneEdges.visible = show
+    if (!show) return
+    const key = JSON.stringify([o.bones, this.currentFrame, (o.tracks || []).filter((t) => t.property === 'bone'), this.bone])
+    if (key === node.boneKey) return
+    node.boneKey = key
+    const pos = []
+    const col = []
+    const edges = []
+    const segments = boneSegments(o, this.currentFrame)
+    o.bones.forEach((b, i) => {
+      const [head, tail] = segments[i]
+      const axis = tail.clone().sub(head)
+      const len = axis.length()
+      if (len < 1e-9) return
+      const d = axis.clone().normalize()
+      const u = new THREE.Vector3(...(Math.abs(d.y) < 0.9 ? [0, 1, 0] : [1, 0, 0])).cross(d).normalize()
+      const v = d.clone().cross(u)
+      const w = len * 0.1
+      const mid = head.clone().addScaledVector(d, len * 0.18)
+      const ring = [u, v, u.clone().negate(), v.clone().negate()].map((x) => mid.clone().addScaledVector(x, w))
+      const c = new THREE.Color(b.name === this.bone ? 0xff8a4c : 0x9fc6ff)
+      for (let k = 0; k < 4; k++) {
+        const [a, n] = [ring[k], ring[(k + 1) % 4]]
+        for (const p of [head, a, n, tail, n, a]) {
+          pos.push(p.x, p.y, p.z)
+          col.push(c.r, c.g, c.b)
+        }
+        edges.push(head.x, head.y, head.z, a.x, a.y, a.z, a.x, a.y, a.z, tail.x, tail.y, tail.z, a.x, a.y, a.z, n.x, n.y, n.z)
+      }
+    })
+    node.bones.geometry.dispose()
+    node.bones.geometry = new THREE.BufferGeometry()
+      .setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+      .setAttribute('color', new THREE.Float32BufferAttribute(col, 3))
+    node.boneEdges.geometry.dispose()
+    node.boneEdges.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(edges, 3))
+  }
+
+  /** Show bone `name` of object `id` turned to `rotation` before the edit is committed. */
+  previewBone(id, name, rotation) {
+    const node = this.nodes.get(id)
+    if (!node) return
+    const o = node.data
+    // The next scene update replaces this preview with the real object.
+    node.data = {
+      ...o,
+      bones: o.bones.map((b) => (b.name === name ? { ...b, rotation } : b)),
+      tracks: (o.tracks || []).filter((t) => !(t.property === 'bone' && t.bone === name)),
+    }
+    this.setMesh(node, this.shownMesh(node.data), null)
+    node.key = null
+    this.setBones(node)
+  }
+
+  /** Highlight a bone of the selected object (by name), or none. */
+  setBone(name) {
+    this.bone = name
+    const node = this.nodes.get(this.selected)
+    if (node) this.setBones(node)
+  }
+
   /** Pose every animated object at `frame`. */
   setFrame(frame) {
     this.currentFrame = frame
@@ -1332,6 +1418,12 @@ export class Viewport {
       const p = pose(node.data, frame)
       this.setTransform(node.group, p.transform)
       this.setMaterial(node, p.material)
+      if (hasRig(node.data)) {
+        const shown = this.shownMesh(node.data)
+        const key = geometryKey(node.data, shown)
+        if (key !== node.key) this.setMesh(node, shown, key)
+        this.setBones(node)
+      }
     }
     if (this.edit.active && !this.gizmo.dragging) this.placeGizmo()
   }

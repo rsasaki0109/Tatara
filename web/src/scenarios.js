@@ -936,4 +936,78 @@ export const render = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render }
+// Rigging: a bone chain bends a tentacle, posed through the Rig card and
+// keyed on the timeline; then an agent rigs and animates a second one.
+const TENTACLE = { kind: 'cylinder', radius: 0.17, radius_top: 0.035, height: 2.2, segments: 32, rings: 28 }
+// A travelling wave: each bone sways a little after the one below it.
+const SWAY = [1, 2, 3, 4].flatMap((k) =>
+  [1, 25, 49, 73, 96].map((frame, i) => ({
+    op: 'set_keyframe',
+    id: 'Tentacle 2',
+    property: 'bone',
+    bone: `Bone ${k}`,
+    frame,
+    value: [0, 0, Math.round(0.34 * Math.sin((i * Math.PI) / 2 + k * 0.9) * 1000) / 1000],
+  })),
+)
+
+export const rig = {
+  title: 'Rigging',
+  width: 800,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 1.5, height: 0.08, segments: 72 }, translation: [0.3, 0.04, -0.1], color: '#3a3b40', roughness: 0.5 },
+    { op: 'add', name: 'Tentacle', primitive: TENTACLE, translation: [-0.2, 1.18, 0.2], color: '#d9677c', roughness: 0.35 },
+    { op: 'shade', id: 'Tentacle', smooth: true },
+  ],
+  camera: { azimuth: 16, elevation: 9, distance: 5.4, target: [0.25, 1.15, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Rig a mesh: a bone chain runs through it', hint: 'rig · chain' },
+    { pick: 'Tentacle', after: 100 },
+    { click: '[data-rig-chain="4"]', after: 500 },
+    { caption: 'Turn a bone; the bones above it follow', hint: 'pose · automatic weights' },
+    { click: '[data-bone="Bone 2"]', after: 100 },
+    { slide: '#p-bone-2', to: 38, ms: 800, after: 200 },
+    { click: '[data-bone="Bone 3"]', after: 100 },
+    { slide: '#p-bone-2', to: -42, ms: 700, after: 300 },
+    { caption: 'Key poses along the timeline', hint: 'set_keyframe · bone' },
+    { click: '[data-rig=key]', after: 300 },
+    { scrub: 48, ms: 700 },
+    { click: '[data-bone="Bone 2"]', after: 100 },
+    { slide: '#p-bone-2', to: -34, ms: 600, after: 100 },
+    { click: '[data-bone="Bone 3"]', after: 100 },
+    { slide: '#p-bone-2', to: 46, ms: 600, after: 100 },
+    { scrub: 96, ms: 600 },
+    { click: '[data-bone="Bone 2"]', after: 100 },
+    { slide: '#p-bone-2', to: 38, ms: 500, after: 100 },
+    { click: '[data-bone="Bone 3"]', after: 100 },
+    { slide: '#p-bone-2', to: -42, ms: 500, after: 200 },
+    { select: null },
+    { caption: 'Play it back', hint: 'Space' },
+    { click: '#play-btn', after: 2600 },
+    { caption: 'Agents rig and animate too', hint: 'rig · set_keyframe bone' },
+    {
+      mcp: [
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              { op: 'add', name: 'Tentacle 2', primitive: TENTACLE, translation: [0.85, 1.18, -0.45], color: '#7a6bd9', roughness: 0.35 },
+              { op: 'shade', id: 'Tentacle 2', smooth: true },
+              { op: 'rig', id: 'Tentacle 2', chain: 4 },
+              ...SWAY,
+            ],
+          },
+          after: 2600,
+        },
+      ],
+    },
+    { terminal: false },
+    { cursor: false },
+    { caption: 'Skins export to glTF with their animation', hint: 'GLB · skins · joints · weights' },
+    { wait: 2600 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig }

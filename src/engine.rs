@@ -19,6 +19,7 @@ use crate::csg::{self, BoolOp};
 use crate::edit;
 use crate::image::{ImageAsset, MAX_IMAGES, decode_base64};
 use crate::modifiers::{self, Axis, Modifier};
+use crate::rig;
 use crate::sculpt::{self, Brush};
 use crate::texture::{Pattern, Texture};
 use crate::uv;
@@ -273,6 +274,9 @@ pub struct Object {
     /// take an `id` also accept a group name and move its parts together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Bones that bend the displayed mesh (see `rig`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bones: Vec<rig::Bone>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -322,6 +326,9 @@ fn d_height() -> f64 {
 }
 fn d_segments() -> u32 {
     32
+}
+fn d_one_section() -> u32 {
+    1
 }
 fn d_rings() -> u32 {
     16
@@ -384,6 +391,8 @@ pub enum Primitive {
         rings: u32,
     },
     /// Capped cylinder (or cone/frustum with `radius_top`) centred on the origin.
+    /// `rings` splits the side into that many sections along the height, so
+    /// it can bend (with bones or modifiers).
     Cylinder {
         #[serde(default = "d_radius")]
         radius: f64,
@@ -393,6 +402,8 @@ pub enum Primitive {
         height: f64,
         #[serde(default = "d_segments")]
         segments: u32,
+        #[serde(default = "d_one_section")]
+        rings: u32,
     },
     /// Torus lying in the XZ plane.
     Torus {
@@ -739,7 +750,8 @@ pub enum Command {
         id: ObjRef,
     },
     /// Key a property at `frame`. Without `value`, keys the property's
-    /// current value at that frame. Colours take `#rrggbb`.
+    /// current value at that frame. Colours take `#rrggbb`; property
+    /// `bone` keys the rotation of the bone named by `bone`.
     SetKeyframe {
         id: ObjRef,
         property: Property,
@@ -748,13 +760,39 @@ pub enum Command {
         value: Option<KeyValue>,
         #[serde(default)]
         interpolation: Option<Interpolation>,
+        #[serde(default)]
+        bone: Option<String>,
     },
-    /// Remove the keys at `frame` (one property, or all of them).
+    /// Remove the keys at `frame` (one property, or all of them; for
+    /// `bone`, one bone's or every bone's).
     DeleteKeyframe {
         id: ObjRef,
         frame: f64,
         #[serde(default)]
         property: Option<Property>,
+        #[serde(default)]
+        bone: Option<String>,
+    },
+    /// Give an object bones: an explicit list (`bones`; empty removes the
+    /// rig) or a `chain` of that many bones end to end through the mesh
+    /// along `axis` (default its longest side). The displayed mesh bends
+    /// with them, with automatic weights.
+    Rig {
+        id: ObjRef,
+        #[serde(default)]
+        bones: Option<Vec<rig::Bone>>,
+        #[serde(default)]
+        chain: Option<u32>,
+        #[serde(default)]
+        axis: Option<rig::Axis>,
+    },
+    /// Turn a bone about its head (Euler XYZ radians on the object's axes,
+    /// carried along by its parents). Key it with `set_keyframe` property
+    /// `bone` to animate it.
+    Pose {
+        id: ObjRef,
+        bone: String,
+        rotation: [f64; 3],
     },
     /// Remove an object's animation (one property, or all of it).
     ClearAnimation {
@@ -917,6 +955,20 @@ impl Editor {
 
     pub(crate) fn trace_cache(&self) -> &crate::pathtrace::Cache {
         &self.traced
+    }
+
+    /// The mesh an object shows at `frame` (or in its static pose): the
+    /// displayed mesh bent by its bones.
+    pub fn posed<'a>(&'a self, o: &'a Object, frame: Option<f64>) -> std::borrow::Cow<'a, Mesh> {
+        let mesh = self.evaluated(o);
+        if o.bones.is_empty() {
+            return std::borrow::Cow::Borrowed(mesh);
+        }
+        let rotations = rig::rotations(o, frame);
+        if !rig::posed(&rotations) {
+            return std::borrow::Cow::Borrowed(mesh);
+        }
+        std::borrow::Cow::Owned(rig::skin(mesh, &o.bones, &rotations))
     }
 
     /// The mesh an object displays: its base mesh run through its modifiers.
@@ -1111,6 +1163,7 @@ fn apply_command(
                 tracks: Vec::new(),
                 smooth: kind == "quadsphere",
                 group: None,
+                bones: Vec::new(),
             });
             scene.next_id += 1;
             created.push(id);
@@ -1242,6 +1295,7 @@ fn apply_command(
                     tracks: Vec::new(),
                     smooth: p.smooth,
                     group: Some(group.clone()),
+                    bones: Vec::new(),
                 });
                 scene.next_id += 1;
                 created.push(id);
@@ -1503,6 +1557,7 @@ fn apply_command(
                 tracks: Vec::new(),
                 smooth: false,
                 group: None,
+                bones: Vec::new(),
             });
             scene.next_id += 1;
             created.push(id);
@@ -1555,17 +1610,33 @@ fn apply_command(
             frame,
             value,
             interpolation,
+            bone,
         } => {
             let i = resolve(scene, id)?;
             let frame = anim::check_frame(*frame)?;
             let o = &mut scene.objects[i];
-            let value = match value {
-                Some(v) => anim::key_value(*property, v)?,
-                None => anim::value_at(o, *property, frame),
+            let bone = match (property, bone) {
+                (Property::Bone, Some(b)) => {
+                    let k =
+                        o.bones.iter().position(|x| &x.name == b).ok_or_else(|| {
+                            EngineError::new(format!("{} has no bone {b:?}", o.name))
+                        })?;
+                    Some(k)
+                }
+                (Property::Bone, None) => return err("bone keys need `bone`"),
+                (_, Some(_)) => return err("only property `bone` takes `bone`"),
+                _ => None,
             };
+            let value = match (value, bone) {
+                (Some(v), _) => anim::key_value(*property, v)?,
+                (None, Some(k)) => rig::rotations(o, Some(frame))[k].to_vec(),
+                (None, None) => anim::value_at(o, *property, frame),
+            };
+            let name = bone.map(|k| o.bones[k].name.clone());
             anim::set_key(
                 o,
                 *property,
+                name.as_deref(),
                 frame,
                 value,
                 interpolation.unwrap_or_default(),
@@ -1575,11 +1646,42 @@ fn apply_command(
             id,
             frame,
             property,
+            bone,
         } => {
             let i = resolve(scene, id)?;
-            if anim::delete_key(&mut scene.objects[i], *property, *frame) == 0 {
+            if anim::delete_key(&mut scene.objects[i], *property, bone.as_deref(), *frame) == 0 {
                 return err(format!("no keyframe at frame {frame}"));
             }
+        }
+        Command::Rig {
+            id,
+            bones,
+            chain,
+            axis,
+        } => {
+            let i = resolve(scene, id)?;
+            let o = &mut scene.objects[i];
+            let bones = match (bones, chain) {
+                (Some(b), None) => b.clone(),
+                (None, Some(n)) => rig::chain(&o.mesh, *n, *axis)?,
+                _ => return err("rig takes either `bones` or `chain`"),
+            };
+            rig::validate(&bones)?;
+            o.bones = bones;
+        }
+        Command::Pose { id, bone, rotation } => {
+            let i = resolve(scene, id)?;
+            let o = &mut scene.objects[i];
+            if rotation.iter().any(|v| !v.is_finite() || v.abs() > 1e6) {
+                return err("rotation needs finite numbers");
+            }
+            let name = o.name.clone();
+            let b = o
+                .bones
+                .iter_mut()
+                .find(|b| &b.name == bone)
+                .ok_or_else(|| EngineError::new(format!("{name} has no bone {bone:?}")))?;
+            b.rotation = *rotation;
         }
         Command::ClearAnimation { id, property } => {
             let i = resolve(scene, id)?;
@@ -1649,6 +1751,13 @@ fn apply_command(
 /// textures only name images the scene holds.
 fn tidy(scene: &mut Scene) -> Result<(), EngineError> {
     for o in &mut scene.objects {
+        // Animation of bones that are gone goes with them.
+        let bones = &o.bones;
+        o.tracks.retain(|t| {
+            t.bone
+                .as_ref()
+                .is_none_or(|b| bones.iter().any(|x| &x.name == b))
+        });
         if !o.mesh.uvs.is_empty() && !o.mesh.has_uvs() {
             o.mesh.uvs.clear();
         }
@@ -1868,6 +1977,7 @@ fn validate_scene(scene: &Scene) -> Result<(), EngineError> {
         )
         .map_err(ctx)?;
         validate_mesh(&o.mesh).map_err(ctx)?;
+        rig::validate(&o.bones).map_err(ctx)?;
         anim::validate_tracks(o).map_err(ctx)?;
     }
     scene.animation.validate()?;
@@ -1950,7 +2060,8 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
         .objects
         .iter()
         .map(|o| {
-            let mesh = ed.evaluated(o);
+            let posed = ed.posed(o, frame);
+            let mesh = &*posed;
             let pose = frame
                 .filter(|_| !o.tracks.is_empty())
                 .map(|f| anim::pose(o, f));
@@ -2002,7 +2113,8 @@ pub fn export_obj(ed: &Editor) -> String {
     let mut out = String::from("# Exported from Tatara\n");
     let mut base = 1usize;
     for o in &ed.scene().objects {
-        let mesh = ed.evaluated(o);
+        let posed = ed.posed(o, None);
+        let mesh = &*posed;
         let m = o.transform.matrix();
         let name: String = o
             .name
@@ -2090,6 +2202,7 @@ pub fn build_primitive(p: &Primitive) -> Result<Mesh, EngineError> {
             radius_top,
             height,
             segments,
+            rings,
         } => {
             let r0 = positive(radius, "radius")?;
             let r1 = match radius_top {
@@ -2099,7 +2212,12 @@ pub fn build_primitive(p: &Primitive) -> Result<Mesh, EngineError> {
             };
             let h = positive(height, "height")? / 2.0;
             let segments = seg(segments, 3, 256, "segments")?;
-            let mut profile = vec![[0.0, -h], [r0, -h], [r1, h]];
+            let rings = seg(rings, 1, 256, "rings")?;
+            let mut profile = vec![[0.0, -h]];
+            for k in 0..=rings {
+                let t = k as f64 / rings as f64;
+                profile.push([r0 + (r1 - r0) * t, -h + 2.0 * h * t]);
+            }
             if r1 > 0.0 {
                 profile.push([0.0, h]);
             }
@@ -2576,12 +2694,14 @@ mod tests {
                 radius_top: None,
                 height: 2.0,
                 segments: 16,
+                rings: 1,
             },
             Primitive::Cylinder {
                 radius: 1.0,
                 radius_top: Some(0.0),
                 height: 2.0,
                 segments: 16,
+                rings: 1,
             },
             Primitive::Torus {
                 major_radius: 1.0,
@@ -2768,6 +2888,7 @@ mod tests {
             tracks: Vec::new(),
             smooth: false,
             group: None,
+            bones: Vec::new(),
         });
         assert!(ed.load(scene.clone()).is_err(), "id must be below next_id");
         scene.next_id = 6;
@@ -2895,6 +3016,7 @@ mod tests {
         let mut saved = ed.scene().clone();
         saved.objects[0].tracks.push(crate::anim::Track {
             property: crate::anim::Property::Roughness,
+            bone: None,
             keys: vec![crate::anim::Key {
                 frame: 3.0,
                 value: vec![0.2, 0.4],
@@ -3068,6 +3190,70 @@ mod tests {
         assert!(tex(&ed, 1).is_none());
         ed.undo().unwrap();
         assert_eq!(tex(&ed, 1).unwrap().pattern, Pattern::Marble);
+    }
+
+    #[test]
+    fn rigs_bend_the_mesh_and_their_bones_animate() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "name": "Tail", "primitive": {"kind": "quadsphere", "level": 3}, "scale": [0.3, 1.5, 0.3]},
+            {"op": "rig", "id": "Tail", "chain": 3, "axis": "y"}
+        ]})))
+        .unwrap();
+        let run = |ed: &mut Editor, cmd: serde_json::Value| {
+            ed.apply(&batch(serde_json::json!({ "commands": [cmd] })))
+        };
+        let o = |ed: &Editor| ed.scene().objects[0].clone();
+        assert_eq!(o(&ed).bones.len(), 3);
+        // At rest the rig changes nothing.
+        let rest = ed.evaluated(&ed.scene().objects[0]).clone();
+        assert_eq!(*ed.posed(&ed.scene().objects[0], None), rest);
+
+        run(&mut ed, serde_json::json!({"op": "pose", "id": "Tail", "bone": "Bone 2", "rotation": [0, 0, 1.2]})).unwrap();
+        let bent = ed.posed(&ed.scene().objects[0], None).into_owned();
+        // The tip swings over and down; the bottom stays put.
+        let tip = (0..rest.vertices.len())
+            .max_by(|&a, &b| rest.vertices[a][1].total_cmp(&rest.vertices[b][1]))
+            .unwrap();
+        assert!(
+            bent.vertices[tip][1] < rest.vertices[tip][1] - 0.3,
+            "the upper bones swing down"
+        );
+        assert!(bent.vertices[tip][0] < -0.4);
+        let low = |m: &Mesh| m.vertices.iter().map(|v| v[1]).fold(f64::MAX, f64::min);
+        assert!(
+            (low(&bent) - low(&rest)).abs() < 1e-9,
+            "the first bone stays put"
+        );
+
+        // Bone keys animate the pose; without a value they key the pose.
+        run(&mut ed, serde_json::json!({"op": "set_keyframe", "id": "Tail", "property": "bone", "bone": "Bone 1", "frame": 1})).unwrap();
+        run(&mut ed, serde_json::json!({"op": "set_keyframe", "id": "Tail", "property": "bone", "bone": "Bone 1", "frame": 25, "value": [0.8, 0, 0], "interpolation": "linear"})).unwrap();
+        let r = rig::rotations(&o(&ed), Some(13.0));
+        assert!((r[0][0] - 0.4).abs() < 1e-9 && r[1] == [0.0, 0.0, 1.2]);
+        assert_ne!(*ed.posed(&ed.scene().objects[0], Some(25.0)), bent);
+        for bad in [
+            serde_json::json!({"op": "set_keyframe", "id": "Tail", "property": "bone", "frame": 1}),
+            serde_json::json!({"op": "set_keyframe", "id": "Tail", "property": "bone", "bone": "Nope", "frame": 1}),
+            serde_json::json!({"op": "set_keyframe", "id": "Tail", "property": "rotation", "bone": "Bone 1", "frame": 1}),
+            serde_json::json!({"op": "pose", "id": "Tail", "bone": "Nope", "rotation": [0, 0, 0]}),
+            serde_json::json!({"op": "rig", "id": "Tail", "bones": [{"name": "A", "head": [0, 0, 0], "tail": [0, 1, 0], "parent": "B"}]}),
+            serde_json::json!({"op": "rig", "id": "Tail", "chain": 2, "bones": []}),
+        ] {
+            assert!(run(&mut ed, bad.clone()).is_err(), "{bad}");
+        }
+        run(&mut ed, serde_json::json!({"op": "delete_keyframe", "id": "Tail", "property": "bone", "bone": "Bone 1", "frame": 25})).unwrap();
+        assert_eq!(o(&ed).tracks[0].keys.len(), 1);
+
+        // Removing the rig drops its animation too.
+        run(
+            &mut ed,
+            serde_json::json!({"op": "rig", "id": "Tail", "bones": []}),
+        )
+        .unwrap();
+        assert!(o(&ed).bones.is_empty() && o(&ed).tracks.is_empty());
+        ed.undo().unwrap();
+        assert_eq!(o(&ed).bones.len(), 3);
     }
 
     #[test]

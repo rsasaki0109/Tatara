@@ -13,6 +13,7 @@ pub mod modifiers;
 pub mod nodes;
 pub mod pathtrace;
 pub mod render;
+pub mod rig;
 pub mod sculpt;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;

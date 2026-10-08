@@ -417,6 +417,8 @@ export class DemoRunner {
       const v = from + (s.to - from) * t
       el.value = String(v)
       if (label) label.textContent = String(Math.round(Number(el.value) * 100) / 100)
+      // Live previews (bone turns) follow the thumb.
+      el.dispatchEvent(new Event('input', { bubbles: true }))
       this.pos = { x: x(Number(el.value)), y }
       this.placeCursor()
     })
