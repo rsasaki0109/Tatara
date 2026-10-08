@@ -152,7 +152,7 @@ fn mirror(mesh: &Mesh, axis: Axis, merge: f64) -> Mesh {
         // Mirroring flips orientation, so reverse the loop to keep normals outward.
         faces.push(f.iter().rev().map(|&i| map[i as usize]).collect());
     }
-    Mesh { vertices, faces }
+    Mesh::new(vertices, faces)
 }
 
 fn array(mesh: &Mesh, count: u32, offset: Vec3) -> Mesh {
@@ -160,6 +160,7 @@ fn array(mesh: &Mesh, count: u32, offset: Vec3) -> Mesh {
     let mut out = Mesh {
         vertices: Vec::with_capacity(mesh.vertices.len() * count as usize),
         faces: Vec::with_capacity(mesh.faces.len() * count as usize),
+        uvs: Vec::new(),
     };
     for c in 0..count {
         let d = c as f64;
@@ -175,6 +176,7 @@ fn array(mesh: &Mesh, count: u32, offset: Vec3) -> Mesh {
                 .iter()
                 .map(|f| f.iter().map(|&i| i + c * n).collect()),
         );
+        out.uvs.extend(mesh.uvs.iter().cloned());
     }
     out
 }
@@ -195,6 +197,7 @@ fn deform(mesh: &Mesh, f: impl Fn(Vec3, f64) -> Vec3) -> Mesh {
             .map(|&v| f(v, (v[1] - lo) / h))
             .collect(),
         faces: mesh.faces.clone(),
+        uvs: mesh.uvs.clone(),
     }
 }
 

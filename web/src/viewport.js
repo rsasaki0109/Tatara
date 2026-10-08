@@ -60,17 +60,83 @@ function boxUv(p, n) {
   return n[2] >= 0 ? [p[0], p[1]] : [-p[0], p[1]]
 }
 
-function buildGeometry(vertices, faces, smooth = false) {
+const SIDES = [
+  [1, 0, 0],
+  [-1, 0, 0],
+  [0, 1, 0],
+  [0, -1, 0],
+  [0, 0, 1],
+  [0, 0, -1],
+]
+
+function sideOf(n) {
+  const [ax, ay, az] = n.map(Math.abs)
+  const [k, c] = ax >= ay && ax >= az ? [0, n[0]] : ay >= az ? [1, n[1]] : [2, n[2]]
+  return k * 2 + (c < 0 ? 1 : 0)
+}
+
+/**
+ * Box projection of one object (src/texture.rs BoxProjection): in metres
+ * of its scaled size, or fitted so each side shows exactly one tile.
+ */
+function boxProjection(vertices, scale, fit) {
+  let ranges = null
+  if (fit) {
+    const lo = [Infinity, Infinity, Infinity]
+    const hi = [-Infinity, -Infinity, -Infinity]
+    for (const v of vertices) for (let k = 0; k < 3; k++) (lo[k] = Math.min(lo[k], v[k] * scale[k])), (hi[k] = Math.max(hi[k], v[k] * scale[k]))
+    ranges = SIDES.map((n) => {
+      const a = [Infinity, Infinity]
+      const b = [-Infinity, -Infinity]
+      for (let c = 0; c < 8; c++) {
+        const uv = boxUv([c & 1 ? hi[0] : lo[0], c & 2 ? hi[1] : lo[1], c & 4 ? hi[2] : lo[2]], n)
+        for (let i = 0; i < 2; i++) (a[i] = Math.min(a[i], uv[i])), (b[i] = Math.max(b[i], uv[i]))
+      }
+      return [a[0], a[1], Math.max(b[0] - a[0], 1e-9), Math.max(b[1] - a[1], 1e-9)]
+    })
+  }
+  const safe = (x) => (Math.abs(x) < 1e-9 ? 1e-9 : x)
+  return (p, n) => {
+    const ns = [n[0] / safe(scale[0]), n[1] / safe(scale[1]), n[2] / safe(scale[2])]
+    const uv = boxUv([p[0] * scale[0], p[1] * scale[1], p[2] * scale[2]], ns)
+    if (!ranges) return uv
+    const [u0, v0, du, dv] = ranges[sideOf(ns)]
+    return [(uv[0] - u0) / du, (uv[1] - v0) / dv]
+  }
+}
+
+/** What the displayed geometry of an object depends on. */
+function geometryKey(o, mesh) {
+  const t = o.material?.texture
+  return meshKey(mesh) + (o.smooth ? ':smooth' : '') + (t ? `:${o.transform.scale.join(',')}:${t.fit ? 'fit' : ''}` : '')
+}
+
+/** Whether a mesh carries its own texture coordinates, one per face corner. */
+export const hasUvs = (mesh) => Boolean(mesh.uvs?.length) && mesh.uvs.length === mesh.faces.length && mesh.uvs.every((u, i) => u.length === mesh.faces[i].length)
+
+function buildGeometry(vertices, faces, smooth = false, faceUvs = null, projection = { scale: [1, 1, 1], fit: false }) {
   const pos = []
   const uv = []
   const triFace = []
+  const own = faceUvs && hasUvs({ faces, uvs: faceUvs })
+  const project = own ? null : boxProjection(vertices, projection.scale, projection.fit)
   faces.forEach((f, fi) => {
-    const n = newell(vertices, f)
     const start = pos.length
-    emit(f, fi)
-    for (let i = start; i < pos.length; i += 3) uv.push(...boxUv([pos[i], pos[i + 1], pos[i + 2]], n))
+    const corners = emit(f, fi)
+    if (own) {
+      // Corners as emitted: the fan's centre is the average of the corners.
+      const fu = faceUvs[fi]
+      const c = [0, 1].map((k) => fu.reduce((sum, x) => sum + x[k], 0) / fu.length)
+      for (const k of corners) uv.push(...(k < 0 ? c : fu[k]))
+    } else {
+      const n = newell(vertices, f)
+      for (let i = start; i < pos.length; i += 3) uv.push(...project([pos[i], pos[i + 1], pos[i + 2]], n))
+    }
   })
+  // Pushes the face's triangles; returns the corner index of each emitted
+  // vertex (-1 for a centre point).
   function emit(f, fi) {
+    const corners = []
     if (f.length > 3 && hasStraightCorner(vertices, f)) {
       // A corner on a straight edge (a boolean's welded seam) would give
       // a fan zero-area triangles and leave the corner out of the mesh, so
@@ -80,17 +146,20 @@ function buildGeometry(vertices, faces, smooth = false) {
         const a = vertices[f[k]]
         const b = vertices[f[(k + 1) % f.length]]
         pos.push(c[0], c[1], c[2], a[0], a[1], a[2], b[0], b[1], b[2])
+        corners.push(-1, k, (k + 1) % f.length)
         triFace.push(fi)
       }
-      return
+      return corners
     }
     const a = vertices[f[0]]
     for (let k = 1; k < f.length - 1; k++) {
       const b = vertices[f[k]]
       const c = vertices[f[k + 1]]
       pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2])
+      corners.push(0, k, k + 1)
       triFace.push(fi)
     }
+    return corners
   }
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
@@ -161,6 +230,7 @@ export class Viewport {
     this.edit = { active: false, mode: 'face', verts: [], edges: [], faces: [] }
     this.nodes = new Map()
     this.textureImages = new Map()
+    this.images = {}
     this.selected = null
     this.face = null
     this.wireframe = false
@@ -301,6 +371,7 @@ export class Viewport {
   // -- scene sync -----------------------------------------------------------
 
   sync(scene, animate) {
+    this.images = scene.images || {}
     const seen = new Set()
     for (const o of scene.objects) {
       seen.add(o.id)
@@ -401,7 +472,7 @@ export class Viewport {
     const prev = node.data
     node.data = o
     const plain = !o.display && !prev.display
-    const key = meshKey(displayMesh(o)) + (o.smooth ? ':smooth' : '')
+    const key = geometryKey(o, displayMesh(o))
     // A committed stroke is already on screen: swap in the result, no morph.
     const sculpted = node.sculptPreview
     node.sculptPreview = false
@@ -457,7 +528,7 @@ export class Viewport {
         const to = this.materialState(m)
         this.anim.add(`mat:${o.id}`, 420, (t) => {
           // A textured surface's colour lives in its texture.
-          if (!m.userData.textureKey) m.color.lerpColors(from.color, to.color, t)
+          if (!m.userData.bakedColor) m.color.lerpColors(from.color, to.color, t)
           m.emissive.lerpColors(from.emissive, to.emissive, t)
           for (const k of ['roughness', 'metalness', 'clearcoat', 'emissiveIntensity', 'opacity', 'transmission']) m[k] = from[k] + (to[k] - from[k]) * t
         })
@@ -516,7 +587,7 @@ export class Viewport {
 
   applyMaterial(m, mat) {
     this.applyTexture(m, mat)
-    if (!m.userData.textureKey || !m.map) m.color.set(mat.color)
+    if (!m.userData.bakedColor || !m.map) m.color.set(mat.color)
     m.roughness = mat.roughness
     m.metalness = mat.metalness
     // Glass has its own reflections; a clearcoat on top only clouds it.
@@ -537,50 +608,80 @@ export class Viewport {
   }
 
   /**
-   * A procedural texture tile, baked by the Rust core (`/api/texture`) so it
-   * matches the renderer and glTF export. Geometry carries box-projected
-   * UVs in metres; `repeat` turns them into tiles of `scale` metres.
+   * Textures come from the Rust core so they match the renderer and glTF
+   * export: pattern tiles and relief normal maps are baked by
+   * `/api/texture`, images are served as stored by `/api/image`. Geometry
+   * carries box-projected UVs in metres (or the mesh's own UVs), and
+   * `repeat` turns metres into tiles of `scale` metres.
    */
   applyTexture(m, mat) {
     const t = mat.texture
-    const key = t ? `${t.pattern}|${mat.color}|${t.color2 ?? '#3b2a22'}` : ''
-    const repeat = 1 / (t?.scale ?? 0.5)
-    m.userData.textureRepeat = repeat
-    if (key === m.userData.textureKey) {
-      m.map?.repeat.set(repeat, repeat)
-      return
-    }
-    m.userData.textureKey = key
-    if (!key) {
-      if (m.map) {
-        m.map.dispose()
-        m.map = null
+    const color2 = t?.color2 ?? '#3b2a22'
+    const params = (extra) => new URLSearchParams({ pattern: t.pattern, color2, size: '512', ...extra }).toString()
+    const colorUrl =
+      !t || t.pattern === 'none' ? null : t.pattern === 'image' ? this.imageUrl(t.image) : `/api/texture?${params({ color: mat.color })}`
+    const imageVersion = t?.pattern === 'image' ? { image: t.image, v: this.images[t.image]?.hash ?? '' } : {}
+    const normalUrl = !t
+      ? null
+      : t.normal_map
+        ? this.imageUrl(t.normal_map)
+        : t.relief > 0
+          ? `/api/texture?${params({ kind: 'normal', relief: String(t.relief), ...imageVersion })}`
+          : null
+    // A baked pattern already holds the colour; an image is tinted by it.
+    m.userData.bakedColor = Boolean(colorUrl) && t.pattern !== 'image'
+    m.userData.textureScale = t?.scale ?? 0.5
+    this.setMap(m, 'map', colorUrl)
+    this.setMap(m, 'normalMap', normalUrl)
+    this.syncRepeat(m)
+  }
+
+  imageUrl(name) {
+    return `/api/image?${new URLSearchParams({ name, v: this.images[name]?.hash ?? '' })}`
+  }
+
+  syncRepeat(m) {
+    const repeat = m.userData.tiled ? 1 : 1 / (m.userData.textureScale ?? 0.5)
+    m.map?.repeat.setScalar(repeat)
+    m.normalMap?.repeat.setScalar(repeat)
+  }
+
+  setMap(m, slot, url) {
+    const key = `${slot}Url`
+    if (m.userData[key] === url) return
+    m.userData[key] = url
+    if (!url) {
+      if (m[slot]) {
+        m[slot].dispose()
+        m[slot] = null
         m.needsUpdate = true
       }
       return
     }
-    this.textureImage(t.pattern, mat.color, t.color2 ?? '#3b2a22').then((image) => {
-      if (!image || m.userData.textureKey !== key) return
+    this.loadImage(url).then((image) => {
+      if (!image || m.userData[key] !== url) return
       const tex = new THREE.Texture(image)
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-      tex.colorSpace = THREE.SRGBColorSpace
+      tex.colorSpace = slot === 'map' ? THREE.SRGBColorSpace : THREE.NoColorSpace
       tex.anisotropy = 8
-      tex.repeat.setScalar(m.userData.textureRepeat)
       tex.needsUpdate = true
-      m.map?.dispose()
-      m.map = tex
-      m.color.set('#ffffff')
+      m[slot]?.dispose()
+      m[slot] = tex
+      this.syncRepeat(m)
+      if (slot === 'map' && m.userData.bakedColor) m.color.set('#ffffff')
       m.needsUpdate = true
     })
   }
 
-  textureImage(pattern, color, color2) {
-    const q = new URLSearchParams({ pattern, color, color2, size: '512' }).toString()
-    let image = this.textureImages.get(q)
+  loadImage(url) {
+    let image = this.textureImages.get(url)
     if (!image) {
       image = this.clock.track(
-        fetch(`/api/texture?${q}`)
-          .then((r) => r.blob())
+        fetch(url)
+          .then((r) => {
+            if (!r.ok) throw new Error(r.statusText)
+            return r.blob()
+          })
           .then(async (blob) => {
             const img = new Image()
             img.src = URL.createObjectURL(blob)
@@ -588,11 +689,11 @@ export class Viewport {
             return img
           })
           .catch(() => {
-            this.textureImages.delete(q)
+            this.textureImages.delete(url)
             return null
           }),
       )
-      this.textureImages.set(q, image)
+      this.textureImages.set(url, image)
     }
     return image
   }
@@ -672,8 +773,17 @@ export class Viewport {
     this.applyMaterial(node.mesh.material, mat)
   }
 
-  setMesh(node, mesh, key = meshKey(mesh) + (node.data.smooth ? ':smooth' : '')) {
-    const { geometry } = buildGeometry(mesh.vertices, mesh.faces, node.data.smooth)
+  setMesh(node, mesh, key = geometryKey(node.data, mesh)) {
+    const o = node.data
+    const fit = Boolean(o.material?.texture?.fit)
+    const { geometry } = buildGeometry(mesh.vertices, mesh.faces, o.smooth, mesh.uvs, { scale: o.transform.scale, fit })
+    const m = node.mesh.material
+    // Own or fitted UVs are already in tiles; box projection is in metres.
+    const tiled = hasUvs(mesh) || fit
+    if (m.userData.tiled !== tiled) {
+      m.userData.tiled = tiled
+      this.syncRepeat(m)
+    }
     node.mesh.geometry.dispose()
     node.mesh.geometry = geometry
     node.wire.geometry.dispose()

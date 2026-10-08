@@ -425,6 +425,7 @@ fn to_mesh(polys: Vec<Poly>) -> Mesh {
     Mesh {
         vertices: vertices.into_iter().map(|v| v.to_array()).collect(),
         faces,
+        uvs: Vec::new(),
     }
 }
 

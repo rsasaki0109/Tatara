@@ -8,6 +8,12 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { createRequire } from 'node:module'
+
+// A 2x2 PNG (red, green / blue, white) for the image upload check.
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC',
+  'base64',
+)
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -169,6 +175,21 @@ try {
   })
   await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.scale === 1.5))
   check(true, 'a pattern chip textures the object; the tile size slider rescales it')
+  await page.$eval('#p-relief', (el) => {
+    el.value = '0.6'
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.relief === 0.6))
+  await page.waitForFunction(() => window.__tatara.debug().normalMapped === 1)
+  check(true, 'the relief slider adds a normal map')
+  await page.setInputFiles('#image-input', { name: 'label.png', mimeType: 'image/png', buffer: TINY_PNG })
+  await page.waitForFunction(() =>
+    fetch('/api/scene')
+      .then((r) => r.json())
+      .then((s) => s.images?.label && s.objects[0].material.texture?.image === 'label' && s.objects[0].material.texture.fit),
+  )
+  await page.waitForFunction(() => window.__tatara.debug().textured === 1)
+  check(true, 'an uploaded image becomes a scene image and a fitted texture')
   await page.click('[data-pattern=none]')
   await page.waitForFunction(() => window.__tatara.debug().textured === 0)
   await page.waitForTimeout(300)

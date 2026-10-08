@@ -721,6 +721,27 @@ button.primary:disabled {
   width: 100%;
 }
 
+.row.tex-size {
+  display: grid;
+  grid-template-columns: 70px auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.row.tex-size input[type='range'] {
+  min-width: 0;
+  width: 100%;
+}
+
+.row.tex-size .image-name {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .row.emission b {
   font-weight: 500;
   color: var(--text);

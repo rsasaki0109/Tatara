@@ -14,7 +14,8 @@ use crate::anim::{Property, sample_track};
 use crate::engine::{
     Command, Editor, EngineError, MAX_FACES, MAX_OBJECTS, Material, Mesh, Vec3, check_color,
 };
-use crate::texture::{self, Pattern, Texture};
+use crate::image::{ImageAsset, MAX_IMAGES, Pixels, decode_base64};
+use crate::texture::{self, BoxProjection, Look, Pattern, Texture};
 
 const CREASE_DEGREES: f64 = 38.0;
 const GLB_MAGIC: &[u8; 4] = b"glTF";
@@ -73,15 +74,21 @@ fn newell(mesh: &Mesh, face: &[u32]) -> DVec3 {
 pub(crate) struct Shaded {
     pub(crate) positions: Vec<[f32; 3]>,
     pub(crate) normals: Vec<[f32; 3]>,
-    /// Box-projected texture coordinates in metres (empty unless asked for).
+    /// Texture coordinates (empty unless asked for): the mesh's own, or
+    /// box-projected in metres.
     pub(crate) uvs: Vec<[f32; 2]>,
+    /// Whether `uvs` are the mesh's own rather than box-projected.
+    pub(crate) own_uvs: bool,
+    /// Whether `uvs` are already in tiles (own or fitted), not metres.
+    pub(crate) tiled: bool,
     pub(crate) indices: Vec<u32>,
 }
 
 /// `smooth` blends normals across every edge (smooth shading); `uv` adds
-/// box-projected texture coordinates, splitting vertices where the
-/// projection axis changes.
-pub(crate) fn shade(mesh: &Mesh, smooth: bool, uv: bool) -> Shaded {
+/// texture coordinates: the mesh's own if it has them, otherwise this box
+/// projection, splitting vertices where the projection side changes.
+pub(crate) fn shade(mesh: &Mesh, smooth: bool, uv: Option<&BoxProjection>) -> Shaded {
+    let own_uvs = uv.is_some() && mesh.has_uvs();
     let normals: Vec<DVec3> = mesh.faces.iter().map(|f| newell(mesh, f)).collect();
     let mut around: Vec<Vec<usize>> = vec![Vec::new(); mesh.vertices.len()];
     for (fi, f) in mesh.faces.iter().enumerate() {
@@ -98,27 +105,39 @@ pub(crate) fn shade(mesh: &Mesh, smooth: bool, uv: bool) -> Shaded {
         positions: Vec::new(),
         normals: Vec::new(),
         uvs: Vec::new(),
+        own_uvs,
+        tiled: own_uvs || uv.is_some_and(BoxProjection::fitted),
         indices: Vec::new(),
     };
-    let mut ids: HashMap<(u32, [i32; 3], u8), u32> = HashMap::new();
+    let mut ids: HashMap<(u32, [i32; 3], [i64; 2]), u32> = HashMap::new();
     for (fi, f) in mesh.faces.iter().enumerate() {
-        let axis = if uv { projection_axis(normals[fi]) } else { 0 };
         let corner: Vec<u32> = f
             .iter()
-            .map(|&v| {
+            .enumerate()
+            .map(|(k, &v)| {
                 let n = around[v as usize]
                     .iter()
                     .filter(|&&g| normals[g].dot(normals[fi]) >= cos)
                     .fold(DVec3::ZERO, |acc, &g| acc + normals[g])
                     .normalize_or(normals[fi]);
                 let q = (n * 1e4).round().as_ivec3().to_array();
-                *ids.entry((v, q, axis)).or_insert_with(|| {
-                    let p = mesh.vertices[v as usize];
+                let p = mesh.vertices[v as usize];
+                let (corner_uv, uv_key) = match uv {
+                    _ if own_uvs => {
+                        let c = mesh.uvs[fi][k];
+                        (c, c.map(|x| (x * 1e6).round() as i64))
+                    }
+                    Some(projection) => {
+                        let (side, c) = projection.uv(DVec3::from_array(p), normals[fi]);
+                        (c, [side as i64, 0])
+                    }
+                    None => ([0.0; 2], [0; 2]),
+                };
+                *ids.entry((v, q, uv_key)).or_insert_with(|| {
                     out.positions.push(p.map(|x| x as f32));
                     out.normals.push(n.as_vec3().to_array());
-                    if uv {
-                        let [u, w] = texture::box_uv(DVec3::from_array(p), normals[fi]);
-                        out.uvs.push([u as f32, w as f32]);
+                    if uv.is_some() {
+                        out.uvs.push(corner_uv.map(|x| x as f32));
                     }
                     (out.positions.len() - 1) as u32
                 })
@@ -131,32 +150,66 @@ pub(crate) fn shade(mesh: &Mesh, smooth: bool, uv: bool) -> Shaded {
     out
 }
 
-/// Which of the six box-projection sides a face normal falls on.
-fn projection_axis(n: DVec3) -> u8 {
-    let a = n.abs();
-    let (k, c) = if a.x >= a.y && a.x >= a.z {
-        (0, n.x)
-    } else if a.y >= a.z {
-        (1, n.y)
-    } else {
-        (2, n.z)
-    };
-    k * 2 + u8::from(c < 0.0)
+/// Per-vertex tangents for normal maps: xyz along growing u, w the sign
+/// that turns cross(normal, tangent) into the direction of growing v
+/// (image up), as glTF expects.
+fn tangents(shaded: &Shaded) -> Vec<[f32; 4]> {
+    let n = shaded.positions.len();
+    let (mut tu, mut tv) = (vec![DVec3::ZERO; n], vec![DVec3::ZERO; n]);
+    let p = |i: usize| DVec3::from_array(shaded.positions[i].map(f64::from));
+    let uv = |i: usize| shaded.uvs[i].map(f64::from);
+    for t in shaded.indices.as_chunks::<3>().0 {
+        let [a, b, c] = t.map(|i| i as usize);
+        let (e1, e2) = (p(b) - p(a), p(c) - p(a));
+        let (d1, d2) = (
+            [uv(b)[0] - uv(a)[0], uv(b)[1] - uv(a)[1]],
+            [uv(c)[0] - uv(a)[0], uv(c)[1] - uv(a)[1]],
+        );
+        let det = d1[0] * d2[1] - d2[0] * d1[1];
+        if det.abs() < 1e-12 {
+            continue;
+        }
+        let du = (e1 * d2[1] - e2 * d1[1]) / det;
+        let dv = (e2 * d1[0] - e1 * d2[0]) / det;
+        for i in [a, b, c] {
+            tu[i] += du;
+            tv[i] += dv;
+        }
+    }
+    (0..n)
+        .map(|i| {
+            let normal = DVec3::from_array(shaded.normals[i].map(f64::from));
+            let t = (tu[i] - normal * normal.dot(tu[i]))
+                .try_normalize()
+                .unwrap_or_else(|| normal.any_orthonormal_vector());
+            let w = if normal.cross(t).dot(tv[i]) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            [t.x as f32, t.y as f32, t.z as f32, w]
+        })
+        .collect()
 }
 
-/// A glTF PBR material, with the KHR extensions it needs added to `used`.
-/// `texture` is the glTF texture holding the baked pattern, if any: it
-/// already contains the base colour, so the factor turns white and the
-/// procedural parameters ride along in `extras` for a lossless re-import.
+/// `color_map` and `normal_map` are the glTF textures for the material's
+/// texture, if any. A baked pattern already contains the base colour, so the
+/// factor turns white; an image is tinted by it. The texture's parameters
+/// ride along in `extras` for a lossless re-import.
 fn material_json(
     name: &str,
     m: &Material,
-    texture: Option<usize>,
+    color_map: Option<usize>,
+    normal_map: Option<usize>,
     used: &mut BTreeSet<String>,
 ) -> Value {
-    let [r, g, b] = match texture {
-        Some(_) => [1.0; 3],
-        None => hex_to_linear(&m.color),
+    let baked = m
+        .texture
+        .as_ref()
+        .is_some_and(|t| !matches!(t.pattern, Pattern::Image | Pattern::None));
+    let [r, g, b] = match color_map {
+        Some(_) if baked => [1.0; 3],
+        _ => hex_to_linear(&m.color),
     };
     let mut out = json!({
         "name": name,
@@ -166,8 +219,13 @@ fn material_json(
             "roughnessFactor": m.roughness,
         },
     });
-    if let (Some(index), Some(t)) = (texture, &m.texture) {
+    if let Some(index) = color_map {
         out["pbrMetallicRoughness"]["baseColorTexture"] = json!({ "index": index });
+    }
+    if let Some(index) = normal_map {
+        out["normalTexture"] = json!({ "index": index });
+    }
+    if let Some(t) = &m.texture {
         out["extras"] = json!({ "tatara_texture": { "color": m.color, "texture": t } });
     }
     let mut ext = serde_json::Map::new();
@@ -212,6 +270,8 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     let mut images = Vec::new();
     let mut textures = Vec::new();
     let mut baked: HashMap<String, usize> = HashMap::new();
+    let scene_images = &ed.scene().images;
+    let mut decoded: HashMap<String, Option<Pixels>> = HashMap::new();
     let fps = ed.scene().animation.fps;
     let mut push_view = |bin: &mut Vec<u8>, bytes: &[u8], target: u32| -> usize {
         while !bin.len().is_multiple_of(4) {
@@ -227,7 +287,9 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     };
     for o in &ed.scene().objects {
         let tex = o.material.texture.as_ref();
-        let shaded = shade(ed.evaluated(o), o.smooth, tex.is_some());
+        let mesh = ed.evaluated(o);
+        let projection = tex.map(|t| BoxProjection::new(&mesh.vertices, o.transform.scale, t.fit));
+        let shaded = shade(mesh, o.smooth, projection.as_ref());
         if shaded.indices.is_empty() {
             continue;
         }
@@ -263,37 +325,113 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         accessors.push(json!({ "bufferView": nv, "componentType": 5126, "count": shaded.normals.len(), "type": "VEC3" }));
         accessors.push(json!({ "bufferView": iv, "componentType": 5125, "count": shaded.indices.len(), "type": "SCALAR" }));
         let mut attributes = json!({ "POSITION": a, "NORMAL": a + 1 });
-        let texture = tex.map(|t| {
-            // One tile of the pattern spans `scale` metres. glTF's V runs
-            // down the image while ours runs up, hence the minus.
-            let s = t.scale as f32;
+        let mut extras = Value::Null;
+        let (mut color_map, mut normal_map) = (None, None);
+        if let Some(t) = tex {
+            // Box projection: one tile of the pattern spans `scale` metres.
+            // glTF's V runs down the image while ours runs up.
+            let s = if shaded.tiled { 1.0 } else { t.scale as f32 };
             let uv_bytes: Vec<u8> = shaded
                 .uvs
                 .iter()
-                .flat_map(|[u, v]| [u / s, -v / s])
+                .flat_map(|[u, v]| [u / s, 1.0 - v / s])
                 .flat_map(|v| v.to_le_bytes())
                 .collect();
             let uvv = push_view(&mut bin, &uv_bytes, 34962);
             attributes["TEXCOORD_0"] = json!(accessors.len());
             accessors.push(json!({ "bufferView": uvv, "componentType": 5126, "count": shaded.uvs.len(), "type": "VEC2" }));
-            let key = serde_json::to_string(&(&o.material.color, t)).expect("json serializes");
-            *baked.entry(key).or_insert_with(|| {
-                let png = texture::bake_png(&o.material.color, t, 256);
-                let view = push_view(&mut bin, &png, 0);
-                images.push(json!({ "bufferView": view, "mimeType": "image/png" }));
-                textures.push(json!({ "sampler": 0, "source": images.len() - 1 }));
-                textures.len() - 1
-            })
-        });
+            if !shaded.own_uvs {
+                extras = json!({ "tatara_box_uv": true });
+            }
+            let color = &o.material.color;
+            let mut texture_of =
+                |key: String, bytes: &dyn Fn() -> (Vec<u8>, &'static str, String)| {
+                    *baked.entry(key).or_insert_with(|| {
+                        let (data, mime, name) = bytes();
+                        let view = push_view(&mut bin, &data, 0);
+                        images.push(json!({ "bufferView": view, "mimeType": mime, "name": name }));
+                        textures.push(json!({ "sampler": 0, "source": images.len() - 1 }));
+                        textures.len() - 1
+                    })
+                };
+            let stored = |name: &str| -> (Vec<u8>, &'static str, String) {
+                let img = &scene_images[name];
+                let mime = if img.mime == "image/png" {
+                    "image/png"
+                } else {
+                    "image/jpeg"
+                };
+                (img.data.to_vec(), mime, name.to_string())
+            };
+            color_map = match (t.pattern, &t.image) {
+                (Pattern::None, _) => None,
+                (Pattern::Image, Some(name)) => {
+                    Some(texture_of(format!("image:{name}"), &|| stored(name)))
+                }
+                _ => {
+                    let key = serde_json::to_string(&(color, t.pattern, &t.color2))
+                        .expect("json serializes");
+                    Some(texture_of(format!("pattern:{key}"), &|| {
+                        (
+                            texture::bake_png(color, t, 256),
+                            "image/png",
+                            format!("{} pattern", o.name),
+                        )
+                    }))
+                }
+            };
+            normal_map = if let Some(name) = &t.normal_map {
+                Some(texture_of(format!("image:{name}"), &|| stored(name)))
+            } else if t.relief > 0.0 {
+                if let Some(name) = &t.image {
+                    decoded
+                        .entry(name.clone())
+                        .or_insert_with(|| scene_images[name].decode().ok());
+                }
+                let look = Look {
+                    base: color,
+                    texture: t,
+                    image: t.image.as_ref().and_then(|n| decoded[n].as_ref()),
+                    normal_map: None,
+                };
+                let key = serde_json::to_string(&(t.pattern, &t.image, t.relief))
+                    .expect("json serializes");
+                let index = texture_of(format!("relief:{key}"), &|| {
+                    (
+                        texture::bake_normal_png(&look, 256),
+                        "image/png",
+                        format!("{} relief", o.name),
+                    )
+                });
+                Some(index)
+            } else {
+                None
+            };
+        }
+        if normal_map.is_some() {
+            let tangent_bytes: Vec<u8> = tangents(&shaded)
+                .iter()
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            let tv = push_view(&mut bin, &tangent_bytes, 34962);
+            attributes["TANGENT"] = json!(accessors.len());
+            accessors.push(json!({ "bufferView": tv, "componentType": 5126, "count": shaded.positions.len(), "type": "VEC4" }));
+        }
         materials.push(material_json(
             &o.name,
             &o.material,
-            texture,
+            color_map,
+            normal_map,
             &mut extensions,
         ));
+        let mut primitive = json!({ "attributes": attributes, "indices": a + 2, "material": materials.len() - 1, "mode": 4 });
+        if !extras.is_null() {
+            primitive["extras"] = extras;
+        }
         meshes.push(json!({
             "name": o.name,
-            "primitives": [{ "attributes": attributes, "indices": a + 2, "material": materials.len() - 1, "mode": 4 }],
+            "primitives": [primitive],
         }));
         let t = &o.transform;
         let [rx, ry, rz] = t.rotation;
@@ -402,8 +540,73 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
 // Import
 // ---------------------------------------------------------------------------
 
+/// glTF images become scene images: each is added once, under a unique name.
+struct ImageImport<'a> {
+    doc: &'a Value,
+    buffers: &'a [Vec<u8>],
+    by_source: HashMap<usize, Option<String>>,
+    taken: BTreeSet<String>,
+    commands: Vec<Command>,
+}
+
+impl ImageImport<'_> {
+    /// The scene image for a glTF texture reference (`{"index": n}`), if it
+    /// uses the first UV set and holds a PNG or JPEG we can read.
+    fn image(&mut self, info: &Value, name: Option<&str>) -> Option<String> {
+        if info.is_null() || info["texCoord"].as_u64().unwrap_or(0) != 0 {
+            return None;
+        }
+        let texture = &self.doc["textures"][info["index"].as_u64()? as usize];
+        let source = texture["source"].as_u64()? as usize;
+        if let Some(found) = self.by_source.get(&source) {
+            return found.clone();
+        }
+        let image = &self.doc["images"][source];
+        let found = self
+            .bytes(image)
+            .filter(|_| self.taken.len() < MAX_IMAGES)
+            .and_then(|b| ImageAsset::from_bytes(b).ok())
+            .map(|asset| {
+                let fallback = format!("Image {}", source + 1);
+                let base = clean_name(name.or(image["name"].as_str()), &fallback);
+                let mut unique = base.clone();
+                let mut k = 1;
+                while !self.taken.insert(unique.clone()) {
+                    k += 1;
+                    unique = format!("{base} {k}");
+                }
+                self.commands.push(Command::AddImage {
+                    name: unique.clone(),
+                    data: base64::engine::general_purpose::STANDARD.encode(&asset.data),
+                });
+                unique
+            });
+        self.by_source.insert(source, found.clone());
+        found
+    }
+
+    fn bytes(&self, image: &Value) -> Option<Vec<u8>> {
+        if let Some(v) = image["bufferView"].as_u64() {
+            let view = &self.doc["bufferViews"][v as usize];
+            let buffer = self.buffers.get(view["buffer"].as_u64()? as usize)?;
+            let start = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+            let len = view["byteLength"].as_u64()? as usize;
+            return buffer
+                .get(start..start.checked_add(len)?)
+                .map(<[u8]>::to_vec);
+        }
+        let uri = image["uri"].as_str()?;
+        if uri.starts_with("data:") {
+            decode_base64(uri).ok()
+        } else {
+            None
+        }
+    }
+}
+
 /// Read a glTF material into ours (defaults follow the glTF spec).
-fn imported_material(m: Option<&Value>) -> Option<Material> {
+/// Textures become scene images through `images`.
+fn imported_material(m: Option<&Value>, images: &mut ImageImport) -> Option<Material> {
     let m = m?;
     let pbr = &m["pbrMetallicRoughness"];
     let num = |v: &Value, default: f64| v.as_f64().unwrap_or(default);
@@ -418,15 +621,40 @@ fn imported_material(m: Option<&Value>) -> Option<Material> {
     let emissive = &m["emissiveFactor"];
     let ext = &m["extensions"];
     let blend = m["alphaMode"].as_str() == Some("BLEND");
-    // Our own exports carry the procedural pattern; other textures are
-    // dropped (the base colour factor stays).
+    // Our own exports carry the texture's parameters, and the images it
+    // names travel as glTF images. Other files' base colour and normal
+    // textures become an image texture (tinted by the colour factor).
     let ours = &m["extras"]["tatara_texture"];
-    let texture = serde_json::from_value::<Texture>(ours["texture"].clone())
-        .ok()
-        .filter(|t| t.pattern != Pattern::None && t.validate().is_ok());
+    let (color_map, normal_map) = (&pbr["baseColorTexture"], &m["normalTexture"]);
+    let texture = match serde_json::from_value::<Texture>(ours["texture"].clone()) {
+        Ok(mut t) => {
+            if let Some(name) = t.image.clone() {
+                t.image = images.image(color_map, Some(&name));
+            }
+            if let Some(name) = t.normal_map.clone() {
+                t.normal_map = images.image(normal_map, Some(&name));
+            }
+            Some(t)
+        }
+        Err(_) => {
+            let image = images.image(color_map, None);
+            let normal_map = images.image(normal_map, None);
+            (image.is_some() || normal_map.is_some()).then(|| Texture {
+                pattern: if image.is_some() {
+                    Pattern::Image
+                } else {
+                    Pattern::None
+                },
+                image,
+                normal_map,
+                ..Texture::new(Pattern::None, "#3b2a22", 1.0)
+            })
+        }
+    }
+    .filter(|t| t.validate().is_ok() && (t.pattern != Pattern::None || t.normal_map.is_some()));
     let own_color = ours["color"]
         .as_str()
-        .filter(|_| texture.is_some())
+        .filter(|_| texture.is_some() && !ours.is_null())
         .and_then(|c| check_color(c).ok());
     Some(Material {
         color: match own_color {
@@ -553,6 +781,7 @@ fn read_accessor(
             ));
         }
     };
+    let normalized = a["normalized"].as_bool().unwrap_or(false);
     let count = a["count"].as_u64().unwrap_or(0) as usize;
     if count > 50_000_000 {
         return err("accessor is too large");
@@ -577,13 +806,20 @@ fn read_accessor(
             let b = buffer.get(at..at + size).ok_or_else(|| {
                 EngineError::new(format!("accessor {index} reads past its buffer"))
             })?;
-            out.push(match ctype {
+            let x = match ctype {
                 5120 => b[0] as i8 as f64,
                 5121 => b[0] as f64,
                 5122 => i16::from_le_bytes([b[0], b[1]]) as f64,
                 5123 => u16::from_le_bytes([b[0], b[1]]) as f64,
                 5125 => u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
                 _ => f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
+            };
+            out.push(match (normalized, ctype) {
+                (true, 5120) => (x / 127.0).max(-1.0),
+                (true, 5121) => x / 255.0,
+                (true, 5122) => (x / 32767.0).max(-1.0),
+                (true, 5123) => x / 65535.0,
+                _ => x,
             });
         }
     }
@@ -613,8 +849,14 @@ fn local_matrix(node: &Value) -> DMat4 {
 }
 
 /// Weld identical positions, drop degenerate triangles, then merge
-/// coplanar triangle pairs back into convex quads.
-pub fn rebuild_polygons(positions: &[Vec3], triangles: &[[u32; 3]]) -> Mesh {
+/// coplanar triangle pairs back into convex quads. With per-vertex `uvs`,
+/// each corner keeps its texture coordinate and pairs only merge where the
+/// UVs of their shared edge agree (not across a seam).
+pub fn rebuild_polygons(
+    positions: &[Vec3],
+    triangles: &[[u32; 3]],
+    uvs: Option<&[[f64; 2]]>,
+) -> Mesh {
     let mut weld: HashMap<[u64; 3], u32> = HashMap::new();
     let mut vertices: Vec<Vec3> = Vec::new();
     let remap: Vec<u32> = positions
@@ -627,15 +869,19 @@ pub fn rebuild_polygons(positions: &[Vec3], triangles: &[[u32; 3]]) -> Mesh {
             })
         })
         .collect();
-    let tris: Vec<[u32; 3]> = triangles
+    let (tris, tri_uvs): (Vec<[u32; 3]>, Vec<[[f64; 2]; 3]>) = triangles
         .iter()
-        .map(|t| t.map(|i| remap[i as usize]))
-        .filter(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2])
-        .collect();
-    let mesh = Mesh {
-        vertices,
-        faces: Vec::new(),
-    };
+        .map(|t| {
+            (
+                t.map(|i| remap[i as usize]),
+                t.map(|i| uvs.map_or([0.0; 2], |u| u[i as usize])),
+            )
+        })
+        .filter(|(t, _)| t[0] != t[1] && t[1] != t[2] && t[0] != t[2])
+        .unzip();
+    let mesh = Mesh::new(vertices, Vec::new());
+    let uv_of = |ti: usize, v: u32| tri_uvs[ti][tris[ti].iter().position(|&x| x == v).unwrap()];
+    let same_uv = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() + (a[1] - b[1]).abs() < 1e-6;
     let normal = |t: &[u32]| newell(&mesh, t);
     let mut by_edge: HashMap<(u32, u32), usize> = HashMap::new();
     for (ti, t) in tris.iter().enumerate() {
@@ -645,6 +891,7 @@ pub fn rebuild_polygons(positions: &[Vec3], triangles: &[[u32; 3]]) -> Mesh {
     }
     let mut used = vec![false; tris.len()];
     let mut faces: Vec<Vec<u32>> = Vec::with_capacity(tris.len());
+    let mut face_uvs: Vec<Vec<[f64; 2]>> = Vec::new();
     for ti in 0..tris.len() {
         if used[ti] {
             continue;
@@ -669,6 +916,11 @@ pub fn rebuild_polygons(positions: &[Vec3], triangles: &[[u32; 3]]) -> Mesh {
             if normal(&u).dot(n) < 0.99999 {
                 continue;
             }
+            if uvs.is_some()
+                && !(same_uv(uv_of(ti, a), uv_of(ui, a)) && same_uv(uv_of(ti, b), uv_of(ui, b)))
+            {
+                continue;
+            }
             let quad = [a, d, b, c];
             let convex = (0..4).all(|i| {
                 let p = DVec3::from(mesh.vertices[quad[i] as usize]);
@@ -685,13 +937,28 @@ pub fn rebuild_polygons(positions: &[Vec3], triangles: &[[u32; 3]]) -> Mesh {
             Some((ui, quad)) => {
                 used[ui] = true;
                 faces.push(quad.to_vec());
+                if uvs.is_some() {
+                    let d = quad[1];
+                    face_uvs.push(vec![
+                        uv_of(ti, quad[0]),
+                        uv_of(ui, d),
+                        uv_of(ti, quad[2]),
+                        uv_of(ti, quad[3]),
+                    ]);
+                }
             }
-            None => faces.push(t.to_vec()),
+            None => {
+                faces.push(t.to_vec());
+                if uvs.is_some() {
+                    face_uvs.push(tri_uvs[ti].to_vec());
+                }
+            }
         }
     }
     Mesh {
         vertices: mesh.vertices,
         faces,
+        uvs: face_uvs,
     }
 }
 
@@ -749,6 +1016,13 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
         };
 
     let mut commands = Vec::new();
+    let mut images = ImageImport {
+        doc: &doc,
+        buffers: &buffers,
+        by_source: HashMap::new(),
+        taken: BTreeSet::new(),
+        commands: Vec::new(),
+    };
     let mut names: HashMap<String, usize> = HashMap::new();
     let mut stack: Vec<(usize, DMat4, usize)> = roots
         .into_iter()
@@ -826,7 +1100,29 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
                     .collect();
                 (baked, [0.0; 3], [0.0; 3], [1.0; 3])
             };
-            let mut poly = rebuild_polygons(&positions, &triangles);
+            let material = prim["material"]
+                .as_u64()
+                .map(|m| &doc["materials"][m as usize]);
+            let m = imported_material(material.filter(|m| !m.is_null()), &mut images);
+            // Textured meshes keep their UVs, unless they were our box
+            // projection (which the importer redoes from the geometry).
+            let uvs: Option<Vec<[f64; 2]>> = match prim["attributes"]["TEXCOORD_0"].as_u64() {
+                Some(ui)
+                    if m.as_ref().is_some_and(|m| m.texture.is_some())
+                        && prim["extras"]["tatara_box_uv"] != json!(true) =>
+                {
+                    let (uv, width) = read_accessor(&doc, &buffers, ui as usize)?;
+                    (width == 2 && uv.len() == positions.len() * 2).then(|| {
+                        uv.as_chunks::<2>()
+                            .0
+                            .iter()
+                            .map(|[s, t]| [*s, 1.0 - t])
+                            .collect()
+                    })
+                }
+                _ => None,
+            };
+            let mut poly = rebuild_polygons(&positions, &triangles, uvs.as_deref());
             if poly.faces.is_empty() {
                 continue;
             }
@@ -837,12 +1133,11 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
                 for f in &mut poly.faces {
                     f.reverse();
                 }
+                for f in &mut poly.uvs {
+                    f.reverse();
+                }
             }
 
-            let material = prim["material"]
-                .as_u64()
-                .map(|m| &doc["materials"][m as usize]);
-            let m = imported_material(material.filter(|m| !m.is_null()));
             let base = clean_name(node["name"].as_str().or(mesh["name"].as_str()), "Mesh");
             let base = if prims.len() > 1 {
                 format!("{base}.{pi}")
@@ -856,6 +1151,7 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
                 name: Some(name),
                 vertices: poly.vertices,
                 faces: poly.faces,
+                uvs: (!poly.uvs.is_empty()).then_some(poly.uvs),
                 translation: Some(translation),
                 rotation: Some(rotation),
                 scale: Some(scale),
@@ -877,7 +1173,10 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
     if commands.is_empty() {
         return err("the file contains no triangle meshes");
     }
-    Ok(commands)
+    // Images first: the meshes' textures refer to them.
+    let mut all = std::mem::take(&mut images.commands);
+    all.extend(commands);
+    Ok(all)
 }
 
 #[cfg(test)]
@@ -919,7 +1218,7 @@ mod tests {
             shade(
                 &ed.scene().objects[0].mesh,
                 ed.scene().objects[0].smooth,
-                false,
+                None,
             )
             .positions
             .len()
@@ -970,10 +1269,26 @@ mod tests {
         let glb = export_glb(&ed);
         let len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
         let doc: Value = serde_json::from_slice(&glb[20..20 + len]).unwrap();
+        // Tiles and wood: a colour and a relief normal map each, shared by
+        // the two wooden objects.
         assert_eq!(
             doc["images"].as_array().unwrap().len(),
-            2,
+            4,
             "identical textures share an image"
+        );
+        assert_eq!(doc["materials"][0]["normalTexture"]["index"], 1);
+        let tangent = doc["meshes"][0]["primitives"][0]["attributes"]["TANGENT"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(doc["accessors"][tangent as usize]["type"], "VEC4");
+        assert!(
+            doc["meshes"][3]["primitives"][0]["attributes"]
+                .get("TANGENT")
+                .is_none()
+        );
+        assert_eq!(
+            doc["materials"][1]["normalTexture"],
+            doc["materials"][2]["normalTexture"]
         );
         assert_eq!(doc["images"][0]["mimeType"], "image/png");
         let pbr = &doc["materials"][0]["pbrMetallicRoughness"];
@@ -1003,6 +1318,106 @@ mod tests {
                 ed.scene().objects[i].material
             );
         }
+    }
+
+    /// A textured quad as another tool would write it: two triangles with
+    /// UVs, a base colour texture and a normal texture, all embedded.
+    fn foreign_gltf() -> Vec<u8> {
+        use base64::Engine as _;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let pos: [f32; 12] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0];
+        let uv: [f32; 8] = [0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0];
+        let idx: [u16; 6] = [0, 1, 2, 0, 2, 3];
+        let mut buf: Vec<u8> = pos.iter().flat_map(|v| v.to_le_bytes()).collect();
+        buf.extend(uv.iter().flat_map(|v| v.to_le_bytes()));
+        buf.extend(idx.iter().flat_map(|v| v.to_le_bytes()));
+        let png = crate::image::tests::tiny_png();
+        serde_json::to_vec(&json!({
+            "asset": {"version": "2.0"},
+            "scenes": [{"nodes": [0]}],
+            "nodes": [{"mesh": 0, "name": "Poster"}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "indices": 2, "material": 0}]}],
+            "materials": [{"name": "Paper", "pbrMetallicRoughness": {"baseColorFactor": [1, 0.5, 0.5, 1], "baseColorTexture": {"index": 0}}, "normalTexture": {"index": 1}}],
+            "textures": [{"source": 0}, {"source": 1}],
+            "images": [
+                {"name": "photo", "uri": format!("data:image/png;base64,{}", b64(&png))},
+                {"uri": format!("data:image/png;base64,{}", b64(&png))}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC2"},
+                {"bufferView": 2, "componentType": 5123, "count": 6, "type": "SCALAR"}
+            ],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 48},
+                {"buffer": 0, "byteOffset": 48, "byteLength": 32},
+                {"buffer": 0, "byteOffset": 80, "byteLength": 12}
+            ],
+            "buffers": [{"byteLength": buf.len(), "uri": format!("data:application/octet-stream;base64,{}", b64(&buf))}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn imports_image_textures_normal_maps_and_uvs() {
+        let ed = reimport(&foreign_gltf());
+        assert_eq!(
+            ed.scene().images.keys().collect::<Vec<_>>(),
+            ["Image 2", "photo"]
+        );
+        let o = &ed.scene().objects[0];
+        assert_eq!(
+            o.mesh.faces.len(),
+            1,
+            "a quad again: its seam-free UVs agree"
+        );
+        // UVs come in with V flipped up: the corner at t = 1 sits at v = 0.
+        let corner = o.mesh.faces[0]
+            .iter()
+            .position(|&v| o.mesh.vertices[v as usize] == [0.0; 3])
+            .unwrap();
+        assert_eq!(o.mesh.uvs[0][corner], [0.0, 0.0]);
+        let t = o.material.texture.as_ref().unwrap();
+        assert_eq!(
+            (t.pattern, t.image.as_deref(), t.normal_map.as_deref()),
+            (Pattern::Image, Some("photo"), Some("Image 2"))
+        );
+        assert_eq!(
+            o.material.color, "#ffbcbc",
+            "the colour factor tints the image"
+        );
+
+        // Our export keeps the image bytes and the UVs, and reads back the same.
+        let glb = export_glb(&ed);
+        let len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let doc: Value = serde_json::from_slice(&glb[20..20 + len]).unwrap();
+        assert_eq!(doc["images"][0]["name"], "photo");
+        assert!(
+            doc["meshes"][0]["primitives"][0].get("extras").is_none(),
+            "own UVs, not box projection"
+        );
+        let back = reimport(&glb);
+        assert_eq!(back.scene().images, ed.scene().images);
+        let b = &back.scene().objects[0];
+        assert_eq!((&b.material, b.mesh.has_uvs()), (&o.material, true));
+    }
+
+    #[test]
+    fn box_projected_image_textures_round_trip_without_uvs() {
+        use base64::Engine as _;
+        let png = base64::engine::general_purpose::STANDARD.encode(crate::image::tests::tiny_png());
+        let ed = editor_with(json!([
+            {"op": "add_image", "name": "Label", "data": png},
+            {"op": "add", "name": "Crate", "primitive": {"kind": "cube"}, "color": "#ffffff", "texture": {"pattern": "image", "image": "Label", "scale": 0.5, "relief": 0.5}}
+        ]));
+        let back = reimport(&export_glb(&ed));
+        let o = &back.scene().objects[0];
+        assert_eq!(o.material, ed.scene().objects[0].material);
+        assert!(
+            o.mesh.uvs.is_empty(),
+            "box projection is redone, so scale still works"
+        );
+        assert_eq!(back.scene().images, ed.scene().images);
     }
 
     #[test]
