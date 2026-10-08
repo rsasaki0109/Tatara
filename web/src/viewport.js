@@ -10,6 +10,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
 import { ease } from './clock.js'
 import { isAnimated, pose } from './anim.js'
+import { createStroke } from './sculpt.js'
 
 const CREASE = THREE.MathUtils.degToRad(38)
 const SELECT = 0xff8a4c
@@ -22,7 +23,7 @@ function meshKey(mesh) {
   return h.toFixed(6)
 }
 
-function buildGeometry(vertices, faces) {
+function buildGeometry(vertices, faces, smooth = false) {
   const pos = []
   const triFace = []
   faces.forEach((f, fi) => {
@@ -36,7 +37,8 @@ function buildGeometry(vertices, faces) {
   })
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-  const geometry = toCreasedNormals(g, CREASE)
+  // Smooth shading blends normals across every edge (crease angle π).
+  const geometry = toCreasedNormals(g, smooth ? Math.PI : CREASE)
   g.dispose()
   geometry.computeBoundingSphere()
   return { geometry, triFace }
@@ -83,7 +85,7 @@ function facesGeometry(vertices, faces) {
 }
 
 export class Viewport {
-  constructor(el, clock, animator, { capture, onPick, onTransform, onMoveVertices }) {
+  constructor(el, clock, animator, { capture, onPick, onTransform, onMoveVertices, onSculpt }) {
     this.el = el
     this.clock = clock
     this.anim = animator
@@ -91,6 +93,10 @@ export class Viewport {
     this.onPick = onPick
     this.onTransform = onTransform
     this.onMoveVertices = onMoveVertices
+    this.onSculpt = onSculpt
+    // Sculpt mode: brush settings, and the stroke being dragged (if any).
+    this.sculpt = { active: false }
+    this.stroke = null
     // Edit mode: which components of the selected object are selected.
     this.edit = { active: false, mode: 'face', verts: [], edges: [], faces: [] }
     this.nodes = new Map()
@@ -178,6 +184,24 @@ export class Viewport {
     scene.add(this.gizmo.getHelper())
 
     this.raycaster = new THREE.Raycaster()
+    this.brushRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.93, 1, 64),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false, side: THREE.DoubleSide }),
+    )
+    this.brushRing.renderOrder = 6
+    this.brushRing.visible = false
+    scene.add(this.brushRing)
+    // Capture phase, so a stroke can switch orbiting off before OrbitControls sees the press.
+    r.domElement.addEventListener(
+      'pointerdown',
+      (e) => {
+        if (e.button === 0 && this.sculptDown(e.clientX, e.clientY, e)) r.domElement.setPointerCapture(e.pointerId)
+      },
+      { capture: true },
+    )
+    r.domElement.addEventListener('pointermove', (e) => this.sculptMove(e.clientX, e.clientY))
+    r.domElement.addEventListener('pointerleave', () => !this.stroke && (this.brushRing.visible = false))
+    window.addEventListener('pointerup', () => this.sculptUp())
     let down = null
     r.domElement.addEventListener('pointerdown', (e) => {
       // A detached gizmo can keep a stale hovered axis.
@@ -187,7 +211,7 @@ export class Viewport {
       if (!down || e.button !== 0) return
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y)
       down = null
-      if (moved > 4) return
+      if (moved > 4 || this.sculpt.active) return
       if (this.edit.active && this.selected != null) {
         this.onPick({ component: this.pickComponent(e.clientX, e.clientY, this.edit.mode) }, e)
         return
@@ -315,9 +339,12 @@ export class Viewport {
     const prev = node.data
     node.data = o
     const plain = !o.display && !prev.display
-    const key = meshKey(displayMesh(o))
+    const key = meshKey(displayMesh(o)) + (o.smooth ? ':smooth' : '')
+    // A committed stroke is already on screen: swap in the result, no morph.
+    const sculpted = node.sculptPreview
+    node.sculptPreview = false
     if (key !== node.key) {
-      const morph = animate && plain && (this.morphStart(prev.mesh, o.mesh) || this.sameTopology(prev.mesh, o.mesh))
+      const morph = animate && plain && !sculpted && (this.morphStart(prev.mesh, o.mesh) || this.sameTopology(prev.mesh, o.mesh))
       if (morph) {
         const end = o.mesh.vertices
         const verts = end.map((v) => v.slice())
@@ -520,8 +547,8 @@ export class Viewport {
     this.applyMaterial(node.mesh.material, mat)
   }
 
-  setMesh(node, mesh, key = meshKey(mesh)) {
-    const { geometry } = buildGeometry(mesh.vertices, mesh.faces)
+  setMesh(node, mesh, key = meshKey(mesh) + (node.data.smooth ? ':smooth' : '')) {
+    const { geometry } = buildGeometry(mesh.vertices, mesh.faces, node.data.smooth)
     node.mesh.geometry.dispose()
     node.mesh.geometry = geometry
     node.wire.geometry.dispose()
@@ -604,6 +631,10 @@ export class Viewport {
   }
 
   placeGizmo() {
+    if (this.sculpt.active) {
+      if (this.gizmo.object) this.gizmo.detach()
+      return
+    }
     // showGizmo: true, false, or 'edit' (only for component moves in edit mode).
     const allowed = this.showGizmo === true || (this.showGizmo === 'edit' && this.edit.active)
     const node = allowed ? this.nodes.get(this.selected) : null
@@ -700,6 +731,124 @@ export class Viewport {
   toClient(p, rect) {
     const q = p.clone().project(this.camera)
     return { x: rect.left + ((q.x + 1) / 2) * rect.width, y: rect.top + ((1 - q.y) / 2) * rect.height }
+  }
+
+  // -- sculpt ---------------------------------------------------------------
+
+  setSculptState(state) {
+    this.sculpt = state
+    if (!state.active) this.brushRing.visible = false
+    this.placeGizmo()
+  }
+
+  /** The selected object's surface under the cursor (world point and normal). */
+  sculptHit(clientX, clientY) {
+    const node = this.nodes.get(this.selected)
+    if (!node) return null
+    this.aim(clientX, clientY)
+    node.group.updateMatrixWorld(true)
+    const hit = this.raycaster.intersectObject(node.mesh, false)[0]
+    if (!hit) return null
+    const normal = hit.face.normal.clone().transformDirection(node.mesh.matrixWorld)
+    if (normal.dot(this.raycaster.ray.direction) > 0) normal.negate()
+    return { node, point: hit.point, normal }
+  }
+
+  /** Point the raycaster through a screen position. */
+  aim(clientX, clientY) {
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1)
+    this.raycaster.setFromCamera(ndc, this.camera)
+  }
+
+  placeRing(hit) {
+    const ring = this.brushRing
+    ring.visible = Boolean(hit) && this.sculpt.active
+    if (!ring.visible) return
+    ring.position.copy(hit.point).addScaledVector(hit.normal, 0.002)
+    ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), hit.normal)
+    ring.scale.setScalar(this.sculpt.radius)
+    ring.material.color.set(this.stroke ? SELECT : 0xffffff)
+  }
+
+  /** Start a stroke if the press lands on the selected object. */
+  sculptDown(clientX, clientY, mods = {}) {
+    if (!this.sculpt.active) return false
+    const hit = this.sculptHit(clientX, clientY)
+    if (!hit) return false
+    const { node } = hit
+    const s = this.sculpt
+    const g = node.group
+    const scale = (Math.abs(g.scale.x) + Math.abs(g.scale.y) + Math.abs(g.scale.z)) / 3
+    const opts = {
+      brush: mods.shiftKey ? 'smooth' : s.brush,
+      radius: s.radius / scale,
+      strength: s.strength,
+      invert: Boolean(s.invert) !== Boolean(mods.ctrlKey || mods.metaKey),
+      symmetry: s.symmetry || null,
+    }
+    const inv = g.matrixWorld.clone().invert()
+    const local = (p) => p.clone().applyMatrix4(inv).toArray()
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(this.camera.getWorldDirection(new THREE.Vector3()), hit.point)
+    this.stroke = { node, opts, local, plane, start: hit.point.clone(), offset: null, path: createStroke(node.data.mesh, opts), dirty: true }
+    this.stroke.path.add(local(hit.point))
+    this.controls.enabled = false
+    this.placeRing(hit)
+    return true
+  }
+
+  sculptMove(clientX, clientY) {
+    if (!this.sculpt.active) return
+    const st = this.stroke
+    if (st && st.opts.brush === 'grab') {
+      this.aim(clientX, clientY)
+      const q = this.raycaster.ray.intersectPlane(st.plane, new THREE.Vector3())
+      if (!q) return
+      const a = st.local(st.start)
+      const b = st.local(q)
+      st.offset = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
+      st.path.grab(st.offset)
+      st.dirty = true
+      this.brushRing.position.copy(q)
+      return
+    }
+    const hit = this.sculptHit(clientX, clientY)
+    this.placeRing(hit)
+    if (st && hit && hit.node === st.node) {
+      st.path.add(st.local(hit.point))
+      st.dirty = true
+    }
+  }
+
+  sculptUp() {
+    const st = this.stroke
+    if (!st) return
+    this.stroke = null
+    this.controls.enabled = true
+    this.brushRing.material.color.set(0xffffff)
+    this.flushStroke(st)
+    const r = (v) => v.map((x) => Math.round(x * 1e5) / 1e5)
+    const { brush, radius, strength, invert, symmetry } = st.opts
+    if (brush === 'grab' && !st.offset) return
+    st.node.sculptPreview = true
+    const cmd = { brush, points: st.path.points.map(r), radius: Math.round(radius * 1e5) / 1e5, strength, invert }
+    if (symmetry) cmd.symmetry = symmetry
+    if (brush === 'grab') cmd.offset = r(st.offset)
+    this.onSculpt(st.node.id, cmd)
+  }
+
+  flushStroke(st = this.stroke) {
+    if (!st || !st.dirty) return
+    st.dirty = false
+    this.setMesh(st.node, { vertices: st.path.vertices(), faces: st.node.data.mesh.faces }, null)
+  }
+
+  /** Drop a preview the engine did not accept. */
+  revertSculpt(id) {
+    const node = this.nodes.get(id)
+    if (!node) return
+    node.sculptPreview = false
+    this.setMesh(node, displayMesh(node.data))
   }
 
   /** Pose every animated object at `frame`. */
@@ -805,6 +954,13 @@ export class Viewport {
     return this.orbitTo({ target: sphere.center.toArray(), distance, elevation, azimuth }, ms)
   }
 
+  /** Page (client) coordinates of a world point given as [x, y, z]. */
+  clientOf(p) {
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    const q = new THREE.Vector3(...p).project(this.camera)
+    return { x: rect.left + ((q.x + 1) / 2) * rect.width, y: rect.top + ((1 - q.y) / 2) * rect.height }
+  }
+
   worldToScreen(v) {
     const p = v.clone().project(this.camera)
     return { x: ((p.x + 1) / 2) * this.el.clientWidth, y: ((1 - p.y) / 2) * this.el.clientHeight }
@@ -850,6 +1006,7 @@ export class Viewport {
       this.setOrbit({ ...o, azimuth: o.azimuth + (this.spinRate * dt) / 1000 })
     }
     this.controls.update()
+    this.flushStroke()
     if (this.glowing()) {
       this.bloom()
       this.renderGlow()

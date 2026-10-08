@@ -143,7 +143,7 @@ fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepar
         };
         let m = transform.matrix();
         let normal_m = m.inverse().transpose();
-        let shaded = crate::gltf::shade(ed.evaluated(o));
+        let shaded = crate::gltf::shade(ed.evaluated(o), o.smooth);
         let index = materials.len() as u32;
         materials.push(Shading {
             color: hex(&material.color),

@@ -157,6 +157,28 @@ try {
   check(neon.emissive === neon.color && neon.opacity === 1, `neon preset glows in its colour (${neon.emissive})`)
   await page.waitForTimeout(300)
 
+  // Sculpt mode: a drag on the object is one sculpt command, not an orbit.
+  const before = await faces()
+  await page.click('[data-action=subdivide]')
+  await page.waitForFunction((n) => !document.querySelector('#status-mesh').textContent.includes(`${n} faces`), before.toLocaleString('en-US'))
+  await page.click('[data-mode=sculpt]')
+  await page.waitForSelector('[data-mode=sculpt].on')
+  const orbit0 = await page.evaluate(() => JSON.stringify(window.__tatara.camera()))
+  const rev0 = await page.evaluate(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision))
+  const cx = box.x + box.width / 2
+  const cy = box.y + box.height / 2
+  await page.mouse.move(cx - 40, cy)
+  await page.mouse.down()
+  for (let i = 1; i <= 8; i++) await page.mouse.move(cx - 40 + i * 10, cy - i * 2)
+  await page.mouse.up()
+  await page.waitForFunction((rev) => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision === rev + 1), rev0)
+  await page.waitForFunction(() => document.querySelector('#activity li .what')?.textContent === 'sculpt')
+  check(true, 'dragging in sculpt mode sends one sculpt command')
+  const orbit1 = await page.evaluate(() => JSON.stringify(window.__tatara.camera()))
+  check(orbit0 === orbit1, 'the stroke does not orbit the camera')
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('[data-mode=object].on')
+
   // Animation: key, scrub, auto-key an edit, play back.
   await page.click('#outliner li')
   await page.keyboard.press('k')

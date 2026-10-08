@@ -417,4 +417,51 @@ export const materials = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials }
+// Sculpting through the real UI: strokes are dragged over the surface (the
+// points below are projected to the screen and ray-cast like a mouse).
+const HEAD = { c: [0, 0.82, 0], r: 0.5 }
+// A point on the front of the head, `x` right and `y` up from its centre.
+const face = (x, y, out = 0) => {
+  const z = Math.sqrt(Math.max(0, HEAD.r * HEAD.r - x * x - y * y)) + out
+  return [HEAD.c[0] + x, HEAD.c[1] + y, HEAD.c[2] + z]
+}
+export const sculpt = {
+  title: 'Sculpting',
+  width: 800,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 0.55, height: 0.24, segments: 64 }, translation: [0, 0.12, 0], color: '#3a3b40', roughness: 0.45 },
+    { op: 'add', name: 'Head', primitive: { kind: 'quadsphere', radius: HEAD.r, level: 5 }, translation: HEAD.c, preset: 'clay', color: '#c98b62' },
+  ],
+  camera: { azimuth: 22, elevation: 6, distance: 3.1, target: [0, 0.78, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Sculpt mode: drag brushes over the surface', hint: 'sculpt · mirror X' },
+    { pick: 'Head', after: 100 },
+    { click: '[data-mode=sculpt]', after: 150 },
+    { slide: '#b-strength', to: 0.85, ms: 400, after: 100 },
+    { stroke: [face(0, 0.07), face(0, -0.06), face(0, -0.12)], ms: 700, after: 100 },
+    { stroke: [face(0.04, 0.17), face(0.16, 0.2), face(0.28, 0.14)], ms: 700, after: 120 },
+    { caption: 'Ctrl carves; a smaller radius adds detail', hint: 'invert · radius' },
+    { slide: '#b-radius', to: 0.08, ms: 450, after: 80 },
+    { stroke: [face(0.12, 0.07), face(0.17, 0.09), face(0.2, 0.05), face(0.16, 0.03), face(0.13, 0.06)], ms: 700, ctrl: true, after: 100 },
+    { stroke: [face(0, -0.24), face(0.08, -0.23), face(0.15, -0.18)], ms: 600, ctrl: true, after: 120 },
+    { caption: 'Grab pulls out ears; Inflate swells the cheeks', hint: 'grab · inflate' },
+    { click: '[data-brush=grab]', after: 60 },
+    { slide: '#b-radius', to: 0.16, ms: 400, after: 60 },
+    { camera: { azimuth: 48, elevation: 8 }, ms: 700 },
+    { stroke: [face(0.47, 0.02, -0.17), face(0.64, 0.14, -0.17)], ms: 600, after: 100 },
+    { click: '[data-brush=inflate]', after: 60 },
+    { stroke: [face(0.2, -0.09), face(0.25, -0.14)], ms: 500, after: 120 },
+    { caption: 'Shift smooths; every stroke is one undoable command', hint: 'smooth · undo' },
+    { stroke: [face(-0.22, -0.04), face(0, 0.02), face(0.22, -0.04)], ms: 700, shift: true, after: 120 },
+    { click: '[data-mode=object]', after: 100 },
+    { cursor: false },
+    { caption: 'Agents sculpt with the same command', hint: '{"op": "sculpt", "brush": "draw", ...}' },
+    { camera: { azimuth: 24, elevation: 6 }, ms: 800, async: true },
+    { spin: 9 },
+    { wait: 2600 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt }
