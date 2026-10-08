@@ -144,6 +144,27 @@ async fn core(
     body: axum::body::Bytes,
 ) -> Response {
     let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    // Renders gather the scene under the lock, then run on a worker thread
+    // without it, so edits and other requests are not held up.
+    if method == axum::http::Method::GET && matches!(uri.path(), "/pathtrace" | "/render") {
+        let query = uri.query().unwrap_or("");
+        let job: Result<Box<dyn FnOnce() -> crate::api::Response + Send>, _> = {
+            let ed = s.editor.lock().await;
+            if uri.path() == "/render" {
+                crate::api::render_job(&ed, query)
+                    .map(|j| Box::new(move || crate::api::render_png(j)) as Box<_>)
+            } else {
+                crate::api::path_job(&ed, query).map(|j| Box::new(move || j.run()) as Box<_>)
+            }
+        };
+        let r = match job {
+            Ok(job) => tokio::task::spawn_blocking(job)
+                .await
+                .unwrap_or_else(|e| crate::api::Response::error(500, e.to_string())),
+            Err(e) => e,
+        };
+        return reply(r);
+    }
     let r = {
         let mut ed = s.editor.lock().await;
         crate::api::handle(&mut ed, method.as_str(), path, &body, s.ai.is_some())
@@ -151,6 +172,10 @@ async fn core(
     if let Some(revision) = r.changed {
         changed(&s, revision);
     }
+    reply(r)
+}
+
+fn reply(r: crate::api::Response) -> Response {
     let mut response = (
         StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
         [(header::CONTENT_TYPE, r.content_type)],

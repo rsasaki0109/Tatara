@@ -48,6 +48,7 @@ export class DemoRunner {
       app.select(null)
       app.activity.length = 0
       app.actions.wireframe(false)
+      app.actions.rendered(false)
       app.showTab(scenario.tab || 'properties')
       if (scenario.setup) await app.api.commands(scenario.setup)
       await app.refresh(false)
@@ -113,6 +114,7 @@ export class DemoRunner {
     if (s.upload) return this.upload(s)
     if (s.wire) return this.wire(s)
     if (s.uv !== undefined) return this.uv(s)
+    if (s.samples) return this.samples(s)
     if (s.reveal) {
       const el = document.querySelector(s.reveal)
       if (!el) throw new Error(`demo: nothing matches ${s.reveal}`)
@@ -372,6 +374,14 @@ export class DemoRunner {
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: x1, clientY: y1 }))
     await press
     await this.idle()
+    if (s.after) await this.sleep(s.after)
+  }
+
+  /** Wait until the rendered preview holds `samples` samples per pixel. */
+  async samples(s) {
+    const preview = this.app.preview
+    for (let i = 0; i < 2000 && preview.samples < s.samples; i++) await this.sleep(66)
+    if (preview.samples < s.samples) throw new Error(`demo: the preview stopped at ${preview.samples} samples`)
     if (s.after) await this.sleep(s.after)
   }
 

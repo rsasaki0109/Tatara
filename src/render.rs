@@ -18,7 +18,7 @@ use crate::texture::{BoxProjection, Look, Texture};
 
 const SUPERSAMPLE: usize = 2;
 const SHADOW_SIZE: usize = 1024;
-const FOV_DEGREES: f64 = 36.0;
+pub(crate) const FOV_DEGREES: f64 = 36.0;
 const GROUND: u32 = u32::MAX - 1;
 const EMPTY: u32 = u32::MAX;
 
@@ -59,6 +59,8 @@ pub struct RenderOptions {
     pub focus: Option<u64>,
     /// Pose animated objects at this frame (static pose when `None`).
     pub frame: Option<f64>,
+    /// Path trace with this many samples per pixel instead of rasterizing.
+    pub samples: Option<u32>,
 }
 
 impl Default for RenderOptions {
@@ -68,18 +70,19 @@ impl Default for RenderOptions {
             size: 512,
             focus: None,
             frame: None,
+            samples: None,
         }
     }
 }
 
-struct Tri {
-    p: [DVec3; 3],
-    n: [DVec3; 3],
+pub(crate) struct Tri {
+    pub(crate) p: [DVec3; 3],
+    pub(crate) n: [DVec3; 3],
     /// Texture coordinates in tiles (zero when untextured).
-    uv: [DVec2; 3],
+    pub(crate) uv: [DVec2; 3],
     /// World directions of growing u and v (zero when untextured).
-    tangents: [DVec3; 2],
-    object: u32,
+    pub(crate) tangents: [DVec3; 2],
+    pub(crate) object: u32,
 }
 
 /// A material's texture with its images decoded.
@@ -105,11 +108,11 @@ impl Textured {
 }
 
 /// What a surface is like at one point.
-struct Point {
-    albedo: DVec3,
-    normal: DVec3,
-    roughness: f64,
-    metalness: f64,
+pub(crate) struct Point {
+    pub(crate) albedo: DVec3,
+    pub(crate) normal: DVec3,
+    pub(crate) roughness: f64,
+    pub(crate) metalness: f64,
 }
 
 /// Where a box-projected texture blends its three planes: the object's
@@ -121,16 +124,16 @@ struct Triplanar {
     repeat: f64,
 }
 
-struct Shading {
+pub(crate) struct Shading {
     color: DVec3,
     texture: Option<Textured>,
     triplanar: Option<Triplanar>,
     roughness: f64,
     metalness: f64,
     /// Linear emitted light, strength applied.
-    emissive: DVec3,
-    opacity: f64,
-    transmission: f64,
+    pub(crate) emissive: DVec3,
+    pub(crate) opacity: f64,
+    pub(crate) transmission: f64,
 }
 
 impl Shading {
@@ -148,7 +151,7 @@ impl Shading {
     /// The surface at world point `p` with normal `n`: blended over three
     /// planes for box-projected textures (no seams on curved surfaces), or
     /// from the triangle's UVs otherwise.
-    fn at(&self, p: DVec3, n: DVec3, tangents: [DVec3; 2], uv: DVec2) -> Point {
+    pub(crate) fn at(&self, p: DVec3, n: DVec3, tangents: [DVec3; 2], uv: DVec2) -> Point {
         let (Some(t), Some(tp)) = (&self.texture, &self.triplanar) else {
             let rm = self
                 .texture
@@ -194,6 +197,13 @@ impl Shading {
         (tu * b.x + tv * b.y + n * b.z).normalize_or(n)
     }
 
+    /// What share of light passing through is left (per channel): glass
+    /// tints it, translucency thins it, opaque surfaces stop it.
+    pub(crate) fn shadow_tint(&self) -> DVec3 {
+        DVec3::splat(1.0 - self.opacity)
+            + DVec3::ONE.lerp(self.color, 0.6) * (0.85 * self.transmission * self.opacity)
+    }
+
     /// Drawn in the blended pass instead of the opaque one.
     fn transparent(&self) -> bool {
         self.opacity < 0.999 || self.transmission > 0.0
@@ -205,11 +215,11 @@ impl Shading {
     }
 }
 
-struct Prepared {
-    tris: Vec<Tri>,
-    materials: Vec<Shading>,
-    center: DVec3,
-    radius: f64,
+pub(crate) struct Prepared {
+    pub(crate) tris: Vec<Tri>,
+    pub(crate) materials: Vec<Shading>,
+    pub(crate) center: DVec3,
+    pub(crate) radius: f64,
     ground_y: f64,
 }
 
@@ -221,7 +231,7 @@ fn srgb_to_linear(c: f64) -> f64 {
     }
 }
 
-fn linear_to_srgb(c: f64) -> f64 {
+pub(crate) fn linear_to_srgb(c: f64) -> f64 {
     let c = c.clamp(0.0, 1.0);
     if c <= 0.003_130_8 {
         c * 12.92
@@ -230,19 +240,23 @@ fn linear_to_srgb(c: f64) -> f64 {
     }
 }
 
-fn hex(c: &str) -> DVec3 {
+pub(crate) fn hex(c: &str) -> DVec3 {
     let ch =
         |i: usize| srgb_to_linear(u8::from_str_radix(&c[i..i + 2], 16).unwrap_or(0) as f64 / 255.0);
     DVec3::new(ch(1), ch(3), ch(5))
 }
 
 /// ACES filmic approximation (Narkowicz), applied per channel.
-fn tonemap(c: DVec3) -> DVec3 {
+pub(crate) fn tonemap(c: DVec3) -> DVec3 {
     let f = |x: f64| ((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)).clamp(0.0, 1.0);
     DVec3::new(f(c.x), f(c.y), f(c.z))
 }
 
-fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepared, EngineError> {
+pub(crate) fn prepare(
+    ed: &Editor,
+    focus: Option<u64>,
+    frame: Option<f64>,
+) -> Result<Prepared, EngineError> {
     let mut tris = Vec::new();
     let mut materials = Vec::new();
     let mut decoded: HashMap<&str, Option<Arc<Pixels>>> = HashMap::new();
@@ -555,9 +569,9 @@ impl ShadowMap {
     }
 }
 
-/// Render one square tile, returning sRGB bytes.
-fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) -> Vec<[u8; 3]> {
-    let n = size * SUPERSAMPLE;
+/// Where a view's camera stands (it looks at the scene's centre), and how
+/// far away that is.
+fn view_eye(prep: &Prepared, view: &View) -> (DVec3, f64) {
     let fov = FOV_DEGREES.to_radians();
     let distance = prep.radius * 1.12 / (fov / 2.0).sin();
     let (az, el) = (
@@ -565,7 +579,52 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
         view.elevation.clamp(-89.5, 89.5).to_radians(),
     );
     let dir = DVec3::new(el.cos() * az.sin(), el.sin(), el.cos() * az.cos());
-    let eye = prep.center + dir * distance;
+    (prep.center + dir * distance, distance)
+}
+
+/// A path-traced tile over the same backdrop as the rasterized ones.
+fn traced_tile(
+    traced: &crate::pathtrace::Traced,
+    eye: DVec3,
+    target: DVec3,
+    view: &View,
+    size: usize,
+    samples: u32,
+) -> Vec<[u8; 3]> {
+    let camera = crate::pathtrace::Camera {
+        eye,
+        target,
+        fov: FOV_DEGREES,
+        width: size,
+        height: size,
+    };
+    let image = traced.develop(
+        &traced.render(&camera, samples, 0),
+        &traced.features(&camera),
+        &camera,
+        samples,
+    );
+    let (top, bottom) = (hex("#4a4c53"), hex("#1d1e22"));
+    let mut pixels: Vec<[u8; 3]> = image
+        .iter()
+        .enumerate()
+        .map(|(i, px)| {
+            let bg = top.lerp(bottom, (i / size) as f64 / size as f64);
+            let c =
+                DVec3::new(px[0] as f64, px[1] as f64, px[2] as f64) + bg * (1.0 - px[3] as f64);
+            let c = tonemap(c);
+            [c.x, c.y, c.z].map(|v| (linear_to_srgb(v) * 255.0).round() as u8)
+        })
+        .collect();
+    draw_text(&mut pixels, size, &view.name.to_uppercase(), 10, 10, 2);
+    pixels
+}
+
+/// Render one square tile, returning sRGB bytes.
+fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) -> Vec<[u8; 3]> {
+    let n = size * SUPERSAMPLE;
+    let fov = FOV_DEGREES.to_radians();
+    let (eye, distance) = view_eye(prep, view);
     let view_m = look_at_mat4(eye, prep.center, DVec3::Y);
     let near = (distance - prep.radius * 3.0).max(0.01);
     let proj = directx::perspective(fov, 1.0, near, distance + prep.radius * 20.0);
@@ -859,7 +918,14 @@ fn glyph(c: char) -> [u8; 7] {
     }
 }
 
-fn draw_text(pixels: &mut [[u8; 3]], size: usize, text: &str, x0: usize, y0: usize, scale: usize) {
+pub(crate) fn draw_text(
+    pixels: &mut [[u8; 3]],
+    size: usize,
+    text: &str,
+    x0: usize,
+    y0: usize,
+    scale: usize,
+) {
     for (pass, color, off) in [(0, [20u8, 21, 24], 1usize), (1, [240, 238, 232], 0)] {
         let _ = pass;
         for (ci, ch) in text.chars().enumerate() {
@@ -886,25 +952,74 @@ fn draw_text(pixels: &mut [[u8; 3]], size: usize, text: &str, x0: usize, y0: usi
 
 /// Render the requested views into one PNG (tiles in a grid, two columns).
 pub fn render_png(ed: &Editor, opts: &RenderOptions) -> Result<Vec<u8>, EngineError> {
+    render_job(ed, opts)?.png()
+}
+
+/// A render with the scene already gathered, so it can run without the
+/// editor (servers render while other requests go on).
+pub struct RenderJob {
+    prep: Prepared,
+    opts: RenderOptions,
+}
+
+/// Check `opts` and gather what the render needs from `ed`.
+pub fn render_job(ed: &Editor, opts: &RenderOptions) -> Result<RenderJob, EngineError> {
     if opts.views.is_empty() || opts.views.len() > 6 {
         return Err(EngineError::new("request between 1 and 6 views"));
     }
     if !(64..=1024).contains(&opts.size) {
         return Err(EngineError::new("size must be between 64 and 1024"));
     }
-    let prep = prepare(ed, opts.focus, opts.frame)?;
-    let shadow = ShadowMap::build(&prep);
-    let size = opts.size as usize;
-    let cols = if opts.views.len() == 1 { 1 } else { 2 };
-    let rows = opts.views.len().div_ceil(cols);
+    if opts.samples.is_some_and(|n| !(1..=256).contains(&n)) {
+        return Err(EngineError::new("samples must be between 1 and 256"));
+    }
+    Ok(RenderJob {
+        prep: prepare(ed, opts.focus, opts.frame)?,
+        opts: opts.clone(),
+    })
+}
+
+impl RenderJob {
+    pub fn png(self) -> Result<Vec<u8>, EngineError> {
+        let RenderJob { prep, opts } = self;
+        let size = opts.size as usize;
+        let tiles: Vec<Vec<[u8; 3]>> = match opts.samples {
+            Some(samples) => {
+                let cameras: Vec<(DVec3, DVec3)> = opts
+                    .views
+                    .iter()
+                    .map(|v| (view_eye(&prep, v).0, prep.center))
+                    .collect();
+                let traced = crate::pathtrace::Traced::new(prep);
+                opts.views
+                    .iter()
+                    .zip(cameras)
+                    .map(|(v, (eye, target))| traced_tile(&traced, eye, target, v, size, samples))
+                    .collect()
+            }
+            None => {
+                let shadow = ShadowMap::build(&prep);
+                opts.views
+                    .iter()
+                    .map(|v| render_tile(&prep, &shadow, v, size))
+                    .collect()
+            }
+        };
+        tiled_png(&tiles, size)
+    }
+}
+
+/// Lay square tiles out two per row into a PNG.
+fn tiled_png(tiles: &[Vec<[u8; 3]>], size: usize) -> Result<Vec<u8>, EngineError> {
+    let cols = if tiles.len() == 1 { 1 } else { 2 };
+    let rows = tiles.len().div_ceil(cols);
     let gap = 2;
     let (w, h) = (
         cols * size + (cols - 1) * gap,
         rows * size + (rows - 1) * gap,
     );
     let mut image = vec![12u8; w * h * 3];
-    for (k, view) in opts.views.iter().enumerate() {
-        let tile = render_tile(&prep, &shadow, view, size);
+    for (k, tile) in tiles.iter().enumerate() {
         let (ox, oy) = ((k % cols) * (size + gap), (k / cols) * (size + gap));
         for y in 0..size {
             for x in 0..size {
@@ -979,6 +1094,7 @@ mod tests {
             size: 96,
             focus: None,
             frame: None,
+            samples: None,
         };
         let (w, h, px) = decode(&render_png(&ed, &opts).unwrap());
         assert_eq!((w, h), (96, 96));
@@ -1003,6 +1119,7 @@ mod tests {
                 size: 64,
                 focus: None,
                 frame: None,
+                samples: None,
             };
             let (_, _, px) = decode(&render_png(&ed, &opts).unwrap());
             px.chunks(3).filter(|c| c.iter().all(|&v| v < 40)).count()
@@ -1034,6 +1151,7 @@ mod tests {
                 size: 64,
                 focus: None,
                 frame: None,
+                samples: None,
             };
             decode(&render_png(&ed, &opts).unwrap()).2
         };
@@ -1081,6 +1199,7 @@ mod tests {
                 size: 64,
                 focus: None,
                 frame: None,
+                samples: None,
             };
             decode(&render_png(&ed, &opts).unwrap()).2
         };
@@ -1106,6 +1225,7 @@ mod tests {
             size: 64,
             focus: None,
             frame: None,
+            samples: None,
         };
         let (w, h, _) = decode(&render_png(&ed, &opts).unwrap());
         assert_eq!((w, h), (130, 130));
@@ -1139,6 +1259,7 @@ mod tests {
                 size: 96,
                 focus: None,
                 frame,
+                samples: None,
             };
             decode(&render_png(&ed, &opts).unwrap()).2
         };
@@ -1170,6 +1291,7 @@ mod tests {
             size: 128,
             focus,
             frame: None,
+            samples: None,
         };
         let (_, _, px) = decode(&render_png(&ed, &opts(Some(2))).unwrap());
         let at = |x: usize, y: usize| {
@@ -1218,6 +1340,7 @@ mod tests {
             size: 64,
             focus: Some(1),
             frame: None,
+            samples: None,
         };
         let (_, _, px) = decode(&render_png(&ed, &opts).unwrap());
         let c = &px[(32 * 64 + 32) * 3..(32 * 64 + 32) * 3 + 3];
