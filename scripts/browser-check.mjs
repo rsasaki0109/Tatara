@@ -231,6 +231,15 @@ try {
   await page.waitForFunction(() => window.__tatara.debug().textured === 0)
   await page.waitForTimeout(300)
 
+  // Rendered preview: Z path traces the view and keeps refining it.
+  await page.keyboard.press('Escape')
+  await page.click('#shading-btn')
+  await page.waitForFunction(() => window.__tatara.debug().pathSamples >= 2, null, { timeout: 60000 })
+  check((await page.textContent('.view-label')).includes('Rendered'), 'the rendered preview path traces the view and refines it')
+  check(await page.evaluate(() => getComputedStyle(document.querySelector('.pt-canvas')).display !== 'none'), 'the traced image covers the raster view')
+  await page.click('#shading-btn')
+  await page.waitForFunction(() => window.__tatara.debug().pathSamples === null)
+
   // UV editor: unwrap into islands, then move one island.
   await page.click('[data-uv-open]')
   await page.waitForSelector('#uv-editor:not([hidden]) .uv-canvas')
