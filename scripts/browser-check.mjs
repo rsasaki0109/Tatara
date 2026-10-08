@@ -159,6 +159,18 @@ try {
   await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.emissive_strength > 1))
   const neon = await material()
   check(neon.emissive === neon.color && neon.opacity === 1, `neon preset glows in its colour (${neon.emissive})`)
+  // Textures: a pattern chip sets one; the viewport shows the baked tile.
+  await page.click('[data-pattern=brick]')
+  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.pattern === 'brick'))
+  await page.waitForFunction(() => window.__tatara.debug().textured === 1)
+  await page.$eval('#p-tscale', (el) => {
+    el.value = '1.5'
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.scale === 1.5))
+  check(true, 'a pattern chip textures the object; the tile size slider rescales it')
+  await page.click('[data-pattern=none]')
+  await page.waitForFunction(() => window.__tatara.debug().textured === 0)
   await page.waitForTimeout(300)
 
   // Sculpt mode: a drag on the object is one sculpt command, not an orbit.

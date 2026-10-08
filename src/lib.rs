@@ -13,3 +13,4 @@ pub mod render;
 pub mod sculpt;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
+pub mod texture;

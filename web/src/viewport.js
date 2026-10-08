@@ -39,10 +39,38 @@ function hasStraightCorner(vertices, f) {
   return false
 }
 
+/** Face normal by Newell's method (same as the Rust core). */
+function newell(vertices, f) {
+  const n = [0, 0, 0]
+  for (let k = 0; k < f.length; k++) {
+    const a = vertices[f[k]]
+    const b = vertices[f[(k + 1) % f.length]]
+    n[0] += (a[1] - b[1]) * (a[2] + b[2])
+    n[1] += (a[2] - b[2]) * (a[0] + b[0])
+    n[2] += (a[0] - b[0]) * (a[1] + b[1])
+  }
+  return n
+}
+
+/** Box projection, as in src/texture.rs: texture coordinates in metres. */
+function boxUv(p, n) {
+  const [ax, ay, az] = n.map(Math.abs)
+  if (ax >= ay && ax >= az) return n[0] >= 0 ? [-p[2], p[1]] : [p[2], p[1]]
+  if (ay >= az) return n[1] >= 0 ? [p[0], -p[2]] : [p[0], p[2]]
+  return n[2] >= 0 ? [p[0], p[1]] : [-p[0], p[1]]
+}
+
 function buildGeometry(vertices, faces, smooth = false) {
   const pos = []
+  const uv = []
   const triFace = []
   faces.forEach((f, fi) => {
+    const n = newell(vertices, f)
+    const start = pos.length
+    emit(f, fi)
+    for (let i = start; i < pos.length; i += 3) uv.push(...boxUv([pos[i], pos[i + 1], pos[i + 2]], n))
+  })
+  function emit(f, fi) {
     if (f.length > 3 && hasStraightCorner(vertices, f)) {
       // A corner on a straight edge (a boolean's welded seam) would give
       // a fan zero-area triangles and leave the corner out of the mesh, so
@@ -63,9 +91,10 @@ function buildGeometry(vertices, faces, smooth = false) {
       pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2])
       triFace.push(fi)
     }
-  })
+  }
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2))
   // Smooth shading blends normals across every edge (crease angle π).
   const geometry = toCreasedNormals(g, smooth ? Math.PI : CREASE)
   g.dispose()
@@ -131,6 +160,7 @@ export class Viewport {
     // Edit mode: which components of the selected object are selected.
     this.edit = { active: false, mode: 'face', verts: [], edges: [], faces: [] }
     this.nodes = new Map()
+    this.textureImages = new Map()
     this.selected = null
     this.face = null
     this.wireframe = false
@@ -285,6 +315,7 @@ export class Viewport {
       const done = () => {
         this.root.remove(node.group)
         node.mesh.geometry.dispose()
+        node.mesh.material.map?.dispose()
         node.glowMat?.dispose()
       }
       if (animate) {
@@ -425,7 +456,8 @@ export class Viewport {
         this.applyMaterial(m, posed.material)
         const to = this.materialState(m)
         this.anim.add(`mat:${o.id}`, 420, (t) => {
-          m.color.lerpColors(from.color, to.color, t)
+          // A textured surface's colour lives in its texture.
+          if (!m.userData.textureKey) m.color.lerpColors(from.color, to.color, t)
           m.emissive.lerpColors(from.emissive, to.emissive, t)
           for (const k of ['roughness', 'metalness', 'clearcoat', 'emissiveIntensity', 'opacity', 'transmission']) m[k] = from[k] + (to[k] - from[k]) * t
         })
@@ -483,7 +515,8 @@ export class Viewport {
   }
 
   applyMaterial(m, mat) {
-    m.color.set(mat.color)
+    this.applyTexture(m, mat)
+    if (!m.userData.textureKey || !m.map) m.color.set(mat.color)
     m.roughness = mat.roughness
     m.metalness = mat.metalness
     // Glass has its own reflections; a clearcoat on top only clouds it.
@@ -501,6 +534,67 @@ export class Viewport {
     m.transmission = mat.transmission || 0
     m.thickness = m.transmission ? 0.1 : 0
     m.ior = 1.5
+  }
+
+  /**
+   * A procedural texture tile, baked by the Rust core (`/api/texture`) so it
+   * matches the renderer and glTF export. Geometry carries box-projected
+   * UVs in metres; `repeat` turns them into tiles of `scale` metres.
+   */
+  applyTexture(m, mat) {
+    const t = mat.texture
+    const key = t ? `${t.pattern}|${mat.color}|${t.color2 ?? '#3b2a22'}` : ''
+    const repeat = 1 / (t?.scale ?? 0.5)
+    m.userData.textureRepeat = repeat
+    if (key === m.userData.textureKey) {
+      m.map?.repeat.set(repeat, repeat)
+      return
+    }
+    m.userData.textureKey = key
+    if (!key) {
+      if (m.map) {
+        m.map.dispose()
+        m.map = null
+        m.needsUpdate = true
+      }
+      return
+    }
+    this.textureImage(t.pattern, mat.color, t.color2 ?? '#3b2a22').then((image) => {
+      if (!image || m.userData.textureKey !== key) return
+      const tex = new THREE.Texture(image)
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+      tex.colorSpace = THREE.SRGBColorSpace
+      tex.anisotropy = 8
+      tex.repeat.setScalar(m.userData.textureRepeat)
+      tex.needsUpdate = true
+      m.map?.dispose()
+      m.map = tex
+      m.color.set('#ffffff')
+      m.needsUpdate = true
+    })
+  }
+
+  textureImage(pattern, color, color2) {
+    const q = new URLSearchParams({ pattern, color, color2, size: '512' }).toString()
+    let image = this.textureImages.get(q)
+    if (!image) {
+      image = this.clock.track(
+        fetch(`/api/texture?${q}`)
+          .then((r) => r.blob())
+          .then(async (blob) => {
+            const img = new Image()
+            img.src = URL.createObjectURL(blob)
+            await img.decode()
+            return img
+          })
+          .catch(() => {
+            this.textureImages.delete(q)
+            return null
+          }),
+      )
+      this.textureImages.set(q, image)
+    }
+    return image
   }
 
   materialState(m) {

@@ -55,6 +55,21 @@ export const PRESETS = [
   ['plastic', 'Plastic', '#3f7fd8'],
   ['rubber', 'Rubber', '#26272b'],
   ['neon', 'Neon', '#ff4fd8'],
+  ['wood', 'Wood', '#a0703f'],
+  ['marble', 'Marble', '#efece6'],
+  ['brick', 'Brick', '#a4452c'],
+  ['tiles', 'Tiles', '#e8e4dc'],
+]
+
+// Procedural textures (src/texture.rs), each with a default second colour.
+const PATTERNS = [
+  ['none', 'None'],
+  ['wood', 'Wood', '#6b4426'],
+  ['marble', 'Marble', '#8f8a85'],
+  ['brick', 'Brick', '#d8d0c4'],
+  ['tiles', 'Tiles', '#8c867c'],
+  ['checker', 'Checker', '#2b2d33'],
+  ['stripes', 'Stripes', '#2b2d33'],
 ]
 
 const DEFAULT_VESSEL = [
@@ -258,7 +273,9 @@ function summarize(commands) {
             ? c.operation
             : c.op === 'material' && c.preset
               ? `${c.preset} material`
-              : c.op === 'add_modifier'
+              : c.op === 'material' && c.texture
+                ? `${c.texture.pattern} texture`
+                : c.op === 'add_modifier'
                 ? `+ ${c.modifier.type}`
                 : c.op === 'set_modifier'
                   ? `${c.modifier.type}`
@@ -704,6 +721,12 @@ function renderProperties(o) {
       <label class="slider"><span>Metalness</span><input type="range" min="0" max="1" step="0.01" id="p-metal" value="${shown.material.metalness}"><b>${fmt(shown.material.metalness)}</b></label>
       <label class="slider"><span>Glass</span><input type="range" min="0" max="1" step="0.01" id="p-trans" value="${m.transmission}"><b>${fmt(m.transmission)}</b></label>
       <label class="slider"><span>Opacity${keyed('opacity')}</span><input type="range" min="0" max="1" step="0.01" id="p-opacity" value="${m.opacity}"><b>${fmt(m.opacity)}</b></label>
+      <div class="row texture-row"><span>Texture</span>${PATTERNS.map(([id, label]) => `<button class="chip ${(m.texture?.pattern ?? 'none') === id ? 'on' : ''}" data-pattern="${id}">${label}</button>`).join('')}</div>
+      ${
+        m.texture
+          ? `<div class="row emission"><span>Tile size</span><input type="color" id="p-color2" value="${m.texture.color2}" title="Second colour"><input type="range" min="0.05" max="3" step="0.05" id="p-tscale" value="${m.texture.scale}" title="Metres per tile"><b>${fmt(m.texture.scale)}</b></div>`
+          : ''
+      }
       <div class="row emission"><span>Emission${keyed('emissive') || keyed('emissive_strength')}</span><input type="color" id="p-emissive" value="${m.emissive}"><input type="range" min="0" max="10" step="0.1" id="p-emit" value="${m.emissive_strength}" title="Strength"><b>${fmt(m.emissive_strength, 1)}</b></div>
     </div>
     <div class="card">
@@ -859,6 +882,12 @@ $('properties').addEventListener('change', (e) => {
     const strength = pose(o, app.frame).material.emissive_strength
     return run(editCommands(o.id, { emissive: target.value, emissive_strength: strength > 0 ? undefined : 2 })).catch(() => {})
   }
+  if (target.id === 'p-color2' || target.id === 'p-tscale') {
+    const texture = { ...o.material.texture }
+    if (target.id === 'p-color2') texture.color2 = target.value
+    else texture.scale = Number(target.value)
+    return run([{ op: 'material', id: o.id, texture }]).catch(() => {})
+  }
   if (target.id === 'p-emit') return run(editCommands(o.id, { emissive_strength: Number(target.value) })).catch(() => {})
   const field = target.dataset.field
   if (field) {
@@ -908,6 +937,12 @@ $('properties').addEventListener('click', (e) => {
     const k = toggle.dataset.brushToggle
     app.brush = { ...app.brush, [k]: k === 'symmetry' ? (app.brush.symmetry ? null : 'x') : !app.brush.invert }
     return syncEdit()
+  }
+  const pattern = e.target.closest('[data-pattern]')
+  if (pattern && o0) {
+    const [id, , color2] = PATTERNS.find(([p]) => p === pattern.dataset.pattern)
+    const texture = id === 'none' ? { pattern: id } : { pattern: id, color2, scale: o0.material.texture?.scale ?? 0.5 }
+    return run([{ op: 'material', id: o0.id, texture }]).catch(() => {})
   }
   const preset = e.target.closest('[data-preset]')
   if (preset && o0) return run([{ op: 'material', id: o0.id, preset: preset.dataset.preset }]).catch(() => {})
@@ -1260,7 +1295,7 @@ window.__tatara = {
         status.done = true
       })
   },
-  debug: () => ({ pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()] }),
+  debug: () => ({ pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length }),
   async tick(ms) {
     clock.advance(ms)
     await clock.settle()

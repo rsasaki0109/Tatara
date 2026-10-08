@@ -272,6 +272,7 @@ pub fn pose(o: &Object, frame: f64) -> (Transform, Material) {
         emissive_strength: scalar(Property::EmissiveStrength),
         opacity: scalar(Property::Opacity),
         transmission: o.material.transmission,
+        texture: o.material.texture.clone(),
     };
     (transform, material)
 }

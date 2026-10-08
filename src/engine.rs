@@ -19,6 +19,7 @@ use crate::csg::{self, BoolOp};
 use crate::edit;
 use crate::modifiers::{self, Axis, Modifier};
 use crate::sculpt::{self, Brush};
+use crate::texture::{Pattern, Texture};
 
 pub type Vec3 = [f64; 3];
 
@@ -86,6 +87,9 @@ pub struct Material {
     /// How much light passes through, 0-1 (1 = clear glass).
     #[serde(default)]
     pub transmission: f64,
+    /// A procedural pattern mixing `color` with its `color2`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<Texture>,
 }
 
 fn d_emissive() -> String {
@@ -105,6 +109,7 @@ impl Default for Material {
             emissive_strength: 1.0,
             opacity: 1.0,
             transmission: 0.0,
+            texture: None,
         }
     }
 }
@@ -134,6 +139,14 @@ pub enum MaterialPreset {
     Jade,
     /// Glowing tube light; its glow follows `color` unless `emissive` is set.
     Neon,
+    /// Oiled oak with its grain.
+    Wood,
+    /// Polished white marble.
+    Marble,
+    /// Red brick and mortar.
+    Brick,
+    /// Glazed square tiles.
+    Tiles,
 }
 
 impl MaterialPreset {
@@ -152,6 +165,10 @@ impl MaterialPreset {
             Steel => ("#a9adb3", 0.42, 1.0),
             Jade => ("#4f9d7a", 0.16, 0.0),
             Neon => ("#ff4fd8", 0.3, 0.0),
+            Wood => ("#a0703f", 0.55, 0.0),
+            Marble => ("#efece6", 0.15, 0.0),
+            Brick => ("#a4452c", 0.85, 0.0),
+            Tiles => ("#e8e4dc", 0.25, 0.0),
         };
         let mut m = Material {
             color: color.into(),
@@ -167,6 +184,10 @@ impl MaterialPreset {
                 m.emissive = m.color.clone();
                 m.emissive_strength = 2.0;
             }
+            Wood => m.texture = Some(Texture::new(Pattern::Wood, "#6b4426", 0.6)),
+            Marble => m.texture = Some(Texture::new(Pattern::Marble, "#8f8a85", 1.0)),
+            Brick => m.texture = Some(Texture::new(Pattern::Brick, "#d8d0c4", 0.8)),
+            Tiles => m.texture = Some(Texture::new(Pattern::Tiles, "#8c867c", 1.2)),
             _ => {}
         }
         m
@@ -184,6 +205,7 @@ pub struct MaterialEdit<'a> {
     pub emissive_strength: Option<f64>,
     pub opacity: Option<f64>,
     pub transmission: Option<f64>,
+    pub texture: Option<&'a Texture>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -407,6 +429,9 @@ pub enum Command {
         /// Start from a preset; other material fields override it.
         #[serde(default)]
         preset: Option<MaterialPreset>,
+        /// A procedural texture (`{"pattern": "wood"}`); pattern `none` removes it.
+        #[serde(default)]
+        texture: Option<Texture>,
     },
     /// Set any of translation, rotation (radians) or scale.
     Transform {
@@ -439,6 +464,9 @@ pub enum Command {
         /// Start from a preset; other material fields override it.
         #[serde(default)]
         preset: Option<MaterialPreset>,
+        /// A procedural texture (`{"pattern": "wood"}`); pattern `none` removes it.
+        #[serde(default)]
+        texture: Option<Texture>,
     },
     Rename {
         id: ObjRef,
@@ -592,6 +620,9 @@ pub enum Command {
         /// Start from a preset; other material fields override it.
         #[serde(default)]
         preset: Option<MaterialPreset>,
+        /// A procedural texture (`{"pattern": "wood"}`); pattern `none` removes it.
+        #[serde(default)]
+        texture: Option<Texture>,
     },
     /// Move base-mesh vertices by `offset` (object space).
     MoveVertices {
@@ -942,6 +973,7 @@ fn apply_command(
             opacity,
             transmission,
             preset,
+            texture,
         } => {
             let edit = MaterialEdit {
                 preset: *preset,
@@ -952,6 +984,7 @@ fn apply_command(
                 emissive_strength: *emissive_strength,
                 opacity: *opacity,
                 transmission: *transmission,
+                texture: texture.as_ref(),
             };
             if scene.objects.len() >= MAX_OBJECTS {
                 return err(format!("scene is limited to {MAX_OBJECTS} objects"));
@@ -1006,6 +1039,7 @@ fn apply_command(
             opacity,
             transmission,
             preset,
+            texture,
         } => {
             let edit = MaterialEdit {
                 preset: *preset,
@@ -1016,6 +1050,7 @@ fn apply_command(
                 emissive_strength: *emissive_strength,
                 opacity: *opacity,
                 transmission: *transmission,
+                texture: texture.as_ref(),
             };
             let i = resolve(scene, id)?;
             set_material(&mut scene.objects[i].material, &edit)?;
@@ -1317,6 +1352,7 @@ fn apply_command(
             opacity,
             transmission,
             preset,
+            texture,
         } => {
             let edit = MaterialEdit {
                 preset: *preset,
@@ -1327,6 +1363,7 @@ fn apply_command(
                 emissive_strength: *emissive_strength,
                 opacity: *opacity,
                 transmission: *transmission,
+                texture: texture.as_ref(),
             };
             if scene.objects.len() >= MAX_OBJECTS {
                 return err(format!("scene is limited to {MAX_OBJECTS} objects"));
@@ -1591,6 +1628,17 @@ pub fn set_material(m: &mut Material, e: &MaterialEdit) -> Result<(), EngineErro
             *slot = v;
         }
     }
+    if let Some(t) = e.texture {
+        if t.pattern == Pattern::None {
+            m.texture = None;
+        } else {
+            t.validate()?;
+            m.texture = Some(Texture {
+                color2: check_color(&t.color2)?,
+                ..t.clone()
+            });
+        }
+    }
     Ok(())
 }
 
@@ -1640,6 +1688,7 @@ fn validate_scene(scene: &Scene) -> Result<(), EngineError> {
                 opacity: Some(m.opacity),
                 transmission: Some(m.transmission),
                 preset: None,
+                texture: m.texture.as_ref(),
             },
         )
         .map_err(ctx)?;
@@ -2652,6 +2701,62 @@ mod tests {
             }],
         });
         assert!(Editor::new().load(saved).is_err());
+    }
+
+    #[test]
+    fn textures_set_validate_and_clear() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "name": "Floor", "primitive": {"kind": "cube"}, "preset": "tiles"},
+            {"op": "add", "name": "Wall", "primitive": {"kind": "cube"}, "texture": {"pattern": "brick"}}
+        ]})))
+        .unwrap();
+        let tex = |ed: &Editor, i: usize| ed.scene().objects[i].material.texture.clone();
+        assert_eq!(tex(&ed, 0).unwrap().pattern, Pattern::Tiles);
+        let wall = tex(&ed, 1).unwrap();
+        assert_eq!(
+            (wall.color2.as_str(), wall.scale),
+            ("#3b2a22", 0.5),
+            "defaults"
+        );
+
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "material", "id": "Wall", "texture": {"pattern": "marble", "color2": "#A0A0A0", "scale": 2}}
+        ]})))
+        .unwrap();
+        assert_eq!(
+            tex(&ed, 1).unwrap().color2,
+            "#a0a0a0",
+            "colours are normalized"
+        );
+        // Other material edits keep the texture.
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "material", "id": "Wall", "roughness": 0.3}
+        ]})))
+        .unwrap();
+        assert_eq!(tex(&ed, 1).unwrap().pattern, Pattern::Marble);
+        for bad in [
+            serde_json::json!({"op": "material", "id": "Wall", "texture": {"pattern": "brick", "scale": 0}}),
+            serde_json::json!({"op": "material", "id": "Wall", "texture": {"pattern": "brick", "color2": "red"}}),
+        ] {
+            assert!(
+                ed.apply(&batch(serde_json::json!({"commands": [bad]})))
+                    .is_err()
+            );
+        }
+        assert!(
+            serde_json::from_value::<Command>(
+                serde_json::json!({"op": "material", "id": "Wall", "texture": {"pattern": "plaid"}})
+            )
+            .is_err()
+        );
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "material", "id": "Wall", "texture": {"pattern": "none"}}
+        ]})))
+        .unwrap();
+        assert!(tex(&ed, 1).is_none());
+        ed.undo().unwrap();
+        assert_eq!(tex(&ed, 1).unwrap().pattern, Pattern::Marble);
     }
 
     #[test]
