@@ -530,4 +530,71 @@ export const inspect = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect }
+// An agent furnishes a room by relation, not coordinates: build, arrange
+// around, place on and beside, then verify with inspect_scene.
+export const furnish = {
+  title: 'Agents describe layouts, not coordinates',
+  width: 800,
+  external: true,
+  gizmo: false,
+  setup: [{ op: 'add', name: 'Rug', primitive: { kind: 'cube' }, translation: [0, 0.005, 0], scale: [3.4, 0.01, 2.6], color: '#cfc6b8', roughness: 0.95 }],
+  camera: { azimuth: 28, elevation: 24, distance: 7.2, target: [-1.0, 0.45, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Agents describe layouts, not coordinates', hint: 'build · arrange · place' },
+    {
+      mcp: [
+        { say: 'a dining table with four chairs around it', after: 150 },
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              { op: 'build', template: 'table' },
+              ...[1, 2, 3, 4].map(() => ({ op: 'build', template: 'chair' })),
+              { op: 'arrange', ids: ['Chair', 'Chair 2', 'Chair 3', 'Chair 4'], layout: 'circle', around: 'Table' },
+            ],
+          },
+          after: 700,
+        },
+        { say: 'a lamp and a mug on the table', after: 150 },
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              { op: 'build', template: 'lamp' },
+              { op: 'place', id: 'Lamp', on: 'Table', at: [0.85, 0.3] },
+              { op: 'build', template: 'mug' },
+              { op: 'place', id: 'Mug', on: 'Table', at: [0.35, 0.65] },
+            ],
+          },
+          after: 600,
+        },
+        { say: 'a plant beside it, a shelf behind', after: 150 },
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              { op: 'build', template: 'plant' },
+              { op: 'place', id: 'Plant', beside: 'Table', side: 'right', gap: 0.85 },
+              { op: 'build', template: 'shelf', color: '#6f4a33' },
+              { op: 'place', id: 'Shelf', beside: 'Table', side: 'back', gap: 0.8 },
+            ],
+          },
+          after: 600,
+        },
+      ],
+    },
+    { caption: 'Then it checks the result', hint: 'inspect_scene' },
+    { mcp: [{ tool: 'inspect_scene', after: 900 }] },
+    { terminal: false },
+    { caption: 'Each piece stays one group: move, turn or drop it as a unit', hint: 'groups' },
+    { camera: { azimuth: 36, elevation: 22, distance: 6.0, target: [0.1, 0.45, 0] }, ms: 1000, async: true },
+    { click: '#outliner li[data-group="Lamp"]', after: 900 },
+    { cursor: false },
+    { select: null },
+    { spin: 8 },
+    { wait: 2200 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish }

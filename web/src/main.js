@@ -31,6 +31,16 @@ export const GLAZES = [
   ['Bronze', '#b08d57', 0.32, 0.9],
 ]
 
+// Assembly templates (src/assembly.rs Template).
+const TEMPLATES = [
+  ['table', 'Table'],
+  ['chair', 'Chair'],
+  ['lamp', 'Lamp'],
+  ['mug', 'Mug'],
+  ['plant', 'Plant'],
+  ['shelf', 'Shelf'],
+]
+
 // Material presets (src/engine.rs MaterialPreset), with a swatch colour.
 export const PRESETS = [
   ['glass', 'Glass', '#cfe3ee'],
@@ -89,6 +99,8 @@ const app = {
   mode: 'object',
   selectMode: 'face',
   sel: { verts: [], edges: [], faces: [] },
+  // Assemblies expanded in the outliner.
+  openGroups: new Set(),
   // Sculpt mode brush (radius in world units).
   brush: { brush: 'draw', radius: 0.15, strength: 0.5, invert: false, symmetry: 'x' },
 }
@@ -237,13 +249,15 @@ function summarize(commands) {
     const label =
       c.op === 'add'
         ? `add ${c.primitive.kind}`
-        : c.op === 'material' && c.preset
-          ? `${c.preset} material`
-          : c.op === 'add_modifier'
-            ? `+ ${c.modifier.type}`
-            : c.op === 'set_modifier'
-              ? `${c.modifier.type}`
-              : c.op
+        : c.op === 'build'
+          ? `build ${c.template}`
+          : c.op === 'material' && c.preset
+            ? `${c.preset} material`
+            : c.op === 'add_modifier'
+              ? `+ ${c.modifier.type}`
+              : c.op === 'set_modifier'
+                ? `${c.modifier.type}`
+                : c.op
     const last = parts.at(-1)
     if (last && last.label === label) last.n++
     else parts.push({ label, n: 1 })
@@ -551,12 +565,27 @@ function render() {
   const faces = objects.reduce((n, o) => n + displayMesh(o).faces.length, 0)
   $('object-count').textContent = objects.length ? String(objects.length) : ''
   $('outliner-empty').style.display = objects.length ? 'none' : ''
-  $('outliner').innerHTML = objects
-    .map(
-      (o) =>
-        `<li data-id="${o.id}" class="${o.id === app.selected ? 'selected' : ''}">${icon(KIND_ICON[o.kind] || 'cube')}<span class="name">${escapeHtml(o.name)}</span>${isAnimated(o) ? '<span class="keyed" title="Animated">◆</span>' : ''}<span class="swatch" style="background:${pose(o, app.frame).material.color}"></span></li>`,
+  const row = (o, cls = '') =>
+    `<li data-id="${o.id}" class="${cls} ${o.id === app.selected ? 'selected' : ''}">${icon(KIND_ICON[o.kind] || 'cube')}<span class="name">${escapeHtml(o.group ? o.name.slice(o.group.length + 1) || o.name : o.name)}</span>${isAnimated(o) ? '<span class="keyed" title="Animated">◆</span>' : ''}<span class="swatch" style="background:${pose(o, app.frame).material.color}"></span></li>`
+  // Assemblies collapse into one row; it opens while one of its parts is selected.
+  const rows = []
+  const listed = new Set()
+  for (const o of objects) {
+    if (!o.group) {
+      rows.push(row(o))
+      continue
+    }
+    if (listed.has(o.group)) continue
+    listed.add(o.group)
+    const parts = objects.filter((p) => p.group === o.group)
+    const active = parts.some((p) => p.id === app.selected)
+    const open = active || app.openGroups.has(o.group)
+    rows.push(
+      `<li data-group="${escapeHtml(o.group)}" class="group-row ${active ? 'active' : ''}"><span class="twisty" data-twisty>${open ? '▾' : '▸'}</span>${icon('group')}<span class="name">${escapeHtml(o.group)}</span><span class="muted count">${parts.length}</span><span class="swatch" style="background:${pose(parts[0], app.frame).material.color}"></span></li>`,
     )
-    .join('')
+    if (open) for (const p of parts) rows.push(row(p, 'part'))
+  }
+  $('outliner').innerHTML = rows.join('')
   $('status-rev').textContent = `Revision ${app.scene.revision}`
   $('status-mesh').textContent = `${objects.length} object${objects.length === 1 ? '' : 's'} · ${faces.toLocaleString('en-US')} faces`
   for (const b of document.querySelectorAll('[data-action=undo]')) b.disabled = !app.history.can_undo
@@ -576,6 +605,18 @@ function render() {
 }
 
 $('outliner').addEventListener('click', (e) => {
+  const group = e.target.closest('li[data-group]')
+  if (group) {
+    const name = group.dataset.group
+    if (e.target.closest('[data-twisty]')) {
+      if (app.openGroups.has(name)) app.openGroups.delete(name)
+      else app.openGroups.add(name)
+      return render()
+    }
+    const first = app.scene.objects.find((o) => o.group === name)
+    if (first) select(first.id)
+    return
+  }
   const li = e.target.closest('li[data-id]')
   if (li) select(Number(li.dataset.id))
 })
@@ -596,7 +637,9 @@ function renderProperties(o) {
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
   renderedKey = key
   if (!o) {
-    el.innerHTML = `<div class="empty-props">${icon('cursor')}<p>Select an object in the viewport or outliner.</p><p class="muted">Alt+click selects a single face for extrusion.</p></div>`
+    el.innerHTML = `<div class="empty-props">${icon('cursor')}<p>Select an object in the viewport or outliner.</p><p class="muted">Alt+click selects a single face for extrusion.</p></div>
+      <div class="card"><div class="card-title">Build an assembly <span class="muted small">build · place · arrange</span></div>
+      <div class="brushes">${TEMPLATES.map(([t, label]) => `<button class="chip" data-build="${t}">+ ${label}</button>`).join('')}</div></div>`
     return
   }
   // Animated properties show their value at the current frame, marked ◆.
@@ -636,6 +679,7 @@ function renderProperties(o) {
       <div class="card-title">Object <span class="muted small">#${o.id} · ${o.kind}</span></div>
       <input class="name-input" id="p-name" value="${escapeHtml(o.name)}" spellcheck="false">
       <div class="meta">${num(displayMesh(o).vertices.length)} vertices · ${num(displayMesh(o).faces.length)} faces${o.display ? ` <span class="muted">(base ${num(o.mesh.faces.length)})</span>` : ''}</div>
+      ${o.group ? `<div class="row group-info">${icon('group')}<span>Part of <b>${escapeHtml(o.group)}</b></span><button class="chip push" data-group-act="turn" title="Turn the whole assembly 90°">↻ 90°</button><button class="chip" data-group-act="drop" title="Settle the whole assembly">Drop</button><button class="chip" data-group-act="delete" title="Delete every part">Delete</button></div>` : ''}
       <div class="row"><button class="chip ${o.smooth ? 'on' : ''}" data-shade title="Blend normals across every edge (Shade Smooth)">Smooth shading</button><button class="chip" data-drop title="Settle onto the floor or the object below">Drop to surface</button></div>
     </div>
     <div class="card">
@@ -802,6 +846,8 @@ $('properties').addEventListener('change', (e) => {
   }
 })
 $('properties').addEventListener('click', (e) => {
+  const build = e.target.closest('[data-build]')
+  if (build) return run([{ op: 'build', template: build.dataset.build, translation: [freeSpot(0.7), 0, 0] }]).then((r) => r && select(r.created[0])).catch(() => {})
   const o0 = objectById(app.selected)
   const addMod = e.target.closest('[data-add-mod]')
   if (addMod) return actions.addModifier(addMod.dataset.addMod).catch(() => {})
@@ -814,6 +860,12 @@ $('properties').addEventListener('click', (e) => {
     const next = { ...o0.modifiers[i] }
     next[set.dataset.set] = set.dataset.set === 'levels' ? Number(set.dataset.value) : set.dataset.value
     return actions.setModifier(i, next).catch(() => {})
+  }
+  const groupAct = e.target.closest('[data-group-act]')
+  if (groupAct && o0?.group) {
+    const id = o0.group
+    const op = { turn: { op: 'move', id, rotate_y: Math.PI / 2 }, drop: { op: 'drop', id }, delete: { op: 'delete', id } }[groupAct.dataset.groupAct]
+    return run([op]).catch(() => {})
   }
   if (e.target.closest('[data-drop]') && o0) return run([{ op: 'drop', id: o0.id }]).catch(() => {})
   if (e.target.closest('[data-shade]') && o0) return run([{ op: 'shade', id: o0.id, smooth: !o0.smooth }]).catch(() => {})
@@ -865,6 +917,7 @@ $('chat-send').addEventListener('click', sendChat)
 function showChecks(report) {
   app.checks = report
   const ids = new Map(report.objects.map((o) => [o.name, o.id]))
+  for (const o of report.objects) if (o.group && !ids.has(o.group)) ids.set(o.group, o.id)
   const flagged = new Set()
   const items = report.issues.map((issue) => {
     const names = issue.objects || [issue.object]

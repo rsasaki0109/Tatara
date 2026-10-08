@@ -52,7 +52,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "apply_commands",
-            "description": "Apply an atomic batch of modeling commands to the shared scene (one undo step). Pass expected_revision from get_scene to reject stale edits. Units are meters, Y up, rotations in radians. Sculpt with `sculpt` brush strokes (draw, inflate, smooth, flatten, grab) on a `quadsphere`. Materials take a preset (glass, gold, chrome, neon, jade, ...) plus colour, roughness, metalness, emissive, opacity and transmission.",
+            "description": "Apply an atomic batch of modeling commands to the shared scene (one undo step). Pass expected_revision from get_scene to reject stale edits. Units are meters, Y up, rotations in radians. Lay scenes out by relation instead of coordinates: `build` furniture (table, chair, lamp, mug, plant, shelf), `place` it on or beside something, `arrange` items in a row, grid or circle (facing the centre). Sculpt with `sculpt` brush strokes (draw, inflate, smooth, flatten, grab) on a `quadsphere`. Materials take a preset (glass, gold, chrome, neon, jade, ...) plus colour, roughness, metalness, emissive, opacity and transmission.",
             "inputSchema": batch_schema
         },
         {

@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use glam::DVec3;
 use serde_json::{Value, json};
 
-use crate::engine::{Editor, EngineError, Mesh, Object};
+use crate::engine::{Editor, EngineError, Mesh, Object, Scene};
+use crate::modifiers;
 
 /// Gaps and penetrations below this (metres) count as touching.
 pub const TOLERANCE: f64 = 0.002;
@@ -19,6 +20,8 @@ const SAMPLES: usize = 1500;
 pub struct Solid {
     pub id: u64,
     pub name: String,
+    /// The assembly this object belongs to; parts of one group may touch.
+    pub group: Option<String>,
     tris: Vec<[DVec3; 3]>,
     verts: Vec<DVec3>,
     pub min: DVec3,
@@ -56,12 +59,59 @@ pub fn solid(o: &Object, mesh: &Mesh) -> Solid {
     Solid {
         id: o.id,
         name: o.name.clone(),
+        group: o.group.clone(),
         tris,
         verts,
         min,
         max,
         closed: !edges.is_empty() && edges.values().all(|&n| n == 2),
     }
+}
+
+/// Every object of a scene as a world-space solid, modifiers evaluated.
+pub fn scene_solids(scene: &Scene) -> Result<Vec<Solid>, EngineError> {
+    scene
+        .objects
+        .iter()
+        .map(|o| {
+            let mesh = if o.modifiers.is_empty() {
+                o.mesh.clone()
+            } else {
+                modifiers::evaluate(&o.mesh, &o.modifiers)?
+            };
+            Ok(solid(o, &mesh))
+        })
+        .collect()
+}
+
+/// Several solids treated as one rigid body (an assembly).
+pub fn merge(parts: &[&Solid]) -> Solid {
+    let mut out = Solid {
+        id: parts.first().map_or(0, |p| p.id),
+        name: parts.first().map_or(String::new(), |p| p.name.clone()),
+        group: parts.first().and_then(|p| p.group.clone()),
+        tris: Vec::new(),
+        verts: Vec::new(),
+        min: DVec3::splat(f64::INFINITY),
+        max: DVec3::splat(f64::NEG_INFINITY),
+        closed: parts.iter().all(|p| p.closed),
+    };
+    for p in parts {
+        out.tris.extend_from_slice(&p.tris);
+        out.verts.extend_from_slice(&p.verts);
+        out.min = out.min.min(p.min);
+        out.max = out.max.max(p.max);
+    }
+    out
+}
+
+/// World bounds of a set of objects (by id), if any has faces.
+pub fn bounds(solids: &[Solid], ids: &[u64]) -> Option<(DVec3, DVec3)> {
+    solids
+        .iter()
+        .filter(|s| ids.contains(&s.id) && !s.tris.is_empty())
+        .map(|s| (s.min, s.max))
+        .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
 }
 
 /// Every object of the editor as a world-space solid.
@@ -184,7 +234,7 @@ fn vertical_hit(x: f64, z: f64, [a, b, c]: &[DVec3; 3]) -> Option<f64> {
 /// another solid (negative: it must rise), and what it would rest on. An
 /// object sunk into the one below it is lifted onto that object's top,
 /// rather than dropped through it.
-pub fn drop_distance<'a>(s: &Solid, others: &'a [Solid]) -> (f64, Option<&'a Solid>) {
+pub fn drop_distance<'a>(s: &Solid, others: &[&'a Solid]) -> (f64, Option<&'a Solid>) {
     let mut best = (s.min.y, None);
     let mut consider = |gap: f64, b: &'a Solid| {
         if gap < best.0 {
@@ -205,7 +255,7 @@ pub fn drop_distance<'a>(s: &Solid, others: &'a [Solid]) -> (f64, Option<&'a Sol
             .filter(|h| *h >= limit)
             .fold(f64::INFINITY, f64::min)
     };
-    for b in others.iter().filter(|b| b.id != s.id && overlap_xz(s, b)) {
+    for &b in others.iter().filter(|b| b.id != s.id && overlap_xz(s, b)) {
         if s.closed && b.closed && penetration(s, b) > TOLERANCE {
             // Only the upper of two intersecting objects moves: it rises until
             // it sits on b's top (side-by-side overlaps are b's to resolve).
@@ -241,10 +291,14 @@ fn cm(m: f64) -> String {
 /// The inspection report: per-object measurements and a list of issues.
 pub fn inspect(ed: &Editor) -> Value {
     let solids = solids(ed);
+    let refs: Vec<&Solid> = solids.iter().collect();
     let mut issues = Vec::new();
     let mut objects = Vec::new();
     for (i, a) in solids.iter().enumerate() {
         for b in &solids[i + 1..] {
+            if a.group.is_some() && a.group == b.group {
+                continue;
+            }
             let depth = penetration(a, b);
             if depth > TOLERANCE {
                 // Name the upper object first: "Cup sinks 2 cm into Table".
@@ -267,8 +321,33 @@ pub fn inspect(ed: &Editor) -> Value {
                 }));
             }
         }
-        let (gap, on) = drop_distance(a, &solids);
-        let support = on.map_or("the floor".to_string(), |s| s.name.clone());
+        // Parts of an assembly hold each other up: test the whole group once,
+        // against everything outside it.
+        let (gap, on, body_name) = match &a.group {
+            Some(g) => {
+                let parts: Vec<&Solid> = refs
+                    .iter()
+                    .copied()
+                    .filter(|s| s.group.as_ref() == Some(g))
+                    .collect();
+                let outside: Vec<&Solid> = refs
+                    .iter()
+                    .copied()
+                    .filter(|s| s.group.as_ref() != Some(g))
+                    .collect();
+                let (gap, on) = drop_distance(&merge(&parts), &outside);
+                (gap, on, g.clone())
+            }
+            None => {
+                let (gap, on) = drop_distance(a, &refs);
+                (gap, on, a.name.clone())
+            }
+        };
+        let support = on.map_or("the floor".to_string(), |s| {
+            s.group.clone().unwrap_or_else(|| s.name.clone())
+        });
+        let first_of_group = a.group.is_none()
+            || refs.iter().find(|s| s.group == a.group).map(|s| s.id) == Some(a.id);
         if a.min.y < -TOLERANCE {
             issues.push(json!({
                 "kind": "below_floor",
@@ -276,18 +355,19 @@ pub fn inspect(ed: &Editor) -> Value {
                 "depth": round(-a.min.y),
                 "message": format!("{} sinks {} below the floor", a.name, cm(-a.min.y)),
             }));
-        } else if gap > 0.01 {
+        } else if gap > 0.01 && first_of_group {
             issues.push(json!({
                 "kind": "floating",
-                "object": a.name,
+                "object": body_name,
                 "gap": round(gap),
-                "message": format!("{} floats {} above {}", a.name, cm(gap), support),
+                "message": format!("{} floats {} above {}", body_name, cm(gap), support),
             }));
         }
         let size = a.max - a.min;
         objects.push(json!({
             "id": a.id,
             "name": a.name,
+            "group": a.group,
             "min": a.min.to_array().map(round),
             "max": a.max.to_array().map(round),
             "size": size.to_array().map(round),
@@ -307,13 +387,22 @@ fn round(x: f64) -> f64 {
     (x * 1e4).round() / 1e4
 }
 
-/// The vertical move that settles object `id` (see [`drop_distance`]).
-pub fn settle(scene_solids: &[Solid], id: u64) -> Result<f64, EngineError> {
-    let s = scene_solids
+/// The vertical move that settles the objects `ids` as one rigid body onto
+/// the floor or whatever is beneath them (see [`drop_distance`]).
+pub fn settle(scene_solids: &[Solid], ids: &[u64]) -> Result<f64, EngineError> {
+    let parts: Vec<&Solid> = scene_solids
         .iter()
-        .find(|s| s.id == id)
-        .ok_or_else(|| EngineError::new("the object has no faces to drop"))?;
-    Ok(-drop_distance(s, scene_solids).0)
+        .filter(|s| ids.contains(&s.id) && !s.tris.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return Err(EngineError::new("nothing with faces to drop"));
+    }
+    let body = merge(&parts);
+    let rest: Vec<&Solid> = scene_solids
+        .iter()
+        .filter(|s| !ids.contains(&s.id))
+        .collect();
+    Ok(-drop_distance(&body, &rest).0)
 }
 
 #[cfg(test)]

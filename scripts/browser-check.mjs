@@ -183,6 +183,15 @@ try {
   await page.keyboard.press('Escape')
   await page.waitForSelector('[data-mode=object].on')
 
+  // Assemblies: build a chair from the empty panel; it lists as one group.
+  await page.keyboard.press('Escape')
+  await page.click('[data-build=chair]')
+  await page.waitForSelector('#outliner li[data-group="Chair"]')
+  check((await page.textContent('#outliner li[data-group="Chair"] .count')) === '6', 'build makes a six-part chair group')
+  await page.click('[data-group-act=delete]')
+  await page.waitForFunction(() => !document.querySelector('#outliner li[data-group="Chair"]'))
+  check(true, 'a group deletes as one')
+
   // Checks: the Inspect button shows the report; Drop settles the object.
   await page.click('.tabs [data-tab=agent]')
   await page.click('#inspect-btn')

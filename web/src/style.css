@@ -1338,3 +1338,36 @@ input[type='range'] {
 .issues .issue.info {
   border-left-color: #7aa7ff;
 }
+
+/* ---- assemblies ---------------------------------------------------------- */
+
+#outliner li.group-row .twisty {
+  width: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+#outliner li.group-row .count {
+  margin-left: auto;
+  margin-right: 6px;
+  font-size: 11px;
+}
+
+#outliner li.group-row.active {
+  color: var(--text);
+}
+
+#outliner li.part {
+  padding-left: 30px;
+}
+
+.row.group-info {
+  font-size: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.row.group-info b {
+  color: var(--text);
+}

@@ -408,6 +408,7 @@ export class DemoRunner {
           summary = escapeHtml(data.summary)
           for (const issue of data.issues) details.push(`<span class="t-err">  ⚠ ${escapeHtml(issue.message)}</span>`)
         }
+        else if (data.created?.length > 6) summary = `revision ${data.revision} · created ${data.created.length} objects`
         else if (data.created?.length) summary = `revision ${data.revision} · created ${JSON.stringify(data.created)}`
         else summary = `revision ${data.revision}`
         summary = details.length ? `<span class="t-err">⚠</span> ${summary}` : `<span class="t-ok">✓</span> ${summary}`

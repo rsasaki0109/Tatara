@@ -14,6 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::anim::{self, Animation, Interpolation, KeyValue, Property, Track};
+use crate::assembly::{self, Layout, Side, Template};
 use crate::edit;
 use crate::modifiers::{self, Axis, Modifier};
 use crate::sculpt::{self, Brush};
@@ -204,6 +205,10 @@ pub struct Object {
     /// at sharp creases. On by default for quadspheres (sculpting).
     #[serde(default)]
     pub smooth: bool,
+    /// The assembly this object is a part of (from `build`). Commands that
+    /// take an `id` also accept a group name and move its parts together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -270,6 +275,9 @@ fn d_thickness() -> f64 {
 }
 fn d_vessel_seg() -> u32 {
     48
+}
+fn d_gap() -> f64 {
+    0.1
 }
 fn d_quad_level() -> u32 {
     4
@@ -435,10 +443,70 @@ pub enum Command {
         id: ObjRef,
         name: String,
     },
-    /// Move an object straight down until it rests on the floor or on the
-    /// object beneath it (or up, out of whatever it has sunk into).
+    /// Move an object (or group) straight down until it rests on the floor
+    /// or on what is beneath it (or up, out of whatever it has sunk into).
     Drop {
         id: ObjRef,
+    },
+    /// Build a parametric assembly (furniture) from primitives, at real-world
+    /// size with its front facing +Z. The parts share a group named `name`
+    /// (default: the template, numbered: "Chair", "Chair 2", ...), so `move`,
+    /// `place`, `arrange`, `drop` and `delete` act on the whole piece.
+    Build {
+        template: Template,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        translation: Option<Vec3>,
+        /// Turn about the vertical axis, radians.
+        #[serde(default)]
+        rotation_y: Option<f64>,
+        /// Uniform size factor (0.05-20).
+        #[serde(default)]
+        scale: Option<f64>,
+        /// `#rrggbb` for the main surfaces.
+        #[serde(default)]
+        color: Option<String>,
+    },
+    /// Put an object or group on another (`on`; `at` is [u, v], fractions of
+    /// its top from the -X/-Z corner, default the middle) or beside it
+    /// (`beside`, `side`, `gap` metres), then settle it. No coordinates needed.
+    Place {
+        id: ObjRef,
+        #[serde(default)]
+        on: Option<ObjRef>,
+        #[serde(default)]
+        at: Option<[f64; 2]>,
+        #[serde(default)]
+        beside: Option<ObjRef>,
+        #[serde(default)]
+        side: Option<Side>,
+        #[serde(default = "d_gap")]
+        gap: f64,
+    },
+    /// Lay objects or groups out in a row (along X), a grid, or a circle
+    /// around `around` (or `center` [x, z]) with each turned to face the
+    /// middle, `spacing` metres apart, then settle each one.
+    Arrange {
+        ids: Vec<ObjRef>,
+        layout: Layout,
+        #[serde(default)]
+        around: Option<ObjRef>,
+        #[serde(default)]
+        center: Option<[f64; 2]>,
+        #[serde(default = "d_gap")]
+        spacing: f64,
+        #[serde(default)]
+        radius: Option<f64>,
+    },
+    /// Move an object or group rigidly by `offset` and/or turn it by
+    /// `rotate_y` radians about its centre.
+    Move {
+        id: ObjRef,
+        #[serde(default)]
+        offset: Option<Vec3>,
+        #[serde(default)]
+        rotate_y: Option<f64>,
     },
     /// Smooth shading on or off (off splits normals at sharp creases).
     Shade {
@@ -897,6 +965,7 @@ fn apply_command(
                 modifiers: Vec::new(),
                 tracks: Vec::new(),
                 smooth: kind == "quadsphere",
+                group: None,
             });
             scene.next_id += 1;
             created.push(id);
@@ -944,27 +1013,137 @@ fn apply_command(
             scene.objects[i].name = check_name(name)?;
         }
         Command::Drop { id } => {
-            let i = resolve(scene, id)?;
-            let o = &scene.objects[i];
-            if o.tracks.iter().any(|t| t.property == Property::Translation) {
+            let idx = assembly::targets(scene, id)?;
+            if idx.iter().any(|&i| {
+                scene.objects[i]
+                    .tracks
+                    .iter()
+                    .any(|t| t.property == Property::Translation)
+            }) {
                 return err(
                     "drop moves the static position; this object's translation is animated",
                 );
             }
-            let solids: Vec<crate::inspect::Solid> = scene
-                .objects
-                .iter()
-                .map(|o| {
-                    let mesh = if o.modifiers.is_empty() {
-                        o.mesh.clone()
-                    } else {
-                        modifiers::evaluate(&o.mesh, &o.modifiers)?
-                    };
-                    Ok(crate::inspect::solid(o, &mesh))
-                })
-                .collect::<Result<_, EngineError>>()?;
-            let dy = crate::inspect::settle(&solids, o.id)?;
-            scene.objects[i].transform.translation[1] += dy;
+            let ids: Vec<u64> = idx.iter().map(|&i| scene.objects[i].id).collect();
+            let solids = crate::inspect::scene_solids(scene)?;
+            let dy = crate::inspect::settle(&solids, &ids)?;
+            assembly::translate(scene, &idx, DVec3::Y * dy);
+        }
+        Command::Build {
+            template,
+            name,
+            translation,
+            rotation_y,
+            scale,
+            color,
+        } => {
+            let parts = assembly::parts(*template);
+            if scene.objects.len() + parts.len() > MAX_OBJECTS {
+                return err(format!("scene is limited to {MAX_OBJECTS} objects"));
+            }
+            let base = match name {
+                Some(n) => check_name(n)?,
+                None => template.label().to_string(),
+            };
+            let taken = |n: &str| {
+                scene
+                    .objects
+                    .iter()
+                    .any(|o| o.name == n || o.group.as_deref() == Some(n))
+            };
+            let group = if !taken(&base) {
+                base.clone()
+            } else if name.is_some() {
+                return err(format!("{base:?} is already used"));
+            } else {
+                (2..)
+                    .map(|k| format!("{base} {k}"))
+                    .find(|n| !taken(n))
+                    .unwrap()
+            };
+            let size = scale.unwrap_or(1.0);
+            if !(0.05..=20.0).contains(&size) {
+                return err("scale must be between 0.05 and 20");
+            }
+            let origin = translation.unwrap_or([0.0; 3]);
+            check_vec(&origin, "translation")?;
+            let turn = DQuat::from_rotation_y(rotation_y.unwrap_or(0.0));
+            let tint = color.as_deref().map(check_color).transpose()?;
+            for p in parts {
+                let mesh = build_primitive(&p.primitive)?;
+                let at = DVec3::from(origin) + turn * (DVec3::from(p.at) * size);
+                let [rx, ry, rz] = p.rotation;
+                let (x, y, z) =
+                    (turn * DQuat::from_euler(EulerRot::XYZ, rx, ry, rz)).to_euler(EulerRot::XYZ);
+                let mut material = p.material;
+                if let (Some(c), true) = (&tint, p.body) {
+                    material.color = c.clone();
+                }
+                let id = scene.next_id;
+                scene.objects.push(Object {
+                    id,
+                    name: check_name(&format!("{group} {}", p.name))?,
+                    kind: p.primitive.kind().into(),
+                    transform: Transform {
+                        translation: at.to_array(),
+                        rotation: [x, y, z],
+                        scale: p.scale.map(|v| v * size),
+                    },
+                    material,
+                    mesh,
+                    modifiers: Vec::new(),
+                    tracks: Vec::new(),
+                    smooth: p.smooth,
+                    group: Some(group.clone()),
+                });
+                scene.next_id += 1;
+                created.push(id);
+            }
+        }
+        Command::Place {
+            id,
+            on,
+            at,
+            beside,
+            side,
+            gap,
+        } => assembly::place(scene, id, on.as_ref(), *at, beside.as_ref(), *side, *gap)?,
+        Command::Arrange {
+            ids,
+            layout,
+            around,
+            center,
+            spacing,
+            radius,
+        } => assembly::arrange(
+            scene,
+            ids,
+            *layout,
+            around.as_ref(),
+            *center,
+            *spacing,
+            *radius,
+        )?,
+        Command::Move {
+            id,
+            offset,
+            rotate_y,
+        } => {
+            let idx = assembly::targets(scene, id)?;
+            if let Some(a) = rotate_y {
+                if !a.is_finite() {
+                    return err("rotate_y must be finite");
+                }
+                let solids = crate::inspect::scene_solids(scene)?;
+                let ids: Vec<u64> = idx.iter().map(|&i| scene.objects[i].id).collect();
+                let pivot = crate::inspect::bounds(&solids, &ids)
+                    .map_or(DVec3::ZERO, |(lo, hi)| (lo + hi) * 0.5);
+                assembly::turn(scene, &idx, pivot, *a);
+            }
+            if let Some(o) = offset {
+                check_vec(o, "offset")?;
+                assembly::translate(scene, &idx, DVec3::from(*o));
+            }
         }
         Command::Shade { id, smooth } => {
             let i = resolve(scene, id)?;
@@ -979,8 +1158,11 @@ fn apply_command(
             created.push(new_id);
         }
         Command::Delete { id } => {
-            let i = resolve(scene, id)?;
-            scene.objects.remove(i);
+            let mut idx = assembly::targets(scene, id)?;
+            idx.sort_unstable();
+            for i in idx.into_iter().rev() {
+                scene.objects.remove(i);
+            }
         }
         Command::Extrude { id, face, distance } => {
             let i = resolve(scene, id)?;
@@ -1120,6 +1302,7 @@ fn apply_command(
                 modifiers: Vec::new(),
                 tracks: Vec::new(),
                 smooth: false,
+                group: None,
             });
             scene.next_id += 1;
             created.push(id);
@@ -2278,6 +2461,7 @@ mod tests {
             modifiers: Vec::new(),
             tracks: Vec::new(),
             smooth: false,
+            group: None,
         });
         assert!(ed.load(scene.clone()).is_err(), "id must be below next_id");
         scene.next_id = 6;
