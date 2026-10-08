@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use glam::dcamera::rh::{proj::directx, view::look_at_mat4};
-use glam::{DMat4, DVec2, DVec3, DVec4};
+use glam::{DMat3, DMat4, DVec2, DVec3, DVec4};
 
 use crate::engine::{Editor, EngineError};
 use crate::image::Pixels;
@@ -100,9 +100,19 @@ impl Textured {
     }
 }
 
+/// Where a box-projected texture blends its three planes: the object's
+/// space as scaled (texture metres) and its rotation back to the world.
+struct Triplanar {
+    to_local: DMat4,
+    rotation: DMat3,
+    /// Tiles per metre.
+    repeat: f64,
+}
+
 struct Shading {
     color: DVec3,
     texture: Option<Textured>,
+    triplanar: Option<Triplanar>,
     roughness: f64,
     metalness: f64,
     /// Linear emitted light, strength applied.
@@ -124,6 +134,25 @@ impl Shading {
     }
 
     /// The shading normal `n` bent by relief or a normal map at `uv`.
+    /// Albedo and shading normal at world point `p` with normal `n`: blended
+    /// over three planes for box-projected textures (no seams on curved
+    /// surfaces), or from the triangle's UVs otherwise.
+    fn at(&self, p: DVec3, n: DVec3, tangents: [DVec3; 2], uv: DVec2) -> (DVec3, DVec3) {
+        let (Some(t), Some(tp)) = (&self.texture, &self.triplanar) else {
+            return (self.albedo(uv), self.bend(n, tangents, uv));
+        };
+        let look = t.look();
+        let q = tp.to_local.transform_point3(p);
+        let nq = tp.rotation.transpose() * n;
+        let c = look.triplanar_color(q, nq, tp.repeat);
+        let albedo = DVec3::from_array(c.map(srgb_to_linear));
+        if !look.bumpy() {
+            return (albedo, n);
+        }
+        let tilt = look.triplanar_tilt(q, nq, tp.repeat, 1.0 / 512.0);
+        (albedo, (tp.rotation * (nq + tilt)).normalize_or(n))
+    }
+
     fn bend(&self, n: DVec3, tangents: [DVec3; 2], uv: DVec2) -> DVec3 {
         let Some(t) = &self.texture else {
             return n;
@@ -231,9 +260,26 @@ fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepar
             normal_map: pixels(&t.normal_map),
             texture: t,
         });
+        // Box projection blends its planes per pixel; own and fitted UVs
+        // are used as they are.
+        let triplanar = (texture.is_some() && !shaded.tiled).then(|| {
+            let s = DVec3::from_array(transform.scale);
+            let safe = |x: f64| if x.abs() < 1e-9 { 1e-9 } else { x };
+            Triplanar {
+                to_local: DMat4::from_scale(s) * m.inverse(),
+                rotation: DMat3::from_mat4(m)
+                    * DMat3::from_diagonal(DVec3::new(
+                        1.0 / safe(s.x),
+                        1.0 / safe(s.y),
+                        1.0 / safe(s.z),
+                    )),
+                repeat: 1.0 / tile,
+            }
+        });
         materials.push(Shading {
             color: hex(&material.color),
             texture,
+            triplanar,
             roughness: material.roughness,
             metalness: material.metalness,
             emissive: hex(&material.emissive) * material.emissive_strength,
@@ -577,8 +623,8 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
                 }
                 o => {
                     let m = &prep.materials[o as usize];
-                    let albedo = m.albedo(uv[i]);
-                    let bent = m.bend(normal[i], prep.tris[tri_at[i] as usize].tangents, uv[i]);
+                    let tangents = prep.tris[tri_at[i] as usize].tangents;
+                    let (albedo, bent) = m.at(world[i], normal[i], tangents, uv[i]);
                     let (diffuse, gloss) = surface(m, albedo, world[i], bent, eye, shadow);
                     diffuse + gloss + m.emissive
                 }
@@ -632,8 +678,8 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
             let p = t.p[0] * b[0] + t.p[1] * b[1] + t.p[2] * b[2];
             let nn = (t.n[0] * b[0] + t.n[1] * b[1] + t.n[2] * b[2]).normalize_or_zero();
             let at = t.uv[0] * b[0] + t.uv[1] * b[1] + t.uv[2] * b[2];
-            let albedo = m.albedo(at);
-            let (diffuse, gloss) = surface(m, albedo, p, m.bend(nn, t.tangents, at), eye, shadow);
+            let (albedo, bent) = m.at(p, nn, t.tangents, at);
+            let (diffuse, gloss) = surface(m, albedo, p, bent, eye, shadow);
             let facing = nn.dot((eye - p).normalize()).abs();
             let reflect = (1.0 - facing).powi(3);
             let tint = DVec3::ONE.lerp(albedo, 0.55) * m.transmission * (1.0 - reflect);

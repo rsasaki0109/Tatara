@@ -730,4 +730,49 @@ export const surfaces = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces }
+// Triplanar blending: patterns wrap curved shapes without seams, and stay
+// put while the marble head is sculpted.
+export const wrap = {
+  title: 'Seamless textures',
+  width: 800,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 1.9, height: 0.08, segments: 96 }, translation: [0, 0.04, 0], color: '#26272b', roughness: 0.85 },
+    { op: 'add', name: 'Head', primitive: { kind: 'quadsphere', radius: TOUR_HEAD.r, level: 5 }, translation: TOUR_HEAD.c, preset: 'clay', color: '#c98b62' },
+    { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 72 }, translation: [-1.15, 0.08, 0.1], scale: [1.3, 1.3, 1.3], color: '#d8d4cb', roughness: 0.4 },
+    { op: 'add', name: 'Ring', primitive: { kind: 'torus', major_radius: 0.36, minor_radius: 0.12, major_segments: 64, minor_segments: 24 }, translation: [1.15, 0.56, 0.05], rotation: [0, -0.5, 0], color: '#d8d4cb', roughness: 0.4 },
+    { op: 'shade', id: 'Ring', smooth: true },
+  ],
+  camera: { azimuth: 8, elevation: 9, distance: 5.0, target: [0.15, 0.55, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Patterns wrap curved shapes without seams', hint: 'triplanar blending' },
+    { pick: 'Vase', after: 80 },
+    { click: '[data-preset=marble]', after: 450 },
+    { pick: 'Ring', after: 80 },
+    { click: '[data-preset=wood]', after: 450 },
+    { pick: 'Head', after: 80 },
+    { click: '[data-preset=marble]', after: 450 },
+    { caption: 'Sculpt through the marble', hint: 'sculpt · the veins stay put' },
+    { camera: { azimuth: 20, elevation: 6, distance: 2.4, target: [0, 0.52, 0] }, ms: 900 },
+    { click: '[data-mode=sculpt]', after: 80 },
+    { slide: '#b-strength', to: 0.9, ms: 300, after: 40 },
+    { stroke: [tourFace(0, 0.06), tourFace(0, -0.05), tourFace(0, -0.1)], ms: 500, after: 60 },
+    { stroke: [tourFace(0.034, 0.143), tourFace(0.134, 0.168), tourFace(0.235, 0.118)], ms: 500, after: 60 },
+    { slide: '#b-radius', to: 0.07, ms: 300, after: 40 },
+    { stroke: [tourFace(0.1, 0.06), tourFace(0.143, 0.076), tourFace(0.168, 0.042), tourFace(0.134, 0.025), tourFace(0.11, 0.05)], ms: 500, ctrl: true, after: 60 },
+    { stroke: [tourFace(0, -0.2), tourFace(0.07, -0.19), tourFace(0.13, -0.15)], ms: 450, ctrl: true, after: 60 },
+    { click: '[data-mode=object]', after: 60 },
+    { select: null },
+    { caption: 'Agents see the same blend in their renders', hint: 'render_view' },
+    { camera: { azimuth: 8, elevation: 9, distance: 5.0, target: [0.15, 0.55, 0] }, ms: 1100 },
+    { tab: 'agent' },
+    { click: '#render-btn', after: 900 },
+    { reveal: '#render-out', after: 1500 },
+    { cursor: false },
+    { spin: 7 },
+    { wait: 1800 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap }

@@ -177,7 +177,89 @@ impl Look<'_> {
         let dv = (self.height(u, v + step) - self.height(u, v - step)) / (2.0 * step);
         DVec3::new(-du * depth, -dv * depth, 1.0).normalize()
     }
+
+    /// sRGB albedo blended over the three projection planes at point `p`
+    /// (metres, object space as scaled) with normal `n`; `repeat` is tiles
+    /// per metre.
+    pub fn triplanar_color(&self, p: DVec3, n: DVec3, repeat: f64) -> [f64; 3] {
+        let mut out = [0.0; 3];
+        for plane in triplanar(p, n) {
+            if plane.weight > 0.0 {
+                let c = self.color(plane.uv[0] * repeat, plane.uv[1] * repeat);
+                for k in 0..3 {
+                    out[k] += c[k] * plane.weight;
+                }
+            }
+        }
+        out
+    }
+
+    /// How relief or a normal map tilts the normal `n` at `p`, blended over
+    /// the three planes: the returned offset (same space as `p` and `n`) is
+    /// added to `n` and renormalized.
+    pub fn triplanar_tilt(&self, p: DVec3, n: DVec3, repeat: f64, step: f64) -> DVec3 {
+        let mut out = DVec3::ZERO;
+        for plane in triplanar(p, n) {
+            if plane.weight > 0.0 {
+                let b = self.normal(plane.uv[0] * repeat, plane.uv[1] * repeat, step);
+                out += (plane.u * b.x + plane.v * b.y) * plane.weight;
+            }
+        }
+        out
+    }
 }
+
+/// One of the three planes of a triplanar blend.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Plane {
+    /// Share of this plane (the three sum to 1).
+    pub weight: f64,
+    /// Coordinates in metres, as `box_uv` reads that side.
+    pub uv: [f64; 2],
+    /// Directions in which u and v grow.
+    pub u: DVec3,
+    pub v: DVec3,
+}
+
+/// Triplanar projection: each axis plane projects the texture like the box
+/// side facing the normal, weighted by how squarely the surface faces it.
+/// Flat axis-aligned faces get exactly one plane (the box projection);
+/// curved surfaces blend smoothly where box projection would show seams.
+/// The viewport's shader uses the same weights.
+pub fn triplanar(p: DVec3, n: DVec3) -> [Plane; 3] {
+    let a = n.normalize_or(DVec3::Y).abs();
+    let w = (a - DVec3::splat(TRIPLANAR_SHARPNESS))
+        .max(DVec3::ZERO)
+        .powf(3.0);
+    let w = w / (w.x + w.y + w.z).max(1e-12);
+    let sx = if n.x >= 0.0 { DVec3::X } else { DVec3::NEG_X };
+    let sy = if n.y >= 0.0 { DVec3::Y } else { DVec3::NEG_Y };
+    let sz = if n.z >= 0.0 { DVec3::Z } else { DVec3::NEG_Z };
+    [
+        Plane {
+            weight: w.x,
+            uv: box_uv(p, sx),
+            u: DVec3::new(0.0, 0.0, -sx.x),
+            v: DVec3::Y,
+        },
+        Plane {
+            weight: w.y,
+            uv: box_uv(p, sy),
+            u: DVec3::X,
+            v: DVec3::new(0.0, 0.0, -sy.y),
+        },
+        Plane {
+            weight: w.z,
+            uv: box_uv(p, sz),
+            u: DVec3::new(sz.z, 0.0, 0.0),
+            v: DVec3::Y,
+        },
+    ]
+}
+
+/// Normal components below this do not take part in the blend, which keeps
+/// the transition band narrow (and flat faces exactly box-projected).
+const TRIPLANAR_SHARPNESS: f64 = 0.3;
 
 /// Which of the six box-projection sides a face normal falls on.
 pub fn side(n: DVec3) -> u8 {
@@ -481,6 +563,54 @@ mod tests {
         );
         let png = bake_png("#a0703f", &Texture::new(Pattern::Wood, "#6b4426", 0.5), 32);
         assert_eq!(&png[1..4], b"PNG");
+    }
+
+    #[test]
+    fn triplanar_matches_box_on_flat_faces_and_blends_on_curves() {
+        let p = DVec3::new(0.3, 0.2, -0.1);
+        for n in [
+            DVec3::X,
+            DVec3::NEG_X,
+            DVec3::Y,
+            DVec3::NEG_Y,
+            DVec3::Z,
+            DVec3::NEG_Z,
+        ] {
+            let planes = triplanar(p, n);
+            let only: Vec<_> = planes.iter().filter(|q| q.weight > 0.0).collect();
+            assert_eq!(only.len(), 1, "{n}");
+            assert_eq!((only[0].weight, only[0].uv), (1.0, box_uv(p, n)), "{n}");
+            // u and v run along the side as box_uv reads it.
+            let e = 1e-3;
+            let moved = box_uv(p + only[0].u * e, n);
+            assert!(
+                (moved[0] - only[0].uv[0] - e).abs() < 1e-12
+                    && (moved[1] - only[0].uv[1]).abs() < 1e-12
+            );
+            let moved = box_uv(p + only[0].v * e, n);
+            assert!((moved[1] - only[0].uv[1] - e).abs() < 1e-12);
+        }
+        // Halfway between +X and +Z both planes share the weight, and the
+        // weights change continuously as the normal turns (no seam).
+        let diagonal = triplanar(p, DVec3::new(1.0, 0.0, 1.0));
+        assert!(
+            (diagonal[0].weight - 0.5).abs() < 1e-12 && (diagonal[2].weight - 0.5).abs() < 1e-12
+        );
+        let mut last = 1.0;
+        for k in 0..=90 {
+            let a = (k as f64).to_radians();
+            let w = triplanar(p, DVec3::new(a.cos(), 0.0, a.sin()))[0].weight;
+            assert!(w <= last + 1e-12 && last - w < 0.1, "smooth at {k}°");
+            last = w;
+        }
+        let look = Look {
+            base: "#ffffff",
+            texture: &Texture::new(Pattern::Checker, "#000000", 1.0),
+            image: None,
+            normal_map: None,
+        };
+        let c = look.triplanar_color(p, DVec3::Z, 2.0);
+        assert_eq!(c, look.color(p.x * 2.0, p.y * 2.0));
     }
 
     #[test]

@@ -175,6 +175,7 @@ try {
   })
   await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.scale === 1.5))
   check(true, 'a pattern chip textures the object; the tile size slider rescales it')
+  check((await page.evaluate(() => window.__tatara.debug().triplanar)) === 1, 'projected textures blend in the triplanar shader')
   await page.$eval('#p-relief', (el) => {
     el.value = '0.6'
     el.dispatchEvent(new Event('change', { bubbles: true }))
@@ -190,6 +191,7 @@ try {
   )
   await page.waitForFunction(() => window.__tatara.debug().textured === 1)
   check(true, 'an uploaded image becomes a scene image and a fitted texture')
+  check((await page.evaluate(() => window.__tatara.debug().triplanar)) === 0, 'fitted images use UVs, not the triplanar blend')
   await page.click('[data-pattern=none]')
   await page.waitForFunction(() => window.__tatara.debug().textured === 0)
   await page.waitForTimeout(300)

@@ -105,6 +105,103 @@ function boxProjection(vertices, scale, fit) {
   }
 }
 
+/**
+ * Triplanar texturing, as in src/texture.rs `triplanar`: a box-projected
+ * texture blends three axis planes by the surface normal (in the object's
+ * space as scaled, so tiles stay in metres), which removes the seams box
+ * projection leaves on curved surfaces. Flat axis-aligned faces get exactly
+ * one plane, so boxes look as before. Enabled per material by `TRIPLANAR`.
+ */
+function installTriplanar(m) {
+  const tp = { tpScale: { value: new THREE.Vector3(1, 1, 1) }, tpRepeat: { value: 2 } }
+  m.userData.tp = tp
+  m.defines = m.defines || {}
+  m.customProgramCacheKey = () => 'tatara-triplanar'
+  m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, tp)
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+#ifdef TRIPLANAR
+uniform vec3 tpScale;
+varying vec3 vTpPos;
+varying vec3 vTpNormal;
+varying vec3 vTpX;
+varying vec3 vTpY;
+varying vec3 vTpZ;
+#endif`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+#ifdef TRIPLANAR
+vTpPos = transformed * tpScale;
+vTpNormal = objectNormal / tpScale;
+// The object's axes (as scaled) in view space: normalMatrix undoes the scale.
+vTpX = normalMatrix * vec3(tpScale.x, 0.0, 0.0);
+vTpY = normalMatrix * vec3(0.0, tpScale.y, 0.0);
+vTpZ = normalMatrix * vec3(0.0, 0.0, tpScale.z);
+#endif`,
+      )
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+#ifdef TRIPLANAR
+uniform float tpRepeat;
+varying vec3 vTpPos;
+varying vec3 vTpNormal;
+varying vec3 vTpX;
+varying vec3 vTpY;
+varying vec3 vTpZ;
+struct TpPlanes { vec3 w; vec3 s; vec2 x; vec2 y; vec2 z; };
+TpPlanes tpPlanes() {
+  vec3 n = normalize(vTpNormal);
+  vec3 a = max(abs(n) - 0.3, 0.0);
+  a = a * a * a;
+  TpPlanes t;
+  t.w = a / max(a.x + a.y + a.z, 1e-12);
+  t.s = vec3(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0, n.z >= 0.0 ? 1.0 : -1.0);
+  vec3 p = vTpPos;
+  t.x = vec2(-t.s.x * p.z, p.y) * tpRepeat;
+  t.y = vec2(p.x, -t.s.y * p.z) * tpRepeat;
+  t.z = vec2(t.s.z * p.x, p.y) * tpRepeat;
+  return t;
+}
+#endif`,
+      )
+      .replace(
+        '#include <map_fragment>',
+        `#if defined( TRIPLANAR ) && defined( USE_MAP )
+{
+  TpPlanes tq = tpPlanes();
+  diffuseColor *= tq.w.x * texture2D(map, tq.x) + tq.w.y * texture2D(map, tq.y) + tq.w.z * texture2D(map, tq.z);
+}
+#else
+#include <map_fragment>
+#endif`,
+      )
+      .replace(
+        '#include <normal_fragment_maps>',
+        `#if defined( TRIPLANAR ) && defined( USE_NORMALMAP_TANGENTSPACE )
+{
+  TpPlanes tq = tpPlanes();
+  vec3 nx = texture2D(normalMap, tq.x).xyz * 2.0 - 1.0;
+  vec3 ny = texture2D(normalMap, tq.y).xyz * 2.0 - 1.0;
+  vec3 nz = texture2D(normalMap, tq.z).xyz * 2.0 - 1.0;
+  vec3 d = tq.w.x * (vec3(0.0, 0.0, -tq.s.x) * nx.x + vec3(0.0, 1.0, 0.0) * nx.y)
+    + tq.w.y * (vec3(1.0, 0.0, 0.0) * ny.x + vec3(0.0, 0.0, -tq.s.y) * ny.y)
+    + tq.w.z * (vec3(tq.s.z, 0.0, 0.0) * nz.x + vec3(0.0, 1.0, 0.0) * nz.y);
+  normal = normalize(normal + vTpX * d.x + vTpY * d.y + vTpZ * d.z);
+}
+#else
+#include <normal_fragment_maps>
+#endif`,
+      )
+  }
+}
+
 /** What the displayed geometry of an object depends on. */
 function geometryKey(o, mesh) {
   const t = o.material?.texture
@@ -402,6 +499,7 @@ export class Viewport {
     const group = new THREE.Group()
     group.userData.id = o.id
     const material = new THREE.MeshPhysicalMaterial({ clearcoatRoughness: 0.18 })
+    installTriplanar(material)
     const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material)
     mesh.castShadow = true
     mesh.receiveShadow = true
@@ -631,6 +729,7 @@ export class Viewport {
     // A baked pattern already holds the colour; an image is tinted by it.
     m.userData.bakedColor = Boolean(colorUrl) && t.pattern !== 'image'
     m.userData.textureScale = t?.scale ?? 0.5
+    m.userData.textured = Boolean(colorUrl || normalUrl)
     this.setMap(m, 'map', colorUrl)
     this.setMap(m, 'normalMap', normalUrl)
     this.syncRepeat(m)
@@ -644,6 +743,14 @@ export class Viewport {
     const repeat = m.userData.tiled ? 1 : 1 / (m.userData.textureScale ?? 0.5)
     m.map?.repeat.setScalar(repeat)
     m.normalMap?.repeat.setScalar(repeat)
+    // Box-projected textures blend three planes in the shader instead.
+    m.userData.tp.tpRepeat.value = 1 / (m.userData.textureScale ?? 0.5)
+    const triplanar = Boolean(m.userData.textured) && !m.userData.tiled
+    if (triplanar !== ('TRIPLANAR' in m.defines)) {
+      if (triplanar) m.defines.TRIPLANAR = ''
+      else delete m.defines.TRIPLANAR
+      m.needsUpdate = true
+    }
   }
 
   setMap(m, slot, url) {
@@ -778,6 +885,7 @@ export class Viewport {
     const fit = Boolean(o.material?.texture?.fit)
     const { geometry } = buildGeometry(mesh.vertices, mesh.faces, o.smooth, mesh.uvs, { scale: o.transform.scale, fit })
     const m = node.mesh.material
+    m.userData.tp.tpScale.value.set(...o.transform.scale)
     // Own or fitted UVs are already in tiles; box projection is in metres.
     const tiled = hasUvs(mesh) || fit
     if (m.userData.tiled !== tiled) {
