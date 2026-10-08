@@ -592,13 +592,7 @@ fn traced_tile(
     size: usize,
     samples: u32,
 ) -> Vec<[u8; 3]> {
-    let camera = crate::pathtrace::Camera {
-        eye,
-        target,
-        fov: FOV_DEGREES,
-        width: size,
-        height: size,
-    };
+    let camera = crate::pathtrace::Camera::new(eye, target, FOV_DEGREES, size, size);
     let image = traced.develop(
         &traced.render(&camera, samples, 0),
         &traced.features(&camera),

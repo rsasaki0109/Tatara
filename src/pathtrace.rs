@@ -20,6 +20,8 @@ use crate::engine::{Editor, EngineError};
 use crate::render::{Prepared, hex, prepare};
 
 /// A viewport-like camera; `fov` is the vertical field of view in degrees.
+/// A lens of radius `aperture` (metres; 0 for a pinhole) blurs what is not
+/// `focus` metres away (0: the distance to `target`): depth of field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Camera {
     pub eye: DVec3,
@@ -27,6 +29,23 @@ pub struct Camera {
     pub fov: f64,
     pub width: usize,
     pub height: usize,
+    pub aperture: f64,
+    pub focus: f64,
+}
+
+impl Camera {
+    /// A pinhole camera.
+    pub fn new(eye: DVec3, target: DVec3, fov: f64, width: usize, height: usize) -> Self {
+        Self {
+            eye,
+            target,
+            fov,
+            width,
+            height,
+            aperture: 0.0,
+            focus: 0.0,
+        }
+    }
 }
 
 const MAX_BOUNCES: u32 = 8;
@@ -40,7 +59,7 @@ const FLOOR: f64 = 0.16;
 /// How dark the floor's shadows get (the viewport's shadow opacity).
 const SHADOW: f64 = 0.32;
 /// Brightest a single indirect sample may be (keeps fireflies down).
-const CLAMP: f64 = 8.0;
+const CLAMP: f64 = 4.0;
 
 /// A directional light with a small angular size (soft shadows).
 struct Light {
@@ -163,6 +182,12 @@ pub fn traced(ed: &Editor, frame: Option<f64>) -> Result<Arc<Traced>, EngineErro
     let t = Arc::new(Traced::new(prepare(ed, None, frame)?));
     *cache = Some((key.0, key.1, t.clone()));
     Ok(t)
+}
+
+/// The scene posed at `frame`, prepared afresh (for one-off renders that
+/// should not displace the preview's cached scene).
+pub fn traced_uncached(ed: &Editor, frame: Option<f64>) -> Result<Arc<Traced>, EngineError> {
+    Ok(Arc::new(Traced::new(prepare(ed, None, frame)?)))
 }
 
 struct Hit {
@@ -330,8 +355,8 @@ impl Traced {
                 ));
                 let jx = (x as f64 + rng.next()) / w as f64;
                 let jy = (y as f64 + rng.next()) / h as f64;
-                let d = frame.ray(jx, jy);
-                let (c, a) = self.path(camera.eye, d, &lights, &mut rng);
+                let (o, d) = frame.shoot(jx, jy, &mut rng);
+                let (c, a) = self.path(o, d, &lights, &mut rng);
                 acc[0] += c.x;
                 acc[1] += c.y;
                 acc[2] += c.z;
@@ -339,6 +364,32 @@ impl Traced {
             }
             acc.map(|v| (v / samples as f64) as f32)
         })
+    }
+
+    /// A camera position framing the whole scene from a named view: the
+    /// eye and the point it looks at.
+    pub fn frame_view(&self, view: &crate::render::View, fov: f64, aspect: f64) -> (DVec3, DVec3) {
+        let half = (fov.to_radians() / 2.0).tan() * aspect.min(1.0);
+        let distance = self.prep.radius * 1.12 / half.atan().sin();
+        let (az, el) = (
+            view.azimuth.to_radians(),
+            view.elevation.clamp(-89.5, 89.5).to_radians(),
+        );
+        let dir = DVec3::new(el.cos() * az.sin(), el.sin(), el.cos() * az.cos());
+        (self.prep.center + dir * distance, self.prep.center)
+    }
+
+    /// A finished still: `samples` per pixel, denoised and tone-mapped,
+    /// over the viewport's studio backdrop or transparent (straight sRGB
+    /// RGBA bytes).
+    pub fn still(&self, camera: &Camera, samples: u32, transparent: bool) -> Vec<u8> {
+        let image = self.render(camera, samples, 0);
+        let features = self.features(camera);
+        let mut out = bytes(&self.develop(&image, &features, camera, samples));
+        if !transparent {
+            backdrop(&mut out, camera.width, camera.height);
+        }
+        out
     }
 
     /// What the camera sees first through each pixel's centre, to guide
@@ -904,6 +955,9 @@ fn ggx_visible(v: DVec3, alpha: f64, u1: f64, u2: f64) -> DVec3 {
 
 /// The camera's ray directions, and how wide a pixel is at unit distance.
 struct Frame {
+    eye: DVec3,
+    aperture: f64,
+    focus: f64,
     forward: DVec3,
     right: DVec3,
     up: DVec3,
@@ -919,7 +973,15 @@ impl Frame {
         let up = right.cross(forward);
         let half_h = (c.fov.to_radians() / 2.0).tan();
         let aspect = c.width as f64 / c.height.max(1) as f64;
+        let focus = if c.focus > 0.0 {
+            c.focus
+        } else {
+            c.eye.distance(c.target)
+        };
         Self {
+            eye: c.eye,
+            aperture: c.aperture.max(0.0),
+            focus,
             forward,
             right,
             up,
@@ -927,6 +989,20 @@ impl Frame {
             half_w: half_h * aspect,
             pixel: 2.0 * half_h / c.height.max(1) as f64,
         }
+    }
+
+    /// A ray through (x, y) in 0..1 from the top left: from the eye, or
+    /// from a point on the lens towards where that ray is in focus.
+    fn shoot(&self, x: f64, y: f64, rng: &mut Rng) -> (DVec3, DVec3) {
+        let d = self.ray(x, y);
+        if self.aperture <= 0.0 {
+            return (self.eye, d);
+        }
+        let focal = self.eye + d * (self.focus / d.dot(self.forward).max(1e-6));
+        let r = self.aperture * rng.next().sqrt();
+        let phi = std::f64::consts::TAU * rng.next();
+        let o = self.eye + self.right * (r * phi.cos()) + self.up * (r * phi.sin());
+        (o, (focal - o).normalize())
     }
 
     /// The ray through (x, y) in 0..1 from the top left.
@@ -1192,10 +1268,10 @@ pub(crate) fn denoise(
         let next = rows(w, h, |x, y| {
             let i = y * w + x;
             let (fp, cp) = (&features[i], src[i]);
-            if fp.id == EMPTY_ID || (fp.sharp && pass > 1) {
+            if fp.id == EMPTY_ID || (fp.sharp && pass > 2) {
                 return cp;
             }
-            let sigma = if fp.sharp { sigma * 0.3 } else { sigma };
+            let sigma = if fp.sharp { sigma * 0.5 } else { sigma };
             let lp = luma(cp);
             let mut sum = [0f32; 4];
             let mut total = 0f32;
@@ -1328,6 +1404,73 @@ fn bytes(image: &[[f32; 4]]) -> Vec<u8> {
     out
 }
 
+/// Composite straight sRGB RGBA over the viewport's backdrop (its CSS
+/// radial gradient: #4a4c53, #303238 at 48%, #1b1c20; an ellipse 120% by
+/// 90% around 50%, 38%), leaving it opaque.
+fn backdrop(pixels: &mut [u8], w: usize, h: usize) {
+    let stops = [
+        (0.0, [0x4a, 0x4c, 0x53]),
+        (0.48, [0x30, 0x32, 0x38]),
+        (1.0, [0x1b, 0x1c, 0x20]),
+    ];
+    for y in 0..h {
+        for x in 0..w {
+            let dx = (x as f64 + 0.5 - 0.5 * w as f64) / (1.2 * w as f64);
+            let dy = (y as f64 + 0.5 - 0.38 * h as f64) / (0.9 * h as f64);
+            let d = (dx * dx + dy * dy).sqrt().min(1.0);
+            let k = stops.windows(2).position(|s| d <= s[1].0).unwrap_or(1);
+            let (a, b) = (stops[k], stops[k + 1]);
+            let t = (d - a.0) / (b.0 - a.0);
+            let i = (y * w + x) * 4;
+            let alpha = pixels[i + 3] as f64 / 255.0;
+            for c in 0..3 {
+                let bg = a.1[c] as f64 + (b.1[c] as f64 - a.1[c] as f64) * t;
+                pixels[i + c] = (pixels[i + c] as f64 * alpha + bg * (1.0 - alpha)).round() as u8;
+            }
+            pixels[i + 3] = 255;
+        }
+    }
+}
+
+/// Encode RGBA frames as a PNG, or an animated PNG (looping, at `fps`)
+/// when there are several.
+pub fn png(
+    frames: &[Vec<u8>],
+    w: usize,
+    h: usize,
+    transparent: bool,
+    fps: f64,
+) -> Result<Vec<u8>, EngineError> {
+    let fail = |e: png::EncodingError| EngineError::new(e.to_string());
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, w as u32, h as u32);
+        encoder.set_color(if transparent {
+            png::ColorType::Rgba
+        } else {
+            png::ColorType::Rgb
+        });
+        encoder.set_depth(png::BitDepth::Eight);
+        if frames.len() > 1 {
+            encoder.set_animated(frames.len() as u32, 0).map_err(fail)?;
+            encoder
+                .set_frame_delay(1000, (fps * 1000.0).round().clamp(1.0, 65535.0) as u16)
+                .map_err(fail)?;
+        }
+        let mut writer = encoder.write_header().map_err(fail)?;
+        for frame in frames {
+            if transparent {
+                writer.write_image_data(frame).map_err(fail)?;
+            } else {
+                let rgb: Vec<u8> = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+                writer.write_image_data(&rgb).map_err(fail)?;
+            }
+        }
+        writer.finish().map_err(fail)?;
+    }
+    Ok(out)
+}
+
 /// three.js's ACES filmic tone mapping (exposure 1).
 pub(crate) fn aces(c: DVec3) -> DVec3 {
     let c = c / 0.6;
@@ -1388,13 +1531,13 @@ mod tests {
     }
 
     fn camera(w: usize, h: usize) -> Camera {
-        Camera {
-            eye: DVec3::new(0.0, 1.6, 4.0),
-            target: DVec3::new(0.0, 0.5, 0.0),
-            fov: 36.0,
-            width: w,
-            height: h,
-        }
+        Camera::new(
+            DVec3::new(0.0, 1.6, 4.0),
+            DVec3::new(0.0, 0.5, 0.0),
+            36.0,
+            w,
+            h,
+        )
     }
 
     #[test]

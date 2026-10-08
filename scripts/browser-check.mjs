@@ -240,6 +240,18 @@ try {
   await page.click('#shading-btn')
   await page.waitForFunction(() => window.__tatara.debug().pathSamples === null)
 
+  // Final render: the Render panel path traces the view at its own size.
+  await page.click('#final-btn')
+  await page.waitForSelector('#final-render:not([hidden])')
+  await page.selectOption('#fr-size', '3')
+  await page.selectOption('#fr-samples', '32')
+  await page.check('#fr-dof')
+  await page.click('[data-fr=render]')
+  await page.waitForFunction(() => window.__tatara.debug().finalSamples >= 4, null, { timeout: 120000 })
+  check((await page.$eval('.fr-canvas', (c) => `${c.width}x${c.height}`)) === '960x540', 'the Render panel path traces the view at the chosen size')
+  await page.click('[data-fr=close]')
+  await page.waitForSelector('#final-render[hidden]', { state: 'attached' })
+
   // Rigging: a bone chain from the Rig card; a Turn slider poses a bone.
   await page.click('[data-rig-chain="2"]')
   await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].bones?.length === 2))

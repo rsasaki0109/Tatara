@@ -188,7 +188,7 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let init = call(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "tatara");
     let tools = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 9);
     let r = call(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "apply_commands", "arguments": {"commands": [{"op": "add", "primitive": {"kind": "torus"}}]}}})).await;
     assert_eq!(r["result"]["isError"], false, "{r}");
     let r = call(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "get_scene", "arguments": {}}})).await;
@@ -223,6 +223,14 @@ async fn mcp_bridge_edits_the_shared_scene() {
         ctx["objects"][0]["face_count"],
         ctx["objects"][1]["face_count"]
     );
+    // A final render goes to a file; a bad camera is reported, not written.
+    let png = dir.join("render.png");
+    let png = png.to_str().unwrap();
+    let r = call(json!({"jsonrpc": "2.0", "id": 30, "method": "tools/call", "params": {"name": "render_image", "arguments": {"path": png, "size": [48, 27], "samples": 2, "aperture": 0.05}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    assert!(std::fs::read(png).unwrap().starts_with(b"\x89PNG"));
+    let r = call(json!({"jsonrpc": "2.0", "id": 31, "method": "tools/call", "params": {"name": "render_image", "arguments": {"path": png, "eye": [0, 1, 4]}}})).await;
+    assert_eq!(r["result"]["isError"], true);
     std::fs::remove_dir_all(dir).ok();
 
     // Vision: the agent gets a PNG back.

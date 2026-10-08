@@ -1666,6 +1666,72 @@ input[type='range'] {
   display: none;
 }
 
+/* The Render panel: a finished image of the view. */
+.final-render {
+  position: absolute;
+  right: 10px;
+  top: 52px;
+  width: min(520px, calc(100% - 20px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  border-radius: 10px;
+  background: rgba(16, 17, 20, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+  z-index: 5;
+}
+
+.final-render[hidden] {
+  display: none;
+}
+
+.fr-bar,
+.fr-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.fr-row.end {
+  justify-content: flex-end;
+}
+
+.fr-bar b {
+  font-size: 12px;
+}
+
+.fr-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.fr-blur {
+  flex: 1;
+}
+
+.final-render input[type='checkbox'] {
+  width: auto;
+  flex: none;
+  margin: 0;
+}
+
+.final-render .fr-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: repeating-conic-gradient(#2a2b30 0 25%, #222327 0 50%) 0 0 / 16px 16px;
+}
+
 .uv-bar,
 .uv-row {
   display: flex;

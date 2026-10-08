@@ -408,11 +408,14 @@ export class DemoRunner {
     if (s.after) await this.sleep(s.after)
   }
 
-  /** Wait until the rendered preview holds `samples` samples per pixel. */
+  /**
+   * Wait until the rendered preview (or with `final`, the Render panel)
+   * holds `samples` samples per pixel.
+   */
   async samples(s) {
-    const preview = this.app.preview
-    for (let i = 0; i < 2000 && preview.samples < s.samples; i++) await this.sleep(66)
-    if (preview.samples < s.samples) throw new Error(`demo: the preview stopped at ${preview.samples} samples`)
+    const preview = s.final ? this.app.finalRender : this.app.preview
+    for (let i = 0; i < 4000 && preview.samples < s.samples; i++) await this.sleep(66)
+    if (preview.samples < s.samples) throw new Error(`demo: the render stopped at ${preview.samples} samples`)
     if (s.after) await this.sleep(s.after)
   }
 
@@ -544,6 +547,7 @@ export class DemoRunner {
         } catch {}
         summary = `<span class="t-err">✗ ${escapeHtml(message.split('\n')[0])}</span>`
       }
+      else if (call.tool === 'render_image') summary = `<span class="t-ok">✓</span> wrote ${escapeHtml(call.arguments.path)}`
       else if (result.image) {
         summary = `<span class="t-ok">✓</span> image · ${escapeHtml((call.arguments?.views ?? ['iso']).join(', '))}`
       }
@@ -573,7 +577,7 @@ export class DemoRunner {
         line.querySelector('img').src = result.image
         await this.clock.track(line.querySelector('img').decode().catch(() => {}))
       }
-      if (!['get_scene', 'render_view', 'inspect_scene'].includes(call.tool) && !result.isError) {
+      if (!['get_scene', 'render_view', 'render_image', 'inspect_scene'].includes(call.tool) && !result.isError) {
         await app.refresh(true)
         app.log('MCP', call.tool === 'apply_commands' ? app.summarize(call.arguments.commands) : call.tool)
       }
@@ -602,6 +606,15 @@ export class DemoRunner {
           }),
         )
         return { text: '', image, isError: false }
+      }
+      else if (tool === 'render_image') {
+        const [w, h] = args.size ?? [1280, 720]
+        const q = new URLSearchParams({ w: String(w), h: String(h), samples: String(args.samples ?? 128), view: args.view ?? 'iso' })
+        for (const k of ['aperture', 'focus', 'frame']) if (args[k] !== undefined) q.set(k, String(args[k]))
+        const res = await this.clock.track(fetch(`/api/render/image?${q}`))
+        if (!res.ok) throw new Error(await res.text())
+        const bytes = (await this.clock.track(res.arrayBuffer())).byteLength
+        return { text: `wrote a ${w}x${h} render (${bytes} bytes) to ${args.path}`, isError: false }
       }
       else data = await api[tool]()
       return { text: JSON.stringify(data), isError: false }

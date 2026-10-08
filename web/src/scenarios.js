@@ -1063,4 +1063,39 @@ export const ik = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik }
+// Final renders: the Render panel path traces the view at full size with
+// depth of field focused on the selection; agents render files the same way.
+export const final = {
+  title: 'Final render',
+  width: 800,
+  gizmo: false,
+  external: true,
+  setup: render.setup,
+  camera: { azimuth: 28, elevation: 10, distance: 3.2, target: [0.02, 0.55, 0.15] },
+  steps: [
+    { wait: 300 },
+    { caption: 'Render the view: path traced at full size', hint: 'F12 · Render panel' },
+    { pick: 'Orb', after: 150 },
+    { click: '#final-btn', after: 300 },
+    { choose: '#fr-size', value: '960×540', after: 150 },
+    { choose: '#fr-samples', value: '32', after: 150 },
+    { click: '[data-fr=render]', after: 100 },
+    { samples: 32, final: true, after: 900 },
+    { caption: 'Depth of field focuses on the selection', hint: 'thin lens · aperture · focus' },
+    { click: '#fr-dof', after: 150 },
+    { slide: '#fr-blur', to: 0.2, ms: 600, after: 150 },
+    { click: '[data-fr=render]', after: 100 },
+    { samples: 32, final: true, after: 1400 },
+    { caption: 'Save a PNG, or the timeline as an animated PNG', hint: 'Save PNG · Animation' },
+    { cursor: false },
+    { caption: 'Agents render files too', hint: 'render_image · PNG / APNG' },
+    {
+      mcp: [
+        { tool: 'render_image', arguments: { path: 'target/final.png', view: 'front', size: [640, 360], samples: 32, aperture: 0.1 }, after: 900 },
+      ],
+    },
+    { wait: 1500 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final }

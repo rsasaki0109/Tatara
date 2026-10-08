@@ -86,6 +86,29 @@ pub fn tools() -> Value {
             }
         },
         {
+            "name": "render_image",
+            "description": "Render a finished, path-traced image of the shared scene to a local PNG: realistic light, glass, reflections, soft shadows and glow, denoised, over the studio backdrop or transparent. Frame it with a `view` (like render_view; default iso) or an explicit `eye` and `target`; give the lens an `aperture` (radius in metres, e.g. 0.05) for depth of field, focused at `focus` metres (default: the target's distance). With `frames` [start, end] it writes an animated PNG of that range. Slow at high sizes and samples.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Destination path ending in .png" },
+                    "view": { "type": "string", "description": "front, back, left, right, top, bottom, iso or \"azimuth:elevation\"; ignored with eye/target" },
+                    "eye": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Camera position (world, metres)" },
+                    "target": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Point the camera looks at" },
+                    "size": { "type": "array", "items": { "type": "integer", "minimum": 8, "maximum": 4096 }, "minItems": 2, "maxItems": 2, "description": "[width, height] in pixels, default [1280, 720]" },
+                    "fov": { "type": "number", "minimum": 1, "maximum": 170, "description": "Vertical field of view in degrees (default 36)" },
+                    "samples": { "type": "integer", "minimum": 1, "maximum": 4096, "description": "Samples per pixel (default 128)" },
+                    "aperture": { "type": "number", "minimum": 0, "maximum": 1, "description": "Lens radius in metres for depth of field (0: everything sharp)" },
+                    "focus": { "type": "number", "minimum": 0, "description": "Focus distance in metres (default: distance to target)" },
+                    "frame": { "type": "number", "description": "Pose animation at this frame" },
+                    "frames": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[start, end]: an animated PNG of that range (at most 240 frames)" },
+                    "background": { "type": "string", "enum": ["studio", "transparent"], "description": "Default studio" }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "render_view",
             "description": "Look at the shared scene: returns a PNG rendered from one or more labelled camera views (tiled two per row), with shadows, outlines, see-through glass, glowing emissive surfaces and a 1 m ground grid; pass `samples` to path trace it instead. Use it after editing to check proportions, placement and intersections.",
             "inputSchema": {
@@ -203,6 +226,9 @@ async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) 
     if name == "render_view" {
         return render_tool(http, base, &args).await;
     }
+    if name == "render_image" {
+        return image_tool(http, base, &args).await;
+    }
     if name == "import_gltf" || name == "export_gltf" {
         return file_tool(http, base, name, &args).await;
     }
@@ -237,6 +263,91 @@ async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) 
             ),
             true,
         ),
+    }
+}
+
+/// `render_image`: ask the editor for a final render and write it to disk.
+async fn image_tool(http: &reqwest::Client, base: &str, args: &Value) -> Value {
+    let Some(path) = args["path"].as_str().filter(|p| !p.is_empty()) else {
+        return tool_result("path is required".into(), true);
+    };
+    if !has_extension(path, &["png"]) {
+        return tool_result("path must end in .png".into(), true);
+    }
+    let triple = |v: &Value| -> Option<String> {
+        let a = v.as_array()?;
+        let n: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+        (n.len() == 3).then(|| format!("{},{},{}", n[0], n[1], n[2]))
+    };
+    let size = args["size"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_u64).collect::<Vec<_>>());
+    let (w, h) = match size.as_deref() {
+        Some([w, h]) => (*w, *h),
+        None => (1280, 720),
+        _ => return tool_result("size must be [width, height]".into(), true),
+    };
+    let mut query = vec![
+        ("w", w.to_string()),
+        ("h", h.to_string()),
+        (
+            "samples",
+            args["samples"].as_u64().unwrap_or(128).to_string(),
+        ),
+    ];
+    match (triple(&args["eye"]), triple(&args["target"])) {
+        (Some(eye), Some(target)) => {
+            query.push(("eye", eye));
+            query.push(("target", target));
+        }
+        (None, None) => {
+            query.push(("view", args["view"].as_str().unwrap_or("iso").to_string()));
+        }
+        _ => return tool_result("give both eye and target, or neither".into(), true),
+    }
+    for key in ["fov", "aperture", "focus", "frame"] {
+        if let Some(v) = args[key].as_f64() {
+            query.push((key, v.to_string()));
+        }
+    }
+    if let Some([a, b]) = args["frames"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_f64).collect::<Vec<_>>())
+        .as_deref()
+    {
+        query.push(("frames", format!("{a}-{b}")));
+    }
+    if let Some(b) = args["background"].as_str() {
+        query.push(("background", b.to_string()));
+    }
+    let resp = match http
+        .get(format!("{base}/api/render/image"))
+        .query(&query)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return tool_result(
+                format!("Tatara editor is not reachable at {base} ({e})."),
+                true,
+            );
+        }
+    };
+    let ok = resp.status().is_success();
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => return tool_result(format!("render failed: {e}"), true),
+    };
+    if !ok {
+        return tool_result(String::from_utf8_lossy(&bytes).into_owned(), true);
+    }
+    match tokio::fs::write(path, &bytes).await {
+        Ok(()) => tool_result(
+            format!("wrote a {w}x{h} render ({} bytes) to {path}", bytes.len()),
+            false,
+        ),
+        Err(e) => tool_result(format!("cannot write {path}: {e}"), true),
     }
 }
 

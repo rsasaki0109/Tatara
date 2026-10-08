@@ -146,11 +146,15 @@ async fn core(
     let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
     // Renders gather the scene under the lock, then run on a worker thread
     // without it, so edits and other requests are not held up.
-    if method == axum::http::Method::GET && matches!(uri.path(), "/pathtrace" | "/render") {
+    if method == axum::http::Method::GET
+        && matches!(uri.path(), "/pathtrace" | "/render" | "/render/image")
+    {
         let query = uri.query().unwrap_or("");
         let job: Result<Box<dyn FnOnce() -> crate::api::Response + Send>, _> = {
             let ed = s.editor.lock().await;
-            if uri.path() == "/render" {
+            if uri.path() == "/render/image" {
+                crate::api::image_job(&ed, query).map(|j| Box::new(move || j.run()) as Box<_>)
+            } else if uri.path() == "/render" {
                 crate::api::render_job(&ed, query)
                     .map(|j| Box::new(move || crate::api::render_png(j)) as Box<_>)
             } else {
