@@ -16,6 +16,8 @@ use crate::anim::{self, Property};
 use crate::engine::{EngineError, Mesh, Object};
 
 pub const MAX_BONES: usize = 64;
+/// The most one bone turns in one `reach` iteration (radians).
+pub const REACH_STEP: f64 = 0.08;
 /// Influences per vertex.
 pub const INFLUENCES: usize = 4;
 
@@ -241,6 +243,76 @@ pub fn skin(mesh: &Mesh, bones: &[Bone], rotations: &[[f64; 3]]) -> Mesh {
     out
 }
 
+/// Inverse kinematics: turn bone `end` and up to `chain - 1` of its
+/// ancestors (fewer at the root) so the tip of `end` reaches `target`
+/// (object space), by cyclic coordinate descent: from the tip bone up,
+/// each bone turns a little (at most `REACH_STEP`) to point the tip at the
+/// target, repeated until it arrives. Small steps spread the bend along the
+/// chain instead of curling the last bones. Returns the new rotations;
+/// bones outside the chain keep theirs.
+pub fn reach(
+    bones: &[Bone],
+    rotations: &[[f64; 3]],
+    end: usize,
+    chain: usize,
+    target: DVec3,
+) -> Vec<[f64; 3]> {
+    let mut rot = rotations.to_vec();
+    let mut joints = vec![end];
+    while joints.len() < chain.max(1) {
+        let last = &bones[*joints.last().expect("not empty")];
+        match last
+            .parent
+            .as_ref()
+            .and_then(|p| bones.iter().position(|b| &b.name == p))
+        {
+            Some(k) => joints.push(k),
+            None => break,
+        }
+    }
+    let tail = DVec3::from(bones[end].tail);
+    let parent_of = |k: usize| {
+        bones[k]
+            .parent
+            .as_ref()
+            .and_then(|p| bones.iter().position(|b| &b.name == p))
+    };
+    for _ in 0..400 {
+        let m = matrices(bones, &rot);
+        if m[end].transform_point3(tail).distance(target) < 1e-5 {
+            break;
+        }
+        for &j in &joints {
+            let m = matrices(bones, &rot);
+            let tip = m[end].transform_point3(tail);
+            let pivot = m[j].transform_point3(DVec3::from(bones[j].head));
+            let (a, b) = (tip - pivot, target - pivot);
+            if a.length() < 1e-9 || b.length() < 1e-9 {
+                continue;
+            }
+            let mut turn = DQuat::from_rotation_arc(a.normalize(), b.normalize());
+            let angle = turn.angle_between(DQuat::IDENTITY);
+            if angle > REACH_STEP {
+                turn = DQuat::IDENTITY.slerp(turn, REACH_STEP / angle);
+            }
+            // The bone's frame in object space is its parents' turn times its own.
+            let parent =
+                parent_of(j).map_or(DQuat::IDENTITY, |k| DQuat::from_mat4(&m[k]).normalize());
+            let [x, y, z] = rot[j];
+            let own = DQuat::from_euler(EulerRot::XYZ, x, y, z);
+            let next = (parent.inverse() * turn * parent * own).normalize();
+            let (x, y, z) = next.to_euler(EulerRot::XYZ);
+            rot[j] = [x, y, z];
+        }
+    }
+    rot
+}
+
+/// Where the tip of bone `k` is with the bones at `rotations` (object space).
+pub fn tip(bones: &[Bone], rotations: &[[f64; 3]], k: usize) -> DVec3 {
+    matrices(bones, rotations)[k].transform_point3(DVec3::from(bones[k].tail))
+}
+
 /// Whether any bone is turned (otherwise skinning changes nothing).
 pub fn posed(rotations: &[[f64; 3]]) -> bool {
     rotations.iter().flatten().any(|v| v.abs() > 1e-12)
@@ -339,5 +411,28 @@ mod tests {
             mesh.vertices[mesh.vertices.len() - 1]
         );
         assert!(!posed(&[[0.0; 3]]) && posed(&[[0.0, 0.1, 0.0]]));
+    }
+
+    #[test]
+    fn reaching_bends_the_chain_until_the_tip_arrives() {
+        let bones = chain(&column(), 4, None).unwrap();
+        let rest = vec![[0.0; 3]; 4];
+        // A point the 2-unit chain can reach, off to the side and lower.
+        let target = DVec3::new(0.9, 1.2, 0.4);
+        let solved = reach(&bones, &rest, 3, 4, target);
+        assert!(tip(&bones, &solved, 3).distance(target) < 1e-3);
+        // The base of the first bone does not move; a short chain only
+        // turns the bones it is given.
+        let short = reach(&bones, &rest, 3, 2, DVec3::new(0.3, 1.8, 0.0));
+        assert_eq!(&short[..2], &rest[..2]);
+        assert_ne!(short[2], rest[2]);
+        // Out of reach: the chain points straight at the target.
+        let far = DVec3::new(10.0, 0.0, 0.0);
+        let stretched = reach(&bones, &rest, 3, 4, far);
+        let t = tip(&bones, &stretched, 3);
+        assert!(
+            (t - DVec3::ZERO).normalize().dot(far.normalize()) > 0.999,
+            "{t}"
+        );
     }
 }

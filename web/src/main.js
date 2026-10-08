@@ -141,6 +141,12 @@ const viewport = new Viewport($('viewport'), clock, animator, {
   },
   onTransform: (id, tf) => run(editCommands(id, tf), 'Gizmo').catch(() => {}),
   onSculpt: (id, stroke) => run([{ op: 'sculpt', id, ...stroke }], 'Sculpt').catch(() => viewport.revertSculpt(id)),
+  // Animated bones get a key at this frame; static ones are posed.
+  onReach: (id, bone, target) => {
+    const o = objectById(id)
+    const animated = (o?.tracks || []).some((t) => t.property === 'bone')
+    run([{ op: 'reach', id, bone, target, ...(animated ? { frame: Math.round(app.frame) } : {}) }], 'Gizmo').catch(() => {})
+  },
   onMoveVertices: (id, vertices, offset) =>
     run([{ op: 'move_vertices', id, vertices, offset: offset.map((v) => Math.round(v * 1e6) / 1e6) }], 'Gizmo').catch(() => {}),
 })
@@ -232,6 +238,8 @@ function syncEdit() {
   viewport.setSelection(app.selected, app.face)
   const rigged = objectById(app.selected)
   viewport.setBone(rigged?.bones?.length ? currentBone(rigged).name : null)
+  if (!rigged?.bones?.length) app.ik = false
+  viewport.setIk(app.ik ? { id: rigged.id, bone: currentBone(rigged).name } : null)
   render()
 }
 
@@ -775,7 +783,7 @@ let renderedKey = ''
 function renderProperties(o) {
   const el = $('properties')
   const key = o
-    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
+    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, app.ik, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
     : 'none'
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -1004,7 +1012,8 @@ function rigCard(o) {
     ${['X', 'Y', 'Z']
       .map((a, i) => `<label class="slider"><span>Turn ${a}${keyed}</span><input type="range" min="-180" max="180" step="1" id="p-bone-${i}" value="${deg(r[i])}"><b>${deg(r[i])}°</b></label>`)
       .join('')}
-    <div class="row"><button class="small-btn" data-rig="key" title="Key every bone at this frame">◆ Key pose</button><button class="small-btn" data-rig="reset">Reset pose</button><button class="small-btn" data-rig="remove">Remove rig</button></div>
+    <div class="row"><button class="small-btn ${app.ik ? 'on' : ''}" data-rig="ik" title="Drag a handle at the bone's tip; the chain bends to follow (inverse kinematics)">Reach (IK)</button><button class="small-btn" data-rig="key" title="Key every bone at this frame">◆ Key pose</button></div>
+    <div class="row"><button class="small-btn" data-rig="reset">Reset pose</button><button class="small-btn" data-rig="remove">Remove rig</button></div>
   </div>`
 }
 
@@ -1112,10 +1121,14 @@ $('properties').addEventListener('click', (e) => {
   const boneChip = e.target.closest('[data-bone]')
   if (boneChip) {
     app.bone = boneChip.dataset.bone
-    return render()
+    return syncEdit()
   }
   const rigAction = e.target.closest('[data-rig]')?.dataset.rig
   if (rigAction && rigObject?.bones?.length) {
+    if (rigAction === 'ik') {
+      app.ik = !app.ik
+      return syncEdit()
+    }
     if (rigAction === 'key') return keyBones(rigObject).catch(() => {})
     if (rigAction === 'reset') return run(rigObject.bones.flatMap((b) => poseCommands(rigObject, b.name, [0, 0, 0]))).catch(() => {})
     if (rigAction === 'remove') return run([{ op: 'rig', id: rigObject.id, bones: [] }]).catch(() => {})
@@ -1556,6 +1569,7 @@ window.__tatara = {
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
     pathSamples: preview.active ? preview.samples : null,
     bonesShown: [...viewport.nodes.values()].filter((n) => n.bones.visible).length,
+    reachHandle: viewport.ikHandle.visible,
     triplanar: [...viewport.nodes.values()].filter((n) => 'TRIPLANAR' in n.mesh.material.defines).length,
     roughnessMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.roughnessMap?.image).length,
   }),

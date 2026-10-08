@@ -794,6 +794,19 @@ pub enum Command {
         bone: String,
         rotation: [f64; 3],
     },
+    /// Inverse kinematics: bend `bone` and its parents (at most `chain`
+    /// bones, default all) so the bone's tip reaches `target`, a world
+    /// point. With `frame`, the turned bones are keyed at that frame (the
+    /// object posed there); without, they are posed.
+    Reach {
+        id: ObjRef,
+        bone: String,
+        target: [f64; 3],
+        #[serde(default)]
+        chain: Option<u32>,
+        #[serde(default)]
+        frame: Option<f64>,
+    },
     /// Remove an object's animation (one property, or all of it).
     ClearAnimation {
         id: ObjRef,
@@ -1682,6 +1695,63 @@ fn apply_command(
                 .find(|b| &b.name == bone)
                 .ok_or_else(|| EngineError::new(format!("{name} has no bone {bone:?}")))?;
             b.rotation = *rotation;
+        }
+        Command::Reach {
+            id,
+            bone,
+            target,
+            chain,
+            frame,
+        } => {
+            let i = resolve(scene, id)?;
+            let o = &mut scene.objects[i];
+            let end = o
+                .bones
+                .iter()
+                .position(|b| &b.name == bone)
+                .ok_or_else(|| EngineError::new(format!("{} has no bone {bone:?}", o.name)))?;
+            if target.iter().any(|v| !v.is_finite() || v.abs() > 1e6) {
+                return err("target needs finite numbers");
+            }
+            if *chain == Some(0) {
+                return err("chain needs at least one bone");
+            }
+            let frame = frame.map(anim::check_frame).transpose()?;
+            let transform = match frame {
+                Some(f) => anim::pose(o, f).0,
+                None => o.transform.clone(),
+            };
+            let local = transform
+                .matrix()
+                .inverse()
+                .transform_point3(DVec3::from(*target));
+            let start = rig::rotations(o, frame);
+            let solved = rig::reach(
+                &o.bones,
+                &start,
+                end,
+                chain.map_or(rig::MAX_BONES, |c| c as usize),
+                local,
+            );
+            for (k, r) in solved.iter().enumerate() {
+                if *r == start[k] {
+                    continue;
+                }
+                match frame {
+                    Some(f) => {
+                        let name = o.bones[k].name.clone();
+                        anim::set_key(
+                            o,
+                            Property::Bone,
+                            Some(&name),
+                            f,
+                            r.to_vec(),
+                            Interpolation::Ease,
+                        )?;
+                    }
+                    None => o.bones[k].rotation = *r,
+                }
+            }
         }
         Command::ClearAnimation { id, property } => {
             let i = resolve(scene, id)?;
@@ -3254,6 +3324,48 @@ mod tests {
         assert!(o(&ed).bones.is_empty() && o(&ed).tracks.is_empty());
         ed.undo().unwrap();
         assert_eq!(o(&ed).bones.len(), 3);
+    }
+
+    #[test]
+    fn reach_bends_bones_toward_a_world_point() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "name": "Arm", "primitive": {"kind": "cylinder", "radius": 0.1, "height": 2, "rings": 8}, "translation": [1, 1, 0]},
+            {"op": "rig", "id": "Arm", "chain": 3}
+        ]})))
+        .unwrap();
+        let run = |ed: &mut Editor, cmd: serde_json::Value| {
+            ed.apply(&batch(serde_json::json!({ "commands": [cmd] })))
+        };
+        let tip_world = |ed: &Editor, frame: Option<f64>| {
+            let o = &ed.scene().objects[0];
+            let r = rig::rotations(o, frame);
+            o.transform
+                .matrix()
+                .transform_point3(rig::tip(&o.bones, &r, 2))
+        };
+        // The arm stands at x = 1 from y = 0 to 2; reach for a point beside it.
+        let target = DVec3::new(2.2, 1.0, 0.3);
+        run(&mut ed, serde_json::json!({"op": "reach", "id": "Arm", "bone": "Bone 3", "target": target.to_array()})).unwrap();
+        assert!(tip_world(&ed, None).distance(target) < 1e-3);
+        assert!(
+            ed.scene().objects[0].tracks.is_empty(),
+            "without a frame it poses"
+        );
+
+        // With a frame it keys the turned bones there.
+        let other = DVec3::new(0.2, 1.4, -0.5);
+        run(&mut ed, serde_json::json!({"op": "reach", "id": "Arm", "bone": "Bone 3", "target": other.to_array(), "frame": 30})).unwrap();
+        assert_eq!(ed.scene().objects[0].tracks.len(), 3);
+        assert!(tip_world(&ed, Some(30.0)).distance(other) < 1e-3);
+        // A one-bone chain only turns the tip bone.
+        run(&mut ed, serde_json::json!({"op": "reach", "id": "Arm", "bone": "Bone 1", "target": [3, 0, 0], "chain": 1})).unwrap();
+        for bad in [
+            serde_json::json!({"op": "reach", "id": "Arm", "bone": "Nope", "target": [0, 0, 0]}),
+            serde_json::json!({"op": "reach", "id": "Arm", "bone": "Bone 1", "target": [0, 0, 0], "chain": 0}),
+        ] {
+            assert!(run(&mut ed, bad.clone()).is_err(), "{bad}");
+        }
     }
 
     #[test]
