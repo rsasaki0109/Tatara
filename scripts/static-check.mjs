@@ -79,9 +79,10 @@ try {
   await page.click('.tabs [data-tab=properties]')
 
   await page.click('#demo-btn')
-  await page.waitForFunction(() => document.querySelectorAll('#outliner li').length === 6, null, { timeout: 60000 })
-  await page.waitForFunction(() => !document.querySelector('#demo-btn').disabled, null, { timeout: 60000 })
-  check(true, 'the vessel study demo plays')
+  // The tour ends with a plinth, the sculpted head and the agent's three objects.
+  await page.waitForFunction(() => document.querySelectorAll('#outliner li').length === 5, null, { timeout: 90000 })
+  await page.waitForFunction(() => !document.querySelector('#demo-btn').disabled, null, { timeout: 90000 })
+  check(true, 'the tour plays')
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

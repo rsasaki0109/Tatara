@@ -1,63 +1,80 @@
-// Deterministic tool workflows used by "Build a vessel study" and by
+// Deterministic tool workflows used by "Play the tour" and by
 // `node scripts/record-demo.mjs`, which turns each one into a README GIF.
 
-const BOARD = {
-  op: 'add',
-  name: 'Board',
-  primitive: { kind: 'cube' },
-  translation: [0, 0.03, 0],
-  scale: [3.0, 0.06, 1.3],
-  color: '#6b5443',
-  roughness: 0.82,
-}
-const Y = 0.06
-
 const VASE = [[0.12, 0], [0.2, 0.06], [0.27, 0.28], [0.24, 0.5], [0.12, 0.72], [0.085, 0.82], [0.115, 0.9]]
-const BOWL = [[0.1, 0], [0.13, 0.025], [0.29, 0.13], [0.37, 0.23]]
 const BOTTLE = [[0.1, 0], [0.17, 0.05], [0.19, 0.25], [0.15, 0.36], [0.055, 0.48], [0.045, 0.62], [0.062, 0.67]]
 const CUP = [[0.065, 0], [0.085, 0.02], [0.1, 0.13], [0.108, 0.16]]
+// Keyed neon colour cycle: pink, cyan, amber, back to pink.
+const NEON = ['#ff4fd8', '#30e0ff', '#ffb02e', '#ff4fd8']
 
+// The README's top GIF and the "Play the tour" button: sculpt, shade, let an
+// agent build around it over MCP, then animate — about 25 seconds.
+const TOUR_HEAD = { c: [0, 0.5, 0], r: 0.42 }
+const tourFace = (x, y, out = 0) => {
+  const { c, r } = TOUR_HEAD
+  return [c[0] + x, c[1] + y, c[2] + Math.sqrt(Math.max(0, r * r - x * x - y * y)) + out]
+}
 export const hero = {
-  title: 'Build a vessel study',
+  title: 'Take the tour',
   width: 960,
   gizmo: false,
-  setup: [BOARD],
-  camera: { azimuth: 18, elevation: 16, distance: 3.3, target: [-0.55, 0.38, 0] },
+  external: true,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 1.9, height: 0.08, segments: 96 }, translation: [0, 0.04, 0], color: '#26272b', roughness: 0.85 },
+    { op: 'add', name: 'Head', primitive: { kind: 'quadsphere', radius: TOUR_HEAD.r, level: 5 }, translation: TOUR_HEAD.c, preset: 'clay', color: '#c98b62' },
+  ],
+  camera: { azimuth: 20, elevation: 6, distance: 2.6, target: [0, 0.52, 0] },
   steps: [
-    { spin: 4 },
-    { wait: 300 },
-    { caption: 'Revolve a cross section into a hollow vessel', hint: 'add · vessel' },
+    { wait: 150 },
+    { caption: 'Sculpt a clay ball into a character', hint: 'sculpt mode · mirror X' },
+    { pick: 'Head', after: 60 },
+    { click: '[data-mode=sculpt]', after: 80 },
+    { slide: '#b-strength', to: 0.9, ms: 300, after: 40 },
+    { stroke: [tourFace(0, 0.06), tourFace(0, -0.05), tourFace(0, -0.1)], ms: 500, after: 60 },
+    { stroke: [tourFace(0.034, 0.143), tourFace(0.134, 0.168), tourFace(0.235, 0.118)], ms: 500, after: 60 },
+    { slide: '#b-radius', to: 0.07, ms: 300, after: 40 },
+    { stroke: [tourFace(0.1, 0.06), tourFace(0.143, 0.076), tourFace(0.168, 0.042), tourFace(0.134, 0.025), tourFace(0.11, 0.05)], ms: 500, ctrl: true, after: 60 },
+    { stroke: [tourFace(0, -0.2), tourFace(0.07, -0.19), tourFace(0.13, -0.15)], ms: 450, ctrl: true, after: 60 },
+    { click: '[data-brush=grab]', after: 40 },
+    { slide: '#b-radius', to: 0.14, ms: 300, after: 40 },
+    { camera: { azimuth: 46, elevation: 8 }, ms: 600 },
+    { stroke: [tourFace(0.395, 0.017, -0.143), tourFace(0.54, 0.12, -0.143)], ms: 500, after: 80 },
+    { click: '[data-mode=object]', after: 60 },
+    { caption: 'Glass, metal or light in one click', hint: 'material presets' },
+    { click: '[data-preset=gold]', after: 500 },
+    { caption: 'Your agent builds in the same scene over MCP', hint: 'tatara --mcp' },
+    { select: null },
+    { camera: { azimuth: 10, elevation: 9, distance: 5.6, target: [0, 0.8, -0.25] }, ms: 1300, async: true },
     {
-      run: [{ op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 72 }, translation: [-1.0, Y, -0.12] }],
-      select: 'created',
-      after: 500,
-    },
-    { caption: 'Glaze it', hint: 'material · celadon' },
-    { click: '[data-glaze^="#8fb9a0"]', after: 500 },
-    { caption: 'Build out the collection', hint: 'add · duplicate' },
-    { camera: { target: [0, 0.35, 0], distance: 4.9, elevation: 19 }, ms: 1500, async: true },
-    {
-      run: [
-        { op: 'add', name: 'Bowl', primitive: { kind: 'vessel', profile: BOWL, thickness: 0.018, segments: 72 }, translation: [0.12, Y, 0.12], color: '#3a2a22', roughness: 0.18 },
-        { op: 'add', name: 'Bottle', primitive: { kind: 'vessel', profile: BOTTLE, thickness: 0.018, segments: 72 }, translation: [1.02, Y, -0.22], color: '#2f4f8f', roughness: 0.2 },
+      mcp: [
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 72 }, translation: [-1.15, 0.08, 0.15], scale: [1.3, 1.3, 1.3], preset: 'glass' },
+              { op: 'add', name: 'Orb', primitive: { kind: 'sphere', radius: 0.28, segments: 48, rings: 24 }, translation: [1.1, 0.36, 0.2], preset: 'chrome' },
+              { op: 'add', name: 'Ring', primitive: { kind: 'torus', major_radius: 1.25, minor_radius: 0.045, major_segments: 96, minor_segments: 16 }, translation: [0, 1.2, -0.95], rotation: [Math.PI / 2, 0, 0], preset: 'neon' },
+            ],
+          },
+          after: 500,
+        },
+        { tool: 'render_view', arguments: { views: ['front', 'iso'], size: 256 }, after: 1000 },
       ],
-      after: 450,
     },
+    { terminal: false },
+    { caption: 'Key the glow and play it back', hint: 'keyframes · timeline' },
     {
-      run: [
-        { op: 'add', name: 'Cup', primitive: { kind: 'vessel', profile: CUP, thickness: 0.014, segments: 64 }, translation: [-0.42, Y, 0.45], color: '#ead9c6', roughness: 0.6 },
-        { op: 'duplicate', id: 'Cup', offset: [1.02, 0, 0.02] },
-      ],
-      after: 600,
+      run: NEON.flatMap((c, i) => [
+        { op: 'set_keyframe', id: 'Ring', property: 'color', frame: 1 + i * 31, value: c },
+        { op: 'set_keyframe', id: 'Ring', property: 'emissive', frame: 1 + i * 31, value: c },
+      ]),
+      after: 200,
     },
-    { caption: 'Every batch is one undo step', hint: 'undo · redo' },
-    { click: '[data-action=undo]', after: 450 },
-    { click: '[data-action=redo]', after: 350 },
-    { click: '#outliner li:nth-child(4)', after: 200 },
+    { click: '#play-btn', after: 200 },
     { cursor: false },
     { caption: 'UI, chat and MCP agents share one command API', hint: 'GET /api/schema' },
-    { frame: { ms: 1400, padding: 0.82, elevation: 20 } },
-    { wait: 1800 },
+    { spin: 8 },
+    { wait: 3600 },
   ],
 }
 
@@ -375,7 +392,6 @@ export const animate = {
 }
 
 // Material presets through the real UI, then a keyed neon colour cycle.
-const NEON = ['#ff4fd8', '#30e0ff', '#ffb02e', '#ff4fd8']
 export const materials = {
   title: 'Materials',
   width: 800,
