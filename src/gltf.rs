@@ -15,6 +15,7 @@ use crate::engine::{
     Command, Editor, EngineError, MAX_FACES, MAX_OBJECTS, Material, Mesh, Vec3, check_color,
 };
 use crate::image::{ImageAsset, MAX_IMAGES, Pixels, decode_base64};
+use crate::nodes;
 use crate::texture::{self, BoxProjection, Look, Pattern, Texture};
 
 const CREASE_DEGREES: f64 = 38.0;
@@ -201,6 +202,7 @@ fn material_json(
     m: &Material,
     color_map: Option<usize>,
     normal_map: Option<usize>,
+    orm_map: Option<usize>,
     used: &mut BTreeSet<String>,
 ) -> Value {
     let baked = m
@@ -225,8 +227,19 @@ fn material_json(
     if let Some(index) = normal_map {
         out["normalTexture"] = json!({ "index": index });
     }
+    // A node graph's roughness (G) and metalness (B), baked with the
+    // material's own values where the graph leaves them unset.
+    if let Some(index) = orm_map {
+        let pbr = &mut out["pbrMetallicRoughness"];
+        pbr["metallicRoughnessTexture"] = json!({ "index": index });
+        pbr["metallicFactor"] = json!(1.0);
+        pbr["roughnessFactor"] = json!(1.0);
+    }
     if let Some(t) = &m.texture {
-        out["extras"] = json!({ "tatara_texture": { "color": m.color, "texture": t } });
+        // The factors may be 1 for a baked roughness map: keep the real ones.
+        out["extras"] = json!({ "tatara_texture": {
+            "color": m.color, "texture": t, "roughness": m.roughness, "metalness": m.metalness,
+        } });
     }
     let mut ext = serde_json::Map::new();
     let emissive = hex_to_linear(&m.emissive);
@@ -326,8 +339,17 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         accessors.push(json!({ "bufferView": iv, "componentType": 5125, "count": shaded.indices.len(), "type": "SCALAR" }));
         let mut attributes = json!({ "POSITION": a, "NORMAL": a + 1 });
         let mut extras = Value::Null;
-        let (mut color_map, mut normal_map) = (None, None);
+        let (mut color_map, mut normal_map, mut orm_map) = (None, None, None);
         if let Some(t) = tex {
+            // A node graph is baked once for this material.
+            let graph = nodes::bake_material(&o.material, scene_images, 256);
+            let graph_key = serde_json::to_string(&(
+                &o.material.color,
+                o.material.roughness,
+                o.material.metalness,
+                &t.graph,
+            ))
+            .expect("json serializes");
             // Box projection: one tile of the pattern spans `scale` metres.
             // glTF's V runs down the image while ours runs up.
             let s = if shaded.tiled { 1.0 } else { t.scale as f32 };
@@ -365,6 +387,15 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
             };
             color_map = match (t.pattern, &t.image) {
                 (Pattern::None, _) => None,
+                (Pattern::Nodes, _) => graph.as_ref().map(|b| {
+                    texture_of(format!("nodes:{graph_key}"), &|| {
+                        (
+                            texture::pixels_png(&b.color),
+                            "image/png",
+                            format!("{} nodes", o.name),
+                        )
+                    })
+                }),
                 (Pattern::Image, Some(name)) => {
                     Some(texture_of(format!("image:{name}"), &|| stored(name)))
                 }
@@ -393,8 +424,9 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
                     texture: t,
                     image: t.image.as_ref().and_then(|n| decoded[n].as_ref()),
                     normal_map: None,
+                    baked: graph.as_ref(),
                 };
-                let key = serde_json::to_string(&(t.pattern, &t.image, t.relief))
+                let key = serde_json::to_string(&(t.pattern, &t.image, t.relief, &graph_key))
                     .expect("json serializes");
                 let index = texture_of(format!("relief:{key}"), &|| {
                     (
@@ -407,6 +439,15 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
             } else {
                 None
             };
+            orm_map = graph.as_ref().and_then(|b| b.orm.as_ref()).map(|orm| {
+                texture_of(format!("orm:{graph_key}"), &|| {
+                    (
+                        texture::pixels_png(orm),
+                        "image/png",
+                        format!("{} roughness", o.name),
+                    )
+                })
+            });
         }
         if normal_map.is_some() {
             let tangent_bytes: Vec<u8> = tangents(&shaded)
@@ -423,6 +464,7 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
             &o.material,
             color_map,
             normal_map,
+            orm_map,
             &mut extensions,
         ));
         let mut primitive = json!({ "attributes": attributes, "indices": a + 2, "material": materials.len() - 1, "mode": 4 });
@@ -661,8 +703,14 @@ fn imported_material(m: Option<&Value>, images: &mut ImageImport) -> Option<Mate
             Some(c) => c,
             None => linear_to_hex([0, 1, 2].map(|k| factor(base, k, 1.0))),
         },
-        roughness: num(&pbr["roughnessFactor"], 1.0).clamp(0.0, 1.0),
-        metalness: num(&pbr["metallicFactor"], 1.0).clamp(0.0, 1.0),
+        roughness: ours["roughness"]
+            .as_f64()
+            .unwrap_or(num(&pbr["roughnessFactor"], 1.0))
+            .clamp(0.0, 1.0),
+        metalness: ours["metalness"]
+            .as_f64()
+            .unwrap_or(num(&pbr["metallicFactor"], 1.0))
+            .clamp(0.0, 1.0),
         emissive: linear_to_hex([0, 1, 2].map(|k| factor(emissive, k, 0.0))),
         emissive_strength: num(
             &ext["KHR_materials_emissive_strength"]["emissiveStrength"],
@@ -1418,6 +1466,44 @@ mod tests {
             "box projection is redone, so scale still works"
         );
         assert_eq!(back.scene().images, ed.scene().images);
+    }
+
+    #[test]
+    fn node_graphs_bake_into_textures_and_round_trip() {
+        let ed = editor_with(json!([
+            {"op": "add", "name": "Rust", "primitive": {"kind": "cube"}, "roughness": 0.3, "metalness": 0.9, "texture": {"pattern": "nodes", "scale": 0.5, "relief": 0.5, "graph": {
+                "nodes": [
+                    {"id": "n", "type": "noise", "scale": 4},
+                    {"id": "r", "type": "ramp", "factor": {"node": "n"}, "stops": [{"at": 0.3, "color": "#8a8f96"}, {"at": 0.6, "color": "#8a3b1c"}]},
+                    {"id": "rough", "type": "math", "op": "greater_than", "a": {"node": "n"}, "b": 0.5}
+                ],
+                "output": {"color": {"node": "r"}, "roughness": {"node": "rough"}, "height": {"node": "n"}}
+            }}}
+        ]));
+        let glb = export_glb(&ed);
+        let len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let doc: Value = serde_json::from_slice(&glb[20..20 + len]).unwrap();
+        let m = &doc["materials"][0];
+        let pbr = &m["pbrMetallicRoughness"];
+        assert!(pbr.get("baseColorTexture").is_some() && m.get("normalTexture").is_some());
+        assert_eq!(
+            (
+                pbr["roughnessFactor"].as_f64(),
+                pbr["metallicFactor"].as_f64()
+            ),
+            (Some(1.0), Some(1.0))
+        );
+        assert!(
+            pbr.get("metallicRoughnessTexture").is_some(),
+            "roughness comes from the graph"
+        );
+        assert_eq!(doc["images"].as_array().unwrap().len(), 3);
+
+        let back = reimport(&glb);
+        assert_eq!(
+            back.scene().objects[0].material,
+            ed.scene().objects[0].material
+        );
     }
 
     #[test]

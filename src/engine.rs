@@ -2908,6 +2908,36 @@ mod tests {
     }
 
     #[test]
+    fn node_graph_materials_validate_against_the_scene() {
+        let mut ed = Editor::new();
+        let graph = |image: &str| {
+            serde_json::json!({
+                "nodes": [{"id": "photo", "type": "image", "image": image}],
+                "output": {"color": {"node": "photo"}}
+            })
+        };
+        assert!(ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "primitive": {"kind": "cube"}, "texture": {"pattern": "nodes", "graph": graph("Missing")}}
+        ]}))).is_err(), "image nodes need the image in the scene");
+        assert!(
+            ed.apply(&batch(serde_json::json!({"commands": [
+                {"op": "add", "primitive": {"kind": "cube"}, "texture": {"pattern": "nodes"}}
+            ]})))
+            .is_err(),
+            "pattern nodes needs a graph"
+        );
+        assert!(ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "primitive": {"kind": "cube"}, "texture": {"pattern": "nodes", "graph": {"nodes": [], "output": {"color": {"node": "x"}}}}}
+        ]}))).is_err(), "links must point at nodes");
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "name": "Box", "primitive": {"kind": "cube"}, "texture": {"pattern": "nodes", "graph": {"nodes": [{"id": "n", "type": "noise"}], "output": {"color": {"node": "n"}}}}}
+        ]})))
+        .unwrap();
+        let t = ed.scene().objects[0].material.texture.clone().unwrap();
+        assert_eq!(t.graph.unwrap().nodes[0].id, "n");
+    }
+
+    #[test]
     fn textures_set_validate_and_clear() {
         let mut ed = Editor::new();
         ed.apply(&batch(serde_json::json!({"commands": [

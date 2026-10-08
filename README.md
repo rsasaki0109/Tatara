@@ -74,6 +74,14 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Wrap</b> — textures blend across curved surfaces with no seams, even while you sculpt.</td>
     <td><b>Refine</b> — dynamic detail adds faces only where the brush goes.</td>
   </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/nodes.gif" alt="In the node editor a Voronoi node is added and wired into a colour ramp, turning a grey ball into a cell mosaic; a cylinder gets the Rusty metal preset with metal showing through rust, then an agent writes a terrazzo node graph as JSON over MCP and the floor gets scattered polygonal chips"></td>
+    <td width="50%"></td>
+  </tr>
+  <tr>
+    <td><b>Nodes</b> — wire noise, Voronoi, ramps and maths into materials; agents write the same graph.</td>
+    <td></td>
+  </tr>
 </table>
 
 Every GIF above is a deterministic recording of the real editor: real toolbar clicks and face picks, real Rust mesh operations and a real `tatara --mcp` process. The chat clip replays a fixed command batch, so it needs no API key. In the *See* clip the agent's decisions are scripted, but every tool call, including the images it gets back, comes from a real `tatara --mcp` process. Regenerate them all with `node scripts/record-demo.mjs`.
@@ -120,6 +128,7 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **Materials:** PBR colour, roughness and metalness, plus emission (with a strength above 1 for glow), opacity and transmission for glass. Sixteen presets cover glass, frosted glass, chrome, steel, gold, copper, jade, ceramic, clay, plastic, rubber, neon, wood, marble, brick and tiles; any field given alongside a preset overrides it. Emissive surfaces bloom in the viewport and in agent renders, and glass shows what is behind it in both.
 - **Textures:** procedural wood, marble, brick, tile, checker and stripe patterns mix the material colour with a second colour. Nothing needs UV unwrapping: textures are projected along the object's axes, and `scale` is the size of one tile in metres of the object as scaled (a long wall gets more bricks, not wider ones). Flat faces take the projection they face; curved surfaces blend the three projections by their normal (triplanar), so vases, spheres and sculpts show no seams, in the viewport's shader and in agent renders alike. Each texture is defined once in Rust (`src/texture.rs`): the viewport shows tiles baked by the core, agent renders sample the same functions, and glTF export bakes them into PNGs with `TEXCOORD_0`, so the model looks the same in any viewer. Furniture from `build` comes in wood grain.
 - **Relief and images:** `relief` (0–1) turns a pattern into bumps: mortar, grout and grain sink in, through a normal map in the viewport, per-pixel normals in agent renders and a baked `normalTexture` with tangents in glTF. Any PNG or JPEG can be stored in the scene (`add_image`, or **Image…** on the Material card) and used as a texture tinted by the material colour, with `fit` to cover each side once like a label or a poster, or as a `normal_map`. Relief also works on pictures, from their brightness. Images travel inside scene files, undo steps and glTF.
+- **Node materials:** pattern `nodes` takes a node graph that computes colour, roughness, metalness and height: noise, Voronoi cells, the patterns, gradients and images, mixed with maths and colour ramps. The node editor (the **Nodes** chip on the Material card) wires them with drag and drop and ships Rusty metal, Stone wall and Terrazzo presets; agents send the same graph as JSON. Every source repeats a whole number of times across a tile, so the graph is baked into seamless tiles in Rust and used everywhere: the viewport (colour, normal and roughness/metalness maps, blended triplanar), agent renders and glTF (`baseColorTexture`, `normalTexture` and `metallicRoughnessTexture`).
 - **Animation:** keyframes for location, rotation, scale, colour, roughness, metalness, emission and opacity, with ease, linear or step interpolation. The timeline plays back, scrubs and marks keys with diamonds. **K** keys every property, and editing a value that already has keys adds a key at the current frame (auto-key). Transform tracks export as glTF animation channels, which pass the Khronos validator. Agents can read a pose (`get_scene` with `frame`) and render any frame (`render_view` with `frame`).
 - **Modifier stack:** non-destructive Mirror, Subdivision, Array, Twist and Taper, evaluated in Rust in order. The base mesh stays editable and is drawn as an orange cage. **Apply** bakes the stack into the base mesh.
 - **History:** each batch is one undo step, and an invalid batch changes nothing.
@@ -199,7 +208,8 @@ curl http://127.0.0.1:3000/api/commands \
 | `move` | `id`, optional `offset` and `rotate_y` (radians, about its centre) |
 | `boolean` | `id`, `with`, `operation` (`difference`, `union`, `intersect`), optional `keep` (keep the other object) |
 | groups | every command that takes an `id` (`move`, `place`, `arrange`, `drop`, `delete`) also accepts a group name |
-| material fields | `preset` (`glass`, `frosted`, `chrome`, `steel`, `gold`, `copper`, `jade`, `ceramic`, `clay`, `plastic`, `rubber`, `neon`, `wood`, `marble`, `brick`, `tiles`), `color`, `roughness`, `metalness`, `emissive` (`#rrggbb`), `emissive_strength` (0–20), `opacity`, `transmission`, `texture` (`{"pattern": "wood" \| "marble" \| "brick" \| "tiles" \| "checker" \| "stripes" \| "image" \| "none", "color2": "#rrggbb", "scale": metres per tile, "image": name, "fit": bool, "relief": 0–1, "normal_map": name}`) |
+| material fields | `preset` (`glass`, `frosted`, `chrome`, `steel`, `gold`, `copper`, `jade`, `ceramic`, `clay`, `plastic`, `rubber`, `neon`, `wood`, `marble`, `brick`, `tiles`), `color`, `roughness`, `metalness`, `emissive` (`#rrggbb`), `emissive_strength` (0–20), `opacity`, `transmission`, `texture` (`{"pattern": "wood" \| "marble" \| "brick" \| "tiles" \| "checker" \| "stripes" \| "image" \| "none", "color2": "#rrggbb", "scale": metres per tile, "image": name, "fit": bool, "relief": 0–1, "normal_map": name, "graph": node graph for pattern \"nodes\"}`) |
+| node graph | `{"nodes": [{"id": "n", "type": "noise", "scale": 4}, {"id": "r", "type": "ramp", "factor": {"node": "n"}, "stops": [{"at": 0, "color": "#000000"}, {"at": 1, "color": "#ffffff"}]}], "output": {"color": {"node": "r"}, "height": {"node": "n"}}}`; types `noise` (`scale`, `detail`, `warp`), `voronoi` (`scale`, `output`: `distance` \| `cells` \| `edges`), `pattern`, `gradient`, `image`, `mix` (`a`, `b`, `factor`), `math` (`op`, `a`, `b`), `ramp` (`factor`, `stops`, `constant`); inputs are numbers, `#rrggbb` or `{"node": id}` |
 | `add_image` / `delete_image` | `name`, and `data` (a PNG or JPEG as base64 or a `data:` URL; up to 8 MB and 4096 px) / `name` (only when no material uses it) |
 | `duplicate` / `array` | `id`, `offset` (and `count` for `array`) |
 | `extrude` / `inset` | `id`, `face`, and `distance` or `fraction` (0–1) |
@@ -269,6 +279,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Scene inspection and `drop` | Rust: `src/inspect.rs` (point-in-mesh, penetration depth, support search) |
 | Assemblies and relational layout | Rust: `src/assembly.rs` (templates, `place`, `arrange`, group moves) |
 | Boolean operations | Rust: `src/csg.rs` (arena BSP trees after csg.js, T-junction repair) |
+| Node materials (graph, evaluation, baking) | Rust: `src/nodes.rs` (tiles served by `/api/nodes`; editor in `web/src/nodes.js`) |
 | Textures, relief, box and triplanar projection | Rust: `src/texture.rs` (served as PNG tiles by `/api/texture`; the viewport's shader mirrors the blend) |
 | Scene images (PNG, JPEG) | Rust: `src/image.rs` (served by `/api/image`) |
 | Shared API router (server and browser) | Rust: `src/api.rs` |
@@ -308,7 +319,7 @@ The aim is a creation suite that surpasses Blender for human and agent collabora
 
 1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓, ~~sculpting~~ ✓; ~~booleans~~ ✓, ~~dynamic topology~~ ✓; next: edge collapse for dynamic topology, multires sculpting, multi-segment bevel, knife, merge and dissolve, and solidify/bevel/boolean modifiers.
 2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓, ~~textures and UVs in glTF~~ ✓, ~~image and normal textures both ways~~ ✓; next: metallic-roughness, occlusion and emissive maps, and opening `.tatara.json` links directly in the web build.
-3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓, ~~procedural textures~~ ✓, ~~relief, image textures and normal maps~~ ✓, ~~seamless triplanar blending~~ ✓; next: a node-based material system, UV editing and a path-traced preview.
+3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓, ~~procedural textures~~ ✓, ~~relief, image textures and normal maps~~ ✓, ~~seamless triplanar blending~~ ✓, ~~node-based materials~~ ✓; next: more nodes (emission, 3D noise, curves), UV editing and a path-traced preview.
 4. **Motion:** ~~keyframes and timeline~~ ✓; next: a graph editor for curves, animating modifier parameters, constraints, then rigging.
 5. **Agents:** ~~visual feedback (`render_view`)~~ ✓, ~~measurements and collision reports (`inspect_scene`)~~ ✓; ~~layout by relation (`build`, `place`, `arrange`)~~ ✓; next: reviewable change proposals, constraints such as "keep on the table", more templates and multi-user sessions.
 

@@ -1,6 +1,8 @@
 // Deterministic tool workflows used by "Play the tour" and by
 // `node scripts/record-demo.mjs`, which turns each one into a README GIF.
 
+import { NODE_PRESETS } from './nodes.js'
+
 const VASE = [[0.12, 0], [0.2, 0.06], [0.27, 0.28], [0.24, 0.5], [0.12, 0.72], [0.085, 0.82], [0.115, 0.9]]
 const BOTTLE = [[0.1, 0], [0.17, 0.05], [0.19, 0.25], [0.15, 0.36], [0.055, 0.48], [0.045, 0.62], [0.062, 0.67]]
 const CUP = [[0.065, 0], [0.085, 0.02], [0.1, 0.13], [0.108, 0.16]]
@@ -812,4 +814,53 @@ export const dyntopo = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo }
+// Node materials through the real node editor: wire a Voronoi into the
+// starter graph, apply a preset, then an agent writes a graph as JSON.
+export const nodes = {
+  title: 'Node materials',
+  width: 800,
+  gizmo: false,
+  external: true,
+  setup: [
+    { op: 'add', name: 'Floor', primitive: { kind: 'cube' }, translation: [0, -0.01, 0], scale: [4.2, 0.02, 2.4], color: '#d8d4cb', roughness: 0.6 },
+    { op: 'add', name: 'Ball', primitive: { kind: 'quadsphere', radius: 0.42, level: 4 }, translation: [-0.75, 0.42, 0], color: '#9aa0a6' },
+    { op: 'add', name: 'Tank', primitive: { kind: 'cylinder', radius: 0.36, height: 0.85, segments: 64 }, translation: [0.75, 0.425, 0], color: '#9aa0a6', roughness: 0.4 },
+  ],
+  camera: { azimuth: 12, elevation: 14, distance: 4.8, target: [0, -0.45, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Node materials: wire textures together', hint: 'texture.pattern "nodes"' },
+    { pick: 'Ball', after: 80 },
+    { click: '[data-pattern=nodes]', after: 500 },
+    { choose: '#ne-add', value: 'Voronoi', after: 300 },
+    { wire: ['[data-out=voronoi1]', '[data-in="ramp:factor"]'], ms: 800, after: 500 },
+    { choose: '[data-field="voronoi1:output"]', value: 'cells', after: 500 },
+    { type: '7', into: '[data-input="voronoi1:scale"]', after: 600 },
+    { caption: 'Or start from a preset: colour, roughness, metal and relief', hint: 'Rusty metal' },
+    { pick: 'Tank', after: 80 },
+    { click: '[data-pattern=nodes]', after: 300 },
+    { choose: '#ne-preset', value: 'Rusty metal', after: 900 },
+    { click: '[data-ne-close]', after: 200 },
+    { select: null },
+    { caption: 'Agents write the same graph as JSON', hint: 'apply_commands · graph' },
+    { camera: { azimuth: 18, elevation: 24, distance: 4.4, target: [0, 0.3, 0] }, ms: 1000, async: true },
+    {
+      mcp: [
+        { say: 'make the floor terrazzo', after: 150 },
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [{ op: 'material', id: 'Floor', texture: { pattern: 'nodes', scale: 1.8, graph: NODE_PRESETS.terrazzo.graph } }],
+          },
+          after: 900,
+        },
+      ],
+    },
+    { terminal: false },
+    { cursor: false },
+    { spin: 7 },
+    { wait: 2400 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes }

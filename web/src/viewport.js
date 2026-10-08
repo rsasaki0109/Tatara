@@ -183,6 +183,30 @@ TpPlanes tpPlanes() {
 #endif`,
       )
       .replace(
+        '#include <roughnessmap_fragment>',
+        `#if defined( TRIPLANAR ) && defined( USE_ROUGHNESSMAP )
+float roughnessFactor = roughness;
+{
+  TpPlanes tq = tpPlanes();
+  roughnessFactor *= tq.w.x * texture2D(roughnessMap, tq.x).g + tq.w.y * texture2D(roughnessMap, tq.y).g + tq.w.z * texture2D(roughnessMap, tq.z).g;
+}
+#else
+#include <roughnessmap_fragment>
+#endif`,
+      )
+      .replace(
+        '#include <metalnessmap_fragment>',
+        `#if defined( TRIPLANAR ) && defined( USE_METALNESSMAP )
+float metalnessFactor = metalness;
+{
+  TpPlanes tq = tpPlanes();
+  metalnessFactor *= tq.w.x * texture2D(metalnessMap, tq.x).b + tq.w.y * texture2D(metalnessMap, tq.y).b + tq.w.z * texture2D(metalnessMap, tq.z).b;
+}
+#else
+#include <metalnessmap_fragment>
+#endif`,
+      )
+      .replace(
         '#include <normal_fragment_maps>',
         `#if defined( TRIPLANAR ) && defined( USE_NORMALMAP_TANGENTSPACE )
 {
@@ -206,6 +230,13 @@ TpPlanes tpPlanes() {
 function geometryKey(o, mesh) {
   const t = o.material?.texture
   return meshKey(mesh) + (o.smooth ? ':smooth' : '') + (t ? `:${o.transform.scale.join(',')}:${t.fit ? 'fit' : ''}` : '')
+}
+
+/** A short, stable fingerprint of a string (cache-busting URLs). */
+function hashString(text) {
+  let h = 2166136261
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619)
+  return (h >>> 0).toString(16)
 }
 
 /** Whether a mesh carries its own texture coordinates, one per face corner. */
@@ -504,6 +535,7 @@ export class Viewport {
     mesh.castShadow = true
     mesh.receiveShadow = true
     mesh.userData.id = o.id
+    material.userData.objectId = o.id
     const lineMat = new THREE.LineBasicMaterial({ color: 0x15171a, transparent: true, opacity: 0.55 })
     const wire = new THREE.LineSegments(new THREE.BufferGeometry(), lineMat)
     const outline = new THREE.LineSegments(
@@ -686,8 +718,9 @@ export class Viewport {
   applyMaterial(m, mat) {
     this.applyTexture(m, mat)
     if (!m.userData.bakedColor || !m.map) m.color.set(mat.color)
-    m.roughness = mat.roughness
-    m.metalness = mat.metalness
+    // A baked roughness/metalness map already holds the material's values.
+    m.roughness = m.userData.ormUrl ? 1 : mat.roughness
+    m.metalness = m.userData.ormUrl ? 1 : mat.metalness
     // Glass has its own reflections; a clearcoat on top only clouds it.
     m.clearcoat = mat.transmission ? 0 : Math.max(0, 0.65 - mat.roughness)
     m.emissive.set(mat.emissive || '#000000')
@@ -716,22 +749,37 @@ export class Viewport {
     const t = mat.texture
     const color2 = t?.color2 ?? '#3b2a22'
     const params = (extra) => new URLSearchParams({ pattern: t.pattern, color2, size: '512', ...extra }).toString()
-    const colorUrl =
-      !t || t.pattern === 'none' ? null : t.pattern === 'image' ? this.imageUrl(t.image) : `/api/texture?${params({ color: mat.color })}`
+    // A node graph is baked per object; the version busts the cache when
+    // anything it depends on changes.
+    const graph = t?.pattern === 'nodes' ? t.graph : null
+    const nodeUrl = (kind) => {
+      const v = hashString(JSON.stringify([mat.color, mat.roughness, mat.metalness, t, graph?.nodes.filter((n) => n.type === 'image').map((n) => this.images[n.image]?.hash)]))
+      return `/api/nodes?${new URLSearchParams({ object: m.userData.objectId, kind, size: '512', v })}`
+    }
+    const colorUrl = !t || t.pattern === 'none' ? null : graph ? nodeUrl('color') : t.pattern === 'image' ? this.imageUrl(t.image) : `/api/texture?${params({ color: mat.color })}`
     const imageVersion = t?.pattern === 'image' ? { image: t.image, v: this.images[t.image]?.hash ?? '' } : {}
     const normalUrl = !t
       ? null
       : t.normal_map
         ? this.imageUrl(t.normal_map)
-        : t.relief > 0
-          ? `/api/texture?${params({ kind: 'normal', relief: String(t.relief), ...imageVersion })}`
-          : null
+        : t.relief > 0 && graph
+          ? graph.output?.height
+            ? nodeUrl('normal')
+            : null
+          : t.relief > 0
+            ? `/api/texture?${params({ kind: 'normal', relief: String(t.relief), ...imageVersion })}`
+            : null
+    // A node graph's roughness (G) and metalness (B) come as one map.
+    const ormUrl = graph && (graph.output?.roughness || graph.output?.metalness) ? nodeUrl('orm') : null
+    m.userData.ormUrl = ormUrl
     // A baked pattern already holds the colour; an image is tinted by it.
     m.userData.bakedColor = Boolean(colorUrl) && t.pattern !== 'image'
     m.userData.textureScale = t?.scale ?? 0.5
     m.userData.textured = Boolean(colorUrl || normalUrl)
     this.setMap(m, 'map', colorUrl)
     this.setMap(m, 'normalMap', normalUrl)
+    this.setMap(m, 'roughnessMap', ormUrl)
+    this.setMap(m, 'metalnessMap', ormUrl)
     this.syncRepeat(m)
   }
 
@@ -741,8 +789,7 @@ export class Viewport {
 
   syncRepeat(m) {
     const repeat = m.userData.tiled ? 1 : 1 / (m.userData.textureScale ?? 0.5)
-    m.map?.repeat.setScalar(repeat)
-    m.normalMap?.repeat.setScalar(repeat)
+    for (const slot of ['map', 'normalMap', 'roughnessMap', 'metalnessMap']) m[slot]?.repeat.setScalar(repeat)
     // Box-projected textures blend three planes in the shader instead.
     m.userData.tp.tpRepeat.value = 1 / (m.userData.textureScale ?? 0.5)
     const triplanar = Boolean(m.userData.textured) && !m.userData.tiled

@@ -216,11 +216,68 @@ fn texture(ed: &Editor, query: &str) -> Result<Response, Response> {
         texture: &t,
         image: image.as_ref().map(|(_, px)| px),
         normal_map: None,
+        baked: None,
     };
     let body = match query_param(query, "kind").as_deref() {
         Some("normal") => texture::bake_normal_png(&look, size),
         Some("color") | None => texture::bake_png(&base, &t, size),
         Some(_) => return Err(Response::error(400, "kind must be color or normal")),
+    };
+    Ok(Response {
+        status: 200,
+        content_type: "image/png",
+        body,
+        changed: None,
+        disposition: None,
+    })
+}
+
+/// A node graph's tiles for one object's material, as PNG: `kind` is
+/// `color`, `orm` (roughness in G, metalness in B) or `normal` (relief).
+fn node_tile(ed: &Editor, query: &str) -> Result<Response, Response> {
+    let id = query_param(query, "object")
+        .and_then(|s| s.parse::<u64>().ok())
+        .ok_or_else(|| Response::error(400, "object must be an id"))?;
+    let o = ed
+        .scene()
+        .objects
+        .iter()
+        .find(|o| o.id == id)
+        .ok_or_else(|| Response::error(404, format!("no object with id {id}")))?;
+    let size = match query_param(query, "size") {
+        Some(s) => s
+            .parse::<u32>()
+            .ok()
+            .filter(|s| (8..=1024).contains(s))
+            .ok_or_else(|| Response::error(400, "size must be 8-1024"))?,
+        None => 256,
+    };
+    let baked = crate::nodes::bake_material(&o.material, &ed.scene().images, size)
+        .ok_or_else(|| Response::error(404, "the object's material has no node graph"))?;
+    let t = o
+        .material
+        .texture
+        .as_ref()
+        .expect("a graph lives in a texture");
+    let body = match query_param(query, "kind").as_deref() {
+        Some("color") | None => texture::pixels_png(&baked.color),
+        Some("orm") => texture::pixels_png(
+            baked
+                .orm
+                .as_ref()
+                .ok_or_else(|| Response::error(404, "the graph sets no roughness or metalness"))?,
+        ),
+        Some("normal") => texture::bake_normal_png(
+            &Look {
+                base: &o.material.color,
+                texture: t,
+                image: None,
+                normal_map: None,
+                baked: Some(&baked),
+            },
+            size,
+        ),
+        Some(_) => return Err(Response::error(400, "kind must be color, orm or normal")),
     };
     Ok(Response {
         status: 200,
@@ -341,6 +398,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
         ("GET", "/render") => render(ed, query),
         ("GET", "/texture") => texture(ed, query),
         ("GET", "/image") => image(ed, query),
+        ("GET", "/nodes") => node_tile(ed, query),
         _ => Err(Response::error(
             404,
             format!("no route for {method} /api{path}"),

@@ -1425,3 +1425,203 @@ input[type='range'] {
   flex: 1 1 40%;
   justify-content: center;
 }
+
+/* ---- node editor --------------------------------------------------------- */
+
+.node-editor {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 104px;
+  height: 44%;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: rgba(16, 17, 20, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+  z-index: 4;
+}
+
+.node-editor[hidden] {
+  display: none;
+}
+
+.ne-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ne-bar select {
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.ne-bar .ne-close {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.ne-canvas {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+}
+
+.ne-wires {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1600px;
+  height: 900px;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.ne-wires path {
+  fill: none;
+  stroke: var(--accent-2);
+  stroke-width: 2;
+  opacity: 0.85;
+}
+
+.ne-wires path.ne-live {
+  stroke-dasharray: 5 4;
+}
+
+.ne-node {
+  position: absolute;
+  width: 160px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.ne-node.ne-output {
+  border-color: rgba(255, 122, 61, 0.55);
+}
+
+.ne-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  cursor: grab;
+  user-select: none;
+}
+
+.ne-head button {
+  margin-left: auto;
+  margin-right: 8px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.ne-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 14px;
+  min-height: 24px;
+}
+
+.ne-row label {
+  color: var(--muted);
+  flex: 1;
+}
+
+.ne-row input[type='number'] {
+  width: 52px;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 1px 4px;
+}
+
+.ne-row input[type='color'] {
+  width: 30px;
+  height: 18px;
+}
+
+.ne-row select {
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  max-width: 100px;
+}
+
+.ne-row button {
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ne-stop {
+  padding-left: 8px;
+}
+
+.ne-ramp {
+  height: 10px;
+  margin: 4px 8px;
+  border-radius: 3px;
+}
+
+.ne-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ne-sock {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 2px solid var(--accent-2);
+  cursor: crosshair;
+}
+
+.ne-sock.ne-in {
+  left: -6px;
+  top: 50%;
+  margin-top: -5px;
+}
+
+.ne-sock.ne-in.on {
+  background: var(--accent-2);
+}
+
+.ne-sock.ne-out {
+  right: -6px;
+  top: 50%;
+  margin-top: -5px;
+  background: var(--accent-2);
+}
