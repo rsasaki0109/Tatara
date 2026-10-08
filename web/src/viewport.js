@@ -12,7 +12,7 @@ import { ease } from './clock.js'
 import { isAnimated, pose } from './anim.js'
 import { createStroke } from './sculpt.js'
 import { uvGridCanvas } from './uveditor.js'
-import { boneSegments, hasRig, posedMesh } from './rig.js'
+import { boneRotations, boneSegments, hasRig, posedMesh, reach } from './rig.js'
 
 const CREASE = THREE.MathUtils.degToRad(38)
 const SELECT = 0xff8a4c
@@ -350,7 +350,7 @@ function facesGeometry(vertices, faces) {
 }
 
 export class Viewport {
-  constructor(el, clock, animator, { capture, onPick, onTransform, onMoveVertices, onSculpt }) {
+  constructor(el, clock, animator, { capture, onPick, onTransform, onMoveVertices, onSculpt, onReach }) {
     this.el = el
     this.clock = clock
     this.anim = animator
@@ -359,6 +359,7 @@ export class Viewport {
     this.onTransform = onTransform
     this.onMoveVertices = onMoveVertices
     this.onSculpt = onSculpt
+    this.onReach = onReach
     // Sculpt mode: brush settings, and the stroke being dragged (if any).
     this.sculpt = { active: false }
     this.stroke = null
@@ -428,11 +429,26 @@ export class Viewport {
     this.gizmo.setSize(0.85)
     this.pivot = new THREE.Object3D()
     scene.add(this.pivot)
+    // Inverse kinematics: a handle at the chosen bone's tip; dragging it
+    // bends the chain live, letting go commits a `reach`.
+    this.ik = null
+    this.ikHandle = new THREE.Mesh(
+      new THREE.SphereGeometry(0.055, 20, 12),
+      new THREE.MeshBasicMaterial({ color: 0xff8a4c, depthTest: false, transparent: true, opacity: 0.95 }),
+    )
+    this.ikHandle.renderOrder = 8
+    this.ikHandle.visible = false
+    scene.add(this.ikHandle)
     this.gizmo.addEventListener('objectChange', () => {
       if (this.gizmo.object === this.pivot && this.gizmo.dragging) this.previewMove()
+      if (this.gizmo.object === this.ikHandle && this.gizmo.dragging) this.dragIk(this.ikHandle.position)
     })
     this.gizmo.addEventListener('dragging-changed', (e) => {
       this.controls.enabled = !e.value
+      if (this.gizmo.object === this.ikHandle) {
+        if (!e.value) this.commitIk()
+        return
+      }
       if (this.gizmo.object === this.pivot) {
         if (e.value) this.pivotStart = this.pivot.position.clone()
         else {
@@ -1120,6 +1136,11 @@ export class Viewport {
       if (this.gizmo.object) this.gizmo.detach()
       return
     }
+    if (this.ik && this.ikHandle.visible && this.showGizmo !== false) {
+      if (this.gizmo.object !== this.ikHandle) this.gizmo.attach(this.ikHandle)
+      this.gizmo.setMode('translate')
+      return
+    }
     // showGizmo: true, false, or 'edit' (only for component moves in edit mode).
     const allowed = this.showGizmo === true || (this.showGizmo === 'edit' && this.edit.active)
     const node = allowed ? this.nodes.get(this.selected) : null
@@ -1385,6 +1406,7 @@ export class Viewport {
       .setAttribute('color', new THREE.Float32BufferAttribute(col, 3))
     node.boneEdges.geometry.dispose()
     node.boneEdges.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(edges, 3))
+    if (this.ik?.id === node.id && !node.ikStart) this.placeIkHandle()
   }
 
   /** Show bone `name` of object `id` turned to `rotation` before the edit is committed. */
@@ -1401,6 +1423,54 @@ export class Viewport {
     this.setMesh(node, this.shownMesh(node.data), null)
     node.key = null
     this.setBones(node)
+  }
+
+  /** Show the reach handle on bone `ik.bone` of object `ik.id`, or none. */
+  setIk(ik) {
+    this.ik = ik
+    this.placeIkHandle()
+    this.placeGizmo()
+  }
+
+  placeIkHandle() {
+    const node = this.ik && this.nodes.get(this.ik.id)
+    const k = node ? node.data.bones?.findIndex((b) => b.name === this.ik.bone) : -1
+    this.ikHandle.visible = k >= 0
+    if (k < 0 || this.gizmo.dragging) return
+    node.group.updateMatrixWorld(true)
+    const [, tail] = boneSegments(node.data, this.currentFrame)[k]
+    this.ikHandle.position.copy(tail.applyMatrix4(node.group.matrixWorld))
+  }
+
+  /** Bend the chain so the tip reaches `world` (a preview until committed). */
+  dragIk(world) {
+    const node = this.ik && this.nodes.get(this.ik.id)
+    if (!node) return
+    if (world !== this.ikHandle.position) this.ikHandle.position.copy(world)
+    const o = node.data
+    const end = o.bones.findIndex((b) => b.name === this.ik.bone)
+    if (end < 0) return
+    node.ikStart ||= o
+    const start = node.ikStart
+    node.group.updateMatrixWorld(true)
+    const local = world.clone().applyMatrix4(node.group.matrixWorld.clone().invert())
+    const rot = reach(start.bones, boneRotations(start, this.currentFrame), end, Infinity, local)
+    node.data = {
+      ...start,
+      bones: start.bones.map((b, i) => ({ ...b, rotation: rot[i] })),
+      tracks: (start.tracks || []).filter((t) => t.property !== 'bone'),
+    }
+    this.setMesh(node, this.shownMesh(node.data), null)
+    node.key = null
+    this.setBones(node)
+  }
+
+  /** Commit the handle's position as a `reach`. */
+  commitIk() {
+    const node = this.ik && this.nodes.get(this.ik.id)
+    if (!node || !node.ikStart) return
+    node.ikStart = null
+    this.onReach?.(this.ik.id, this.ik.bone, this.ikHandle.position.toArray().map((v) => Math.round(v * 1e5) / 1e5))
   }
 
   /** Highlight a bone of the selected object (by name), or none. */

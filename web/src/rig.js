@@ -64,3 +64,46 @@ export function boneSegments(o, frame) {
   const m = boneMatrices(o.bones, boneRotations(o, frame))
   return o.bones.map((b, i) => [new THREE.Vector3(...b.head).applyMatrix4(m[i]), new THREE.Vector3(...b.tail).applyMatrix4(m[i])])
 }
+
+/** The most one bone turns in one reach iteration (radians), as in rig.rs. */
+const REACH_STEP = 0.08
+
+const parentIndex = (bones, k) => (bones[k].parent ? bones.findIndex((b) => b.name === bones[k].parent) : -1)
+
+/**
+ * Inverse kinematics, mirroring `rig::reach`: turn bone `end` and up to
+ * `chain - 1` ancestors so its tip reaches `target` (object space), by
+ * cyclic coordinate descent in small steps. Returns new rotations.
+ */
+export function reach(bones, rotations, end, chain, target) {
+  const rot = rotations.map((r) => r.slice())
+  const joints = [end]
+  while (joints.length < Math.max(1, chain)) {
+    const p = parentIndex(bones, joints[joints.length - 1])
+    if (p < 0) break
+    joints.push(p)
+  }
+  const tail = new THREE.Vector3(...bones[end].tail)
+  for (let i = 0; i < 400; i++) {
+    if (tail.clone().applyMatrix4(boneMatrices(bones, rot)[end]).distanceTo(target) < 1e-5) break
+    for (const j of joints) {
+      const m = boneMatrices(bones, rot)
+      const a = tail.clone().applyMatrix4(m[end])
+      const pivot = new THREE.Vector3(...bones[j].head).applyMatrix4(m[j])
+      a.sub(pivot)
+      const b = target.clone().sub(pivot)
+      if (a.length() < 1e-9 || b.length() < 1e-9) continue
+      const turn = new THREE.Quaternion().setFromUnitVectors(a.normalize(), b.normalize())
+      const angle = turn.angleTo(new THREE.Quaternion())
+      if (angle > REACH_STEP) turn.slerpQuaternions(new THREE.Quaternion(), turn.clone(), REACH_STEP / angle)
+      const p = parentIndex(bones, j)
+      // The bone's frame in object space is its parents' turn times its own.
+      const parent = p >= 0 ? new THREE.Quaternion().setFromRotationMatrix(m[p]) : new THREE.Quaternion()
+      const own = new THREE.Quaternion().setFromEuler(new THREE.Euler(rot[j][0], rot[j][1], rot[j][2], 'XYZ'))
+      const next = parent.clone().invert().multiply(turn).multiply(parent).multiply(own).normalize()
+      const e = new THREE.Euler().setFromQuaternion(next, 'XYZ')
+      rot[j] = [e.x, e.y, e.z]
+    }
+  }
+  return rot
+}

@@ -257,6 +257,11 @@ try {
       .then((s) => Math.abs(s.objects[0].bones[1].rotation[2] - Math.PI / 6) < 1e-3),
   )
   check(true, 'the Rig card adds a bone chain and its sliders pose a bone')
+  await page.click('[data-rig=ik]')
+  await page.waitForFunction(() => window.__tatara.debug().reachHandle)
+  check(true, 'Reach (IK) shows a handle at the chosen bone\'s tip')
+  await page.click('[data-rig=ik]')
+  await page.waitForFunction(() => !window.__tatara.debug().reachHandle)
   await page.click('[data-rig=remove]')
   await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => !s.objects[0].bones))
   await page.waitForFunction(() => window.__tatara.debug().bonesShown === 0)

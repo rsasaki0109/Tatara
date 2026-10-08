@@ -3,6 +3,7 @@
 // Timing uses the shared clock, so the capture recorder can step it frame by
 // frame and produce identical recordings every run.
 
+import * as THREE from 'three'
 import { ease } from './clock.js'
 
 const $ = (id) => document.getElementById(id)
@@ -115,6 +116,7 @@ export class DemoRunner {
     if (s.wire) return this.wire(s)
     if (s.uv !== undefined) return this.uv(s)
     if (s.samples) return this.samples(s)
+    if (s.reach) return this.reach(s)
     if (s.reveal) {
       const el = document.querySelector(s.reveal)
       if (!el) throw new Error(`demo: nothing matches ${s.reveal}`)
@@ -373,6 +375,35 @@ export class DemoRunner {
     }
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: x1, clientY: y1 }))
     await press
+    await this.idle()
+    if (s.after) await this.sleep(s.after)
+  }
+
+  /** Drag the reach (IK) handle to world point `reach`, then let go. */
+  async reach(s) {
+    const vp = this.app.viewport
+    if (!vp.ik || !vp.ikHandle.visible) throw new Error('demo: no reach handle to drag')
+    const vr = $('viewport').getBoundingClientRect()
+    const screen = (p) => {
+      const q = vp.worldToScreen(p)
+      return [vr.left + q.x, vr.top + q.y]
+    }
+    const from = vp.ikHandle.position.clone()
+    const to = new THREE.Vector3(...s.reach)
+    await this.moveTo(...screen(from))
+    this.press()
+    await this.app.animator.add(
+      'cursor',
+      s.ms ?? 900,
+      (t) => {
+        const p = from.clone().lerp(to, t)
+        vp.dragIk(p)
+        ;[this.pos.x, this.pos.y] = screen(p)
+        this.placeCursor()
+      },
+      ease.inOut,
+    )
+    vp.commitIk()
     await this.idle()
     if (s.after) await this.sleep(s.after)
   }

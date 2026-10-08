@@ -1010,4 +1010,57 @@ export const rig = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig }
+// Inverse kinematics: drag a handle at a tentacle's tip and the whole chain
+// bends to follow; then an agent keys reaches between two balls.
+const GOLD = [0.72, 1.1, 0.35]
+const TEAL = [-1.15, 1.62, -0.25]
+
+export const ik = {
+  title: 'Inverse kinematics',
+  width: 800,
+  gizmo: true,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 1.6, height: 0.08, segments: 72 }, translation: [-0.1, 0.04, 0], color: '#3a3b40', roughness: 0.5 },
+    { op: 'add', name: 'Tentacle', primitive: TENTACLE, translation: [-0.2, 1.18, 0], color: '#d9677c', roughness: 0.35 },
+    { op: 'shade', id: 'Tentacle', smooth: true },
+    { op: 'add', name: 'Gold ball', primitive: { kind: 'sphere', radius: 0.14, segments: 32, rings: 16 }, translation: [GOLD[0], GOLD[1] - 0.2, GOLD[2]], preset: 'gold' },
+    { op: 'add', name: 'Teal ball', primitive: { kind: 'sphere', radius: 0.14, segments: 32, rings: 16 }, translation: [TEAL[0], TEAL[1] - 0.2, TEAL[2]], color: '#2fb5a3', roughness: 0.25 },
+  ],
+  camera: { azimuth: 12, elevation: 10, distance: 5.6, target: [-0.15, 1.15, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Rig the tentacle, then grab its tip', hint: 'rig · Reach (IK)' },
+    { pick: 'Tentacle', after: 100 },
+    { click: '[data-rig-chain="5"]', after: 300 },
+    { click: '[data-bone="Bone 5"]', after: 100 },
+    { click: '[data-rig=ik]', after: 400 },
+    { caption: 'Drag the tip: the whole chain bends to follow', hint: 'inverse kinematics · CCD' },
+    { reach: GOLD, ms: 1300, after: 500 },
+    { reach: TEAL, ms: 1500, after: 500 },
+    { reach: [-0.35, 2.15, 0.25], ms: 1000, after: 400 },
+    { select: null },
+    { caption: 'Agents animate by reaching: one key per target', hint: 'reach · frame' },
+    {
+      mcp: [
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              { op: 'reach', id: 'Tentacle', bone: 'Bone 5', target: GOLD, frame: 1 },
+              { op: 'reach', id: 'Tentacle', bone: 'Bone 5', target: TEAL, frame: 32 },
+              { op: 'reach', id: 'Tentacle', bone: 'Bone 5', target: [-0.35, 2.15, 0.25], frame: 64 },
+              { op: 'reach', id: 'Tentacle', bone: 'Bone 5', target: GOLD, frame: 96 },
+            ],
+          },
+          after: 900,
+        },
+      ],
+    },
+    { terminal: false },
+    { cursor: false },
+    { caption: 'It plays back, and exports as a glTF skin', hint: 'timeline · GLB' },
+    { click: '#play-btn', after: 4200 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik }
