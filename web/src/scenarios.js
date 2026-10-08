@@ -775,4 +775,41 @@ export const wrap = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap }
+// Dynamic topology: a coarse ball, shown as wireframe, gains faces only
+// where the brush goes.
+export const dyntopo = {
+  title: 'Dynamic detail',
+  width: 800,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 0.55, height: 0.08, segments: 64 }, translation: [0, 0.04, 0], color: '#26272b', roughness: 0.85 },
+    { op: 'add', name: 'Head', primitive: { kind: 'quadsphere', radius: TOUR_HEAD.r, level: 3 }, translation: TOUR_HEAD.c, preset: 'clay', color: '#c98b62' },
+  ],
+  camera: { azimuth: 20, elevation: 6, distance: 2.3, target: [0, 0.52, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Start from a coarse ball', hint: '384 faces' },
+    { click: '#wire-btn', after: 300 },
+    { pick: 'Head', after: 60 },
+    { click: '[data-mode=sculpt]', after: 80 },
+    { click: '[data-brush-toggle=dynamic]', after: 200 },
+    { caption: 'Dynamic detail: faces appear where you sculpt', hint: 'sculpt · detail' },
+    { slide: '#b-strength', to: 0.9, ms: 300, after: 40 },
+    { stroke: [tourFace(0, 0.06), tourFace(0, -0.05), tourFace(0, -0.1)], ms: 600, after: 80 },
+    { stroke: [tourFace(0.034, 0.143), tourFace(0.134, 0.168), tourFace(0.235, 0.118)], ms: 600, after: 80 },
+    { slide: '#b-radius', to: 0.07, ms: 300, after: 40 },
+    { stroke: [tourFace(0.1, 0.06), tourFace(0.143, 0.076), tourFace(0.168, 0.042), tourFace(0.134, 0.025), tourFace(0.11, 0.05)], ms: 600, ctrl: true, after: 80 },
+    { stroke: [tourFace(0, -0.2), tourFace(0.07, -0.19), tourFace(0.13, -0.15)], ms: 500, ctrl: true, after: 80 },
+    { caption: 'Fine under the brush, coarse everywhere else', hint: 'no global subdivision' },
+    { camera: { azimuth: 55, elevation: 12, distance: 2.4, target: [0, 0.52, 0] }, ms: 1100 },
+    { click: '[data-mode=object]', after: 60 },
+    { select: null },
+    { cursor: false },
+    { wait: 900 },
+    { click: '#wire-btn', after: 200 },
+    { spin: 7 },
+    { wait: 2400 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo }

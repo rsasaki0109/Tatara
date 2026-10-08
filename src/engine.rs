@@ -701,6 +701,11 @@ pub enum Command {
         offset: Option<Vec3>,
         #[serde(default)]
         symmetry: Option<Axis>,
+        /// Dynamic topology: split edges under the brush longer than about
+        /// this (object space, radius/40 to the radius), so detail appears
+        /// where you sculpt. Omit to keep the topology.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<f64>,
     },
     /// Append a modifier, or insert it at `index`.
     AddModifier {
@@ -1372,6 +1377,7 @@ fn apply_command(
             invert,
             offset,
             symmetry,
+            detail,
         } => {
             let i = resolve(scene, id)?;
             sculpt::sculpt(
@@ -1384,6 +1390,7 @@ fn apply_command(
                     invert: *invert,
                     offset: *offset,
                     symmetry: *symmetry,
+                    detail: *detail,
                 },
             )?;
         }

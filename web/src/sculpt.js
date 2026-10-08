@@ -4,6 +4,9 @@
 
 export const SPACING = 0.2
 const DAB_HEIGHT = 0.15
+const REFINE_PASSES = 4
+const SPLIT_RATIO = 4 / 3
+const MAX_FACES = 250000
 
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -32,9 +35,9 @@ function vertexNormals(pos, faces) {
   return n.map(norm)
 }
 
-function neighbours(mesh) {
-  const out = mesh.vertices.map(() => [])
-  for (const f of mesh.faces) {
+function neighbours(count, faces) {
+  const out = Array.from({ length: count }, () => [])
+  for (const f of faces) {
     for (let k = 0; k < f.length; k++) {
       const a = f[k]
       const b = f[(k + 1) % f.length]
@@ -43,6 +46,105 @@ function neighbours(mesh) {
     }
   }
   return out
+}
+
+const dist2 = (a, b) => {
+  const d = sub(a, b)
+  return dot(d, d)
+}
+
+function triangulate(f, pos) {
+  if (f.length === 4) {
+    return dist2(pos[f[0]], pos[f[2]]) <= dist2(pos[f[1]], pos[f[3]])
+      ? [
+          [f[0], f[1], f[2]],
+          [f[0], f[2], f[3]],
+        ]
+      : [
+          [f[0], f[1], f[3]],
+          [f[1], f[2], f[3]],
+        ]
+  }
+  const out = []
+  for (let k = 1; k < f.length - 1; k++) out.push([f[0], f[k], f[k + 1]])
+  return out
+}
+
+/**
+ * Dynamic topology for one dab (src/sculpt.rs `refine`): polygons under the
+ * brush become triangles, then edges there longer than 4/3 `detail` are
+ * split at their midpoints, longest first. Mutates `pos` and `faces`.
+ */
+export function refine(pos, faces, c, radius, detail) {
+  const reach = (radius + detail) ** 2
+  const near = (p) => dist2(p, c) < reach
+  let changed = false
+  const extra = []
+  for (let i = 0; i < faces.length; i++) {
+    const f = faces[i]
+    if (f.length > 3 && f.some((v) => near(pos[v]))) {
+      const tris = triangulate(f, pos)
+      faces[i] = tris[0]
+      for (let k = 1; k < tris.length; k++) extra.push(tris[k])
+      changed = true
+    }
+  }
+  faces.push(...extra)
+  const limit = detail * SPLIT_RATIO
+  for (let pass = 0; pass < REFINE_PASSES; pass++) {
+    if (faces.length >= MAX_FACES) break
+    let long = []
+    for (const f of faces) {
+      if (f.length !== 3) continue
+      for (let k = 0; k < 3; k++) {
+        const a = f[k]
+        const b = f[(k + 1) % 3]
+        const l = Math.sqrt(dist2(pos[a], pos[b]))
+        if (l > limit && near(mul(add(pos[a], pos[b]), 0.5))) long.push([l, Math.min(a, b), Math.max(a, b)])
+      }
+    }
+    if (!long.length) break
+    long.sort((x, y) => y[0] - x[0] || x[1] - y[1] || x[2] - y[2])
+    long = long.filter((e, i) => i === 0 || e[1] !== long[i - 1][1] || e[2] !== long[i - 1][2])
+    const ends = new Uint8Array(pos.length)
+    for (const [, a, b] of long) ends[a] = ends[b] = 1
+    const owners = new Map()
+    faces.forEach((f, fi) => {
+      if (!f.some((v) => ends[v])) return
+      for (let k = 0; k < f.length; k++) {
+        const a = f[k]
+        const b = f[(k + 1) % f.length]
+        const key = Math.min(a, b) * 4294967296 + Math.max(a, b)
+        let list = owners.get(key)
+        if (!list) owners.set(key, (list = []))
+        list.push(fi)
+      }
+    })
+    const busy = new Uint8Array(faces.length)
+    const added = []
+    for (const [, a, b] of long) {
+      const owned = owners.get(a * 4294967296 + b)
+      if (owned.some((f) => busy[f]) || faces.length + added.length + owned.length > MAX_FACES) continue
+      const m = pos.length
+      pos.push(mul(add(pos[a], pos[b]), 0.5))
+      for (const fi of owned) {
+        busy[fi] = 1
+        const f = faces[fi]
+        const n = f.length
+        let k = 0
+        while (!((f[k] === a && f[(k + 1) % n] === b) || (f[k] === b && f[(k + 1) % n] === a))) k++
+        f.splice(k + 1, 0, m)
+        if (n === 3) {
+          const at = (i) => f[(k + i) % 4]
+          faces[fi] = [at(0), at(1), at(3)]
+          added.push([at(1), at(2), at(3)])
+        }
+      }
+      changed = true
+    }
+    faces.push(...added)
+  }
+  return changed
 }
 
 const AXIS = { x: 0, y: 1, z: 2 }
@@ -57,9 +159,11 @@ function mirror(v, axis) {
  * An in-progress stroke on `mesh` (object space). `add(point)` extends the
  * path and applies the new dabs; `grab(offset)` re-poses a grab from the start.
  */
-export function createStroke(mesh, { brush, radius, strength, invert = false, symmetry = null }) {
-  const faces = mesh.faces
-  const links = brush === 'smooth' ? neighbours(mesh) : null
+export function createStroke(mesh, { brush, radius, strength, invert = false, symmetry = null, detail = null }) {
+  // Dynamic topology changes the faces, so the stroke works on its own copy.
+  const dyn = detail && brush !== 'grab' ? detail : null
+  const faces = mesh.faces.map((f) => f.slice())
+  let links = brush === 'smooth' ? neighbours(mesh.vertices.length, faces) : null
   const start = mesh.vertices.map((v) => v.slice())
   let pos = start.map((v) => v.slice())
   const points = []
@@ -67,6 +171,7 @@ export function createStroke(mesh, { brush, radius, strength, invert = false, sy
   const sign = invert ? -1 : 1
 
   function dab(c, offset) {
+    if (dyn && refine(pos, faces, c, radius, dyn) && brush === 'smooth') links = neighbours(pos.length, faces)
     const hit = []
     for (let i = 0; i < pos.length; i++) {
       const w = falloff(len(sub(pos[i], c)), radius)
@@ -139,5 +244,6 @@ export function createStroke(mesh, { brush, radius, strength, invert = false, sy
       if (points.length) both(points[0], offset)
     },
     vertices: () => pos,
+    faces: () => faces,
   }
 }

@@ -1137,6 +1137,8 @@ export class Viewport {
       strength: s.strength,
       invert: Boolean(s.invert) !== Boolean(mods.ctrlKey || mods.metaKey),
       symmetry: s.symmetry || null,
+      // Dynamic topology: the detail size follows the brush.
+      detail: s.dynamic ? (s.radius * s.detail) / scale : null,
     }
     const inv = g.matrixWorld.clone().invert()
     const local = (p) => p.clone().applyMatrix4(inv).toArray()
@@ -1179,11 +1181,12 @@ export class Viewport {
     this.brushRing.material.color.set(0xffffff)
     this.flushStroke(st)
     const r = (v) => v.map((x) => Math.round(x * 1e5) / 1e5)
-    const { brush, radius, strength, invert, symmetry } = st.opts
+    const { brush, radius, strength, invert, symmetry, detail } = st.opts
     if (brush === 'grab' && !st.offset) return
     st.node.sculptPreview = true
     const cmd = { brush, points: st.path.points.map(r), radius: Math.round(radius * 1e5) / 1e5, strength, invert }
     if (symmetry) cmd.symmetry = symmetry
+    if (detail && brush !== 'grab') cmd.detail = Math.round(detail * 1e5) / 1e5
     if (brush === 'grab') cmd.offset = r(st.offset)
     this.onSculpt(st.node.id, cmd)
   }
@@ -1191,7 +1194,7 @@ export class Viewport {
   flushStroke(st = this.stroke) {
     if (!st || !st.dirty) return
     st.dirty = false
-    this.setMesh(st.node, { vertices: st.path.vertices(), faces: st.node.data.mesh.faces }, null)
+    this.setMesh(st.node, { vertices: st.path.vertices(), faces: st.path.faces() }, null)
   }
 
   /** Drop a preview the engine did not accept. */
