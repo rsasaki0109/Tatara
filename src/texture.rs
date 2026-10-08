@@ -13,6 +13,7 @@ use std::io::Cursor;
 use glam::DVec3;
 
 use crate::image::Pixels;
+use crate::nodes::{Baked, Graph};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,8 @@ pub enum Pattern {
     Wood,
     /// Marble veins in `color2`.
     Marble,
+    /// A node graph (`graph`) computes colour, roughness, metalness and height.
+    Nodes,
     /// The scene image named by `image`, tinted by the material colour.
     Image,
 }
@@ -64,6 +67,9 @@ pub struct Texture {
     /// A scene image used as a tangent-space normal map (overrides relief).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub normal_map: Option<String>,
+    /// For pattern `nodes`: the node graph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<Graph>,
     /// Stretch one tile over each side of the object instead of repeating
     /// every `scale` metres (labels, posters, photos).
     #[serde(default, skip_serializing_if = "is_false")]
@@ -90,6 +96,7 @@ impl Texture {
             image: None,
             relief: 0.0,
             normal_map: None,
+            graph: None,
             fit: false,
         }
     }
@@ -114,6 +121,14 @@ impl Texture {
                 "pattern \"image\" needs an `image` (and only it takes one)",
             ));
         }
+        if (self.pattern == Pattern::Nodes) != self.graph.is_some() {
+            return Err(EngineError::new(
+                "pattern \"nodes\" needs a `graph` (and only it takes one)",
+            ));
+        }
+        if let Some(g) = &self.graph {
+            g.validate()?;
+        }
         Ok(())
     }
 
@@ -123,36 +138,61 @@ impl Texture {
             .iter()
             .chain(&self.normal_map)
             .map(String::as_str)
+            .chain(self.graph.iter().flat_map(Graph::images))
     }
 }
 
-/// A texture ready to sample: the material colour plus decoded images.
+/// A texture ready to sample: the material colour plus decoded images and,
+/// for a node graph, its baked tiles.
 pub struct Look<'a> {
     pub base: &'a str,
     pub texture: &'a Texture,
     pub image: Option<&'a Pixels>,
     pub normal_map: Option<&'a Pixels>,
+    pub baked: Option<&'a Baked>,
 }
 
-impl Look<'_> {
+impl<'a> Look<'a> {
+    /// A pattern or image texture (no node graph).
+    pub fn plain(base: &'a str, texture: &'a Texture) -> Look<'a> {
+        Look {
+            base,
+            texture,
+            image: None,
+            normal_map: None,
+            baked: None,
+        }
+    }
+
     /// sRGB albedo at (u, v) in tile units.
     pub fn color(&self, u: f64, v: f64) -> [f64; 3] {
-        match (self.texture.pattern, self.image) {
-            (Pattern::Image, Some(px)) => {
+        match (self.texture.pattern, self.image, self.baked) {
+            (Pattern::Image, Some(px), _) => {
                 let (tint, c) = (rgb(self.base), px.sample(u, v));
                 [0, 1, 2].map(|i| tint[i] * c[i])
             }
+            (Pattern::Nodes, _, Some(b)) => b.color.sample(u, v),
             _ => color_at(self.base, self.texture, u, v),
         }
     }
 
+    /// Roughness and metalness at (u, v), where a node graph drives them.
+    pub fn roughness_metalness(&self, u: f64, v: f64) -> Option<(f64, f64)> {
+        let orm = self.baked?.orm.as_ref()?;
+        let c = orm.sample(u, v);
+        Some((c[1], c[2]))
+    }
+
     fn height(&self, u: f64, v: f64) -> f64 {
-        match (self.texture.pattern, self.image) {
-            (Pattern::Image, Some(px)) => {
+        match (self.texture.pattern, self.image, self.baked) {
+            (Pattern::Image, Some(px), _) => {
                 let c = px.sample(u, v);
                 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
             }
-            (p, _) => 1.0 - sample(p, u, v),
+            (Pattern::Nodes, _, b) => b
+                .and_then(|b| b.height.as_ref())
+                .map_or(0.0, |h| h.sample(u, v)[0]),
+            (p, _, _) => 1.0 - sample(p, u, v),
         }
     }
 
@@ -197,6 +237,26 @@ impl Look<'_> {
     /// How relief or a normal map tilts the normal `n` at `p`, blended over
     /// the three planes: the returned offset (same space as `p` and `n`) is
     /// added to `n` and renormalized.
+    /// Roughness and metalness blended over the three planes.
+    pub fn triplanar_roughness_metalness(
+        &self,
+        p: DVec3,
+        n: DVec3,
+        repeat: f64,
+    ) -> Option<(f64, f64)> {
+        self.baked?.orm.as_ref()?;
+        let (mut r, mut m) = (0.0, 0.0);
+        for plane in triplanar(p, n) {
+            if plane.weight > 0.0 {
+                let (pr, pm) =
+                    self.roughness_metalness(plane.uv[0] * repeat, plane.uv[1] * repeat)?;
+                r += pr * plane.weight;
+                m += pm * plane.weight;
+            }
+        }
+        Some((r, m))
+    }
+
     pub fn triplanar_tilt(&self, p: DVec3, n: DVec3, repeat: f64, step: f64) -> DVec3 {
         let mut out = DVec3::ZERO;
         for plane in triplanar(p, n) {
@@ -363,7 +423,7 @@ pub fn box_uv(p: DVec3, n: DVec3) -> [f64; 2] {
     }
 }
 
-fn hash(x: i64, y: i64, seed: i64) -> f64 {
+pub(crate) fn hash(x: i64, y: i64, seed: i64) -> f64 {
     let mut h = (x.wrapping_mul(374_761_393)
         ^ y.wrapping_mul(668_265_263)
         ^ seed.wrapping_mul(2_147_483_647)) as u64;
@@ -373,7 +433,7 @@ fn hash(x: i64, y: i64, seed: i64) -> f64 {
 }
 
 /// Value noise with period `n` cells in both directions (tileable on [0,1)).
-fn noise(u: f64, v: f64, n: i64, seed: i64) -> f64 {
+pub(crate) fn noise(u: f64, v: f64, n: i64, seed: i64) -> f64 {
     let (x, y) = (u * n as f64, v * n as f64);
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = (x - x0, y - y0);
@@ -408,7 +468,7 @@ fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
 pub fn sample(pattern: Pattern, u: f64, v: f64) -> f64 {
     let (u, v) = (u.rem_euclid(1.0), v.rem_euclid(1.0));
     match pattern {
-        Pattern::None | Pattern::Image => 0.0,
+        Pattern::None | Pattern::Image | Pattern::Nodes => 0.0,
         Pattern::Checker => (((u * 2.0).floor() + (v * 2.0).floor()) as i64 % 2) as f64,
         Pattern::Stripes => smoothstep(0.47, 0.53, ((u * 4.0).fract() - 0.5).abs() * 2.0),
         Pattern::Tiles => {
@@ -458,12 +518,7 @@ pub fn color_at(base: &str, t: &Texture, u: f64, v: f64) -> [f64; 3] {
 
 /// One tile of the texture as an sRGB PNG, `size` pixels square.
 pub fn bake_png(base: &str, t: &Texture, size: u32) -> Vec<u8> {
-    let look = Look {
-        base,
-        texture: t,
-        image: None,
-        normal_map: None,
-    };
+    let look = Look::plain(base, t);
     bake(size, |u, v| look.color(u, v))
 }
 
@@ -475,6 +530,11 @@ pub fn bake_normal_png(look: &Look, size: u32) -> Vec<u8> {
         let n = look.normal(u, v, step);
         [n.x, n.y, n.z].map(|c| c * 0.5 + 0.5)
     })
+}
+
+/// Pixels (a baked node tile) as an sRGB PNG of the same size.
+pub fn pixels_png(px: &Pixels) -> Vec<u8> {
+    bake(px.width, |u, v| px.sample(u, v))
 }
 
 fn bake(size: u32, at: impl Fn(f64, f64) -> [f64; 3]) -> Vec<u8> {
@@ -603,12 +663,8 @@ mod tests {
             assert!(w <= last + 1e-12 && last - w < 0.1, "smooth at {k}°");
             last = w;
         }
-        let look = Look {
-            base: "#ffffff",
-            texture: &Texture::new(Pattern::Checker, "#000000", 1.0),
-            image: None,
-            normal_map: None,
-        };
+        let checker = Texture::new(Pattern::Checker, "#000000", 1.0);
+        let look = Look::plain("#ffffff", &checker);
         let c = look.triplanar_color(p, DVec3::Z, 2.0);
         assert_eq!(c, look.color(p.x * 2.0, p.y * 2.0));
     }
@@ -617,12 +673,7 @@ mod tests {
     fn relief_sinks_mortar_and_flat_stays_flat() {
         let flat = Texture::new(Pattern::Brick, "#d8d0c4", 0.5);
         let bumpy = flat.clone().with_relief(1.0);
-        let look = |t| Look {
-            base: "#a4452c",
-            texture: t,
-            image: None,
-            normal_map: None,
-        };
+        let look = |t| Look::plain("#a4452c", t);
         assert_eq!(look(&flat).normal(0.3, 0.37, 0.002), DVec3::Z);
         // Inside a brick the face is nearly flat (a little grain); on the
         // slope down into the mortar joint between rows (v = 0.25) the

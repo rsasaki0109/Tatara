@@ -192,6 +192,20 @@ try {
   await page.waitForFunction(() => window.__tatara.debug().textured === 1)
   check(true, 'an uploaded image becomes a scene image and a fitted texture')
   check((await page.evaluate(() => window.__tatara.debug().triplanar)) === 0, 'fitted images use UVs, not the triplanar blend')
+  // Node materials: the Nodes chip opens the editor; a preset wires
+  // colour, roughness, metalness and height.
+  await page.click('[data-pattern=nodes]')
+  await page.waitForSelector('#node-editor:not([hidden]) .ne-node')
+  await page.selectOption('#ne-preset', 'rust')
+  await page.waitForFunction(() =>
+    fetch('/api/scene')
+      .then((r) => r.json())
+      .then((s) => s.objects[0].material.texture?.graph?.output?.metalness?.node === 'metal'),
+  )
+  await page.waitForFunction(() => window.__tatara.debug().roughnessMapped === 1)
+  check(true, 'the node editor applies a graph that drives colour, roughness and metalness')
+  await page.click('[data-ne-close]')
+  await page.waitForSelector('#node-editor[hidden]', { state: 'attached' })
   await page.click('[data-pattern=none]')
   await page.waitForFunction(() => window.__tatara.debug().textured === 0)
   await page.waitForTimeout(300)

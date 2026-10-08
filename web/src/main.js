@@ -2,6 +2,7 @@ import './style.css'
 import { createApi } from './api.js'
 import { Animator, Clock } from './clock.js'
 import { Viewport, displayMesh, hasUvs } from './viewport.js'
+import { NodeEditor, starterGraph } from './nodes.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
@@ -71,6 +72,7 @@ const PATTERNS = [
   ['checker', 'Checker', '#2b2d33'],
   ['stripes', 'Stripes', '#2b2d33'],
   ['image', 'Image…'],
+  ['nodes', 'Nodes'],
 ]
 
 const DEFAULT_VESSEL = [
@@ -140,6 +142,26 @@ const viewport = new Viewport($('viewport'), clock, animator, {
     run([{ op: 'move_vertices', id, vertices, offset: offset.map((v) => Math.round(v * 1e6) / 1e6) }], 'Gizmo').catch(() => {}),
 })
 app.viewport = viewport
+
+// ---------------------------------------------------------------------------
+// Node editor: edits the node graph of one object's material.
+// ---------------------------------------------------------------------------
+
+const nodeEditor = new NodeEditor($('node-editor'), {
+  images: () => Object.keys(app.scene.images || {}),
+  onClose: () => {
+    app.nodeTarget = null
+    nodeEditor.hide()
+  },
+  onChange: (graph) => {
+    const o = objectById(app.nodeTarget)
+    if (!o) return
+    const t = o.material.texture
+    run([{ op: 'material', id: o.id, texture: { ...t, pattern: 'nodes', graph } }]).catch(() => {})
+  },
+})
+nodeEditor.toast = (m) => toast(m, 'error')
+
 
 // ---------------------------------------------------------------------------
 // State
@@ -652,6 +674,24 @@ function render() {
   $('chat-send').disabled = !app.ai
   $('chat-status').textContent = app.ai || app.replaying ? $('chat-status').textContent : 'Set TATARA_AI_* on the server to enable'
   renderProperties(sel)
+  syncNodeEditor()
+}
+
+function openNodes(o) {
+  app.nodeTarget = o.id
+  nodeEditor.show(o.material.texture.graph, o.name)
+}
+
+/** Keep the node editor on its object's current graph, or close it. */
+function syncNodeEditor() {
+  if (!nodeEditor.open) return
+  const o = objectById(app.nodeTarget)
+  const graph = o?.material.texture?.pattern === 'nodes' ? o.material.texture.graph : null
+  if (!graph) {
+    app.nodeTarget = null
+    return nodeEditor.hide()
+  }
+  if (JSON.stringify(graph) !== JSON.stringify(nodeEditor.graph)) nodeEditor.set(graph)
 }
 
 $('outliner').addEventListener('click', (e) => {
@@ -801,7 +841,9 @@ function renderProperties(o) {
 /** Second colour or image, tile size (box projection only) and relief. */
 function textureControls(t, ownUvs) {
   const lead =
-    t.pattern === 'image'
+    t.pattern === 'nodes'
+      ? '<button class="chip on" data-edit-nodes title="Open the node editor">Edit nodes</button>'
+      : t.pattern === 'image'
       ? `<code class="image-name" title="Image">${escapeHtml(t.image)}</code>`
       : t.pattern === 'none'
         ? '<span></span>'
@@ -995,6 +1037,7 @@ $('properties').addEventListener('click', (e) => {
   if (e.target.closest('[data-tex-fit]') && o0?.material.texture) {
     return run([{ op: 'material', id: o0.id, texture: { ...o0.material.texture, fit: !o0.material.texture.fit } }]).catch(() => {})
   }
+  if (e.target.closest('[data-edit-nodes]') && o0) return openNodes(o0)
   const pattern = e.target.closest('[data-pattern]')
   if (pattern && o0) {
     const [id, , color2] = PATTERNS.find(([p]) => p === pattern.dataset.pattern)
@@ -1003,6 +1046,16 @@ $('properties').addEventListener('click', (e) => {
       return $('image-input').click()
     }
     const old = o0.material.texture
+    if (id === 'nodes') {
+      if (old?.pattern === 'nodes') return openNodes(o0)
+      const texture = { pattern: 'nodes', graph: starterGraph(o0.material.color), scale: old?.scale ?? 0.5, relief: old?.relief || 0.4 }
+      return run([{ op: 'material', id: o0.id, texture }])
+        .then(() => {
+          const o = objectById(o0.id)
+          if (o?.material.texture?.pattern === 'nodes') openNodes(o)
+        })
+        .catch(() => {})
+    }
     const texture = id === 'none' ? { pattern: id } : { pattern: id, color2, scale: old?.scale ?? 0.5, relief: old?.relief ?? 0 }
     return run([{ op: 'material', id: o0.id, texture }]).catch(() => {})
   }
@@ -1360,6 +1413,7 @@ window.__tatara = {
   debug: () => ({ pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
     triplanar: [...viewport.nodes.values()].filter((n) => 'TRIPLANAR' in n.mesh.material.defines).length,
+    roughnessMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.roughnessMap?.image).length,
   }),
   async tick(ms) {
     clock.advance(ms)

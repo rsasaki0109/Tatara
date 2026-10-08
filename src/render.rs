@@ -13,6 +13,7 @@ use glam::{DMat3, DMat4, DVec2, DVec3, DVec4};
 
 use crate::engine::{Editor, EngineError};
 use crate::image::Pixels;
+use crate::nodes::Baked;
 use crate::texture::{BoxProjection, Look, Texture};
 
 const SUPERSAMPLE: usize = 2;
@@ -87,6 +88,8 @@ struct Textured {
     texture: Texture,
     image: Option<Arc<Pixels>>,
     normal_map: Option<Arc<Pixels>>,
+    /// A node graph's tiles.
+    baked: Option<Baked>,
 }
 
 impl Textured {
@@ -96,8 +99,17 @@ impl Textured {
             texture: &self.texture,
             image: self.image.as_deref(),
             normal_map: self.normal_map.as_deref(),
+            baked: self.baked.as_ref(),
         }
     }
+}
+
+/// What a surface is like at one point.
+struct Point {
+    albedo: DVec3,
+    normal: DVec3,
+    roughness: f64,
+    metalness: f64,
 }
 
 /// Where a box-projected texture blends its three planes: the object's
@@ -133,24 +145,38 @@ impl Shading {
         }
     }
 
-    /// The shading normal `n` bent by relief or a normal map at `uv`.
-    /// Albedo and shading normal at world point `p` with normal `n`: blended
-    /// over three planes for box-projected textures (no seams on curved
-    /// surfaces), or from the triangle's UVs otherwise.
-    fn at(&self, p: DVec3, n: DVec3, tangents: [DVec3; 2], uv: DVec2) -> (DVec3, DVec3) {
+    /// The surface at world point `p` with normal `n`: blended over three
+    /// planes for box-projected textures (no seams on curved surfaces), or
+    /// from the triangle's UVs otherwise.
+    fn at(&self, p: DVec3, n: DVec3, tangents: [DVec3; 2], uv: DVec2) -> Point {
         let (Some(t), Some(tp)) = (&self.texture, &self.triplanar) else {
-            return (self.albedo(uv), self.bend(n, tangents, uv));
+            let rm = self
+                .texture
+                .as_ref()
+                .and_then(|t| t.look().roughness_metalness(uv.x, uv.y));
+            return self.point(self.albedo(uv), self.bend(n, tangents, uv), rm);
         };
         let look = t.look();
         let q = tp.to_local.transform_point3(p);
         let nq = tp.rotation.transpose() * n;
         let c = look.triplanar_color(q, nq, tp.repeat);
         let albedo = DVec3::from_array(c.map(srgb_to_linear));
+        let rm = look.triplanar_roughness_metalness(q, nq, tp.repeat);
         if !look.bumpy() {
-            return (albedo, n);
+            return self.point(albedo, n, rm);
         }
         let tilt = look.triplanar_tilt(q, nq, tp.repeat, 1.0 / 512.0);
-        (albedo, (tp.rotation * (nq + tilt)).normalize_or(n))
+        self.point(albedo, (tp.rotation * (nq + tilt)).normalize_or(n), rm)
+    }
+
+    fn point(&self, albedo: DVec3, normal: DVec3, rm: Option<(f64, f64)>) -> Point {
+        let (roughness, metalness) = rm.unwrap_or((self.roughness, self.metalness));
+        Point {
+            albedo,
+            normal,
+            roughness,
+            metalness,
+        }
     }
 
     fn bend(&self, n: DVec3, tangents: [DVec3; 2], uv: DVec2) -> DVec3 {
@@ -256,6 +282,7 @@ fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepar
         let index = materials.len() as u32;
         let texture = material.texture.clone().map(|t| Textured {
             base: material.color.clone(),
+            baked: crate::nodes::bake_material(&material, images, 512),
             image: pixels(&t.image),
             normal_map: pixels(&t.normal_map),
             texture: t,
@@ -624,8 +651,8 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
                 o => {
                     let m = &prep.materials[o as usize];
                     let tangents = prep.tris[tri_at[i] as usize].tangents;
-                    let (albedo, bent) = m.at(world[i], normal[i], tangents, uv[i]);
-                    let (diffuse, gloss) = surface(m, albedo, world[i], bent, eye, shadow);
+                    let pt = m.at(world[i], normal[i], tangents, uv[i]);
+                    let (diffuse, gloss) = surface(m, &pt, world[i], eye, shadow);
                     diffuse + gloss + m.emissive
                 }
             };
@@ -678,8 +705,9 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
             let p = t.p[0] * b[0] + t.p[1] * b[1] + t.p[2] * b[2];
             let nn = (t.n[0] * b[0] + t.n[1] * b[1] + t.n[2] * b[2]).normalize_or_zero();
             let at = t.uv[0] * b[0] + t.uv[1] * b[1] + t.uv[2] * b[2];
-            let (albedo, bent) = m.at(p, nn, t.tangents, at);
-            let (diffuse, gloss) = surface(m, albedo, p, bent, eye, shadow);
+            let pt = m.at(p, nn, t.tangents, at);
+            let albedo = pt.albedo;
+            let (diffuse, gloss) = surface(m, &pt, p, eye, shadow);
             let facing = nn.dot((eye - p).normalize()).abs();
             let reflect = (1.0 - facing).powi(3);
             let tint = DVec3::ONE.lerp(albedo, 0.55) * m.transmission * (1.0 - reflect);
@@ -756,36 +784,30 @@ fn box_blur(img: &mut [DVec3], n: usize, r: usize) {
     }
 }
 
-/// Diffuse and glossy light leaving a surface point toward the eye;
-/// `albedo` is the (possibly textured) base colour there.
-fn surface(
-    m: &Shading,
-    albedo: DVec3,
-    p: DVec3,
-    n: DVec3,
-    eye: DVec3,
-    shadow: &ShadowMap,
-) -> (DVec3, DVec3) {
+/// Diffuse and glossy light leaving a surface point toward the eye; `pt`
+/// is the (possibly textured) surface there.
+fn surface(m: &Shading, pt: &Point, p: DVec3, eye: DVec3, shadow: &ShadowMap) -> (DVec3, DVec3) {
+    let (albedo, n) = (pt.albedo, pt.normal);
     let v = (eye - p).normalize();
     let nn = if n.dot(v) < 0.0 { -n } else { n };
     let l = shadow.light;
     let rim = DVec3::new(-5.0, 4.0, -6.0).normalize();
     let lit = shadow.lit(p, nn);
-    let diffuse_col = albedo * (1.0 - m.metalness * 0.85);
+    let diffuse_col = albedo * (1.0 - pt.metalness * 0.85);
     let hemi = DVec3::new(0.30, 0.31, 0.34).lerp(DVec3::new(0.62, 0.64, 0.70), 0.5 + 0.5 * nn.y);
     let key = nn.dot(l).max(0.0) * lit * 2.0;
     let fill = nn.dot(rim).max(0.0) * 0.55;
     let h = (l + v).normalize();
-    let shininess = (2.0 / m.roughness.max(0.05).powi(4) - 2.0).clamp(2.0, 2048.0);
-    let spec_strength = (1.0 - m.roughness).powi(2) * 0.9 + 0.04;
-    let spec_col = DVec3::splat(1.0).lerp(albedo, m.metalness);
+    let shininess = (2.0 / pt.roughness.max(0.05).powi(4) - 2.0).clamp(2.0, 2048.0);
+    let spec_strength = (1.0 - pt.roughness).powi(2) * 0.9 + 0.04;
+    let spec_col = DVec3::splat(1.0).lerp(albedo, pt.metalness);
     let spec =
         nn.dot(h).max(0.0).powf(shininess) * spec_strength * lit * 2.3 * (shininess + 8.0) / 64.0;
     let grazing = 1.0 - nn.dot(v).max(0.0);
     let fresnel = grazing.powi(5) * 0.25;
     // Glass mirrors the studio at grazing angles; metals mirror it everywhere.
     let sheen = hemi * (0.04 + 0.9 * grazing.powi(3)) * m.transmission
-        + spec_col * hemi * m.metalness * (1.0 - m.roughness * 0.6) * 0.55;
+        + spec_col * hemi * pt.metalness * (1.0 - pt.roughness * 0.6) * 0.55;
     (
         diffuse_col * (hemi * 0.9 + DVec3::splat(key + fill)),
         spec_col * (spec + fresnel) + sheen,
@@ -1039,6 +1061,41 @@ mod tests {
             changed > 30,
             "relief shades the mortar edges ({changed} values changed)"
         );
+    }
+
+    #[test]
+    fn renders_node_graph_colours_and_metal() {
+        let render = |output: serde_json::Value| {
+            let mut ed = Editor::new();
+            let batch: CommandBatch = serde_json::from_value(serde_json::json!({"commands": [
+                {"op": "add", "primitive": {"kind": "cube"}, "translation": [0, 0.5, 0], "color": "#808080", "roughness": 0.9, "texture": {"pattern": "nodes", "graph": {
+                    "nodes": [{"id": "c", "type": "voronoi", "scale": 3, "output": "cells"},
+                              {"id": "r", "type": "ramp", "factor": {"node": "c"}, "constant": true, "stops": [{"at": 0, "color": "#d03020"}, {"at": 0.5, "color": "#2040d0"}]}],
+                    "output": output
+                }}}
+            ]}))
+            .unwrap();
+            ed.apply(&batch).unwrap();
+            let opts = RenderOptions {
+                views: parse_views("front").unwrap(),
+                size: 64,
+                focus: None,
+                frame: None,
+            };
+            decode(&render_png(&ed, &opts).unwrap()).2
+        };
+        let px = render(serde_json::json!({"color": {"node": "r"}}));
+        let count = |px: &[u8], f: &dyn Fn(&[u8]) -> bool| px.chunks(3).filter(|c| f(c)).count();
+        assert!(
+            count(&px, &|c| c[0] as i32 > c[2] as i32 + 50) > 100,
+            "red cells"
+        );
+        assert!(
+            count(&px, &|c| c[2] as i32 > c[0] as i32 + 50) > 100,
+            "blue cells"
+        );
+        let shiny = render(serde_json::json!({"color": {"node": "r"}, "roughness": 0.05}));
+        assert_ne!(px, shiny, "the graph's roughness changes the highlight");
     }
 
     #[test]

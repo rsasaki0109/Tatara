@@ -111,6 +111,7 @@ export class DemoRunner {
     if (s.stroke) return this.stroke(s)
     if (s.choose) return this.choose(s)
     if (s.upload) return this.upload(s)
+    if (s.wire) return this.wire(s)
     if (s.reveal) {
       const el = document.querySelector(s.reveal)
       if (!el) throw new Error(`demo: nothing matches ${s.reveal}`)
@@ -305,6 +306,37 @@ export class DemoRunner {
     if (!option) throw new Error(`demo: no option ${s.value}`)
     el.value = option.value
     el.dispatchEvent(new Event('change', { bubbles: true }))
+    await this.idle()
+    if (s.after) await this.sleep(s.after)
+  }
+
+  /** Drag from one element to another with pointer events (node wires). */
+  async wire(s) {
+    const [fromSel, toSel] = s.wire
+    const centre = (sel) => {
+      const el = document.querySelector(sel)
+      if (!el) throw new Error(`demo: nothing matches ${sel}`)
+      const r = el.getBoundingClientRect()
+      return [el, r.left + r.width / 2, r.top + r.height / 2]
+    }
+    const [from, x0, y0] = centre(fromSel)
+    await this.moveTo(x0, y0)
+    const press = this.press()
+    from.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x0, clientY: y0, button: 0 }))
+    const [, x1, y1] = centre(toSel)
+    const ms = s.ms ?? 700
+    await this.app.animator.add(
+      'cursor',
+      ms,
+      (t) => {
+        this.pos = { x: x0 + (x1 - x0) * t, y: y0 + (y1 - y0) * t - Math.sin(Math.PI * t) * 30 }
+        this.placeCursor()
+        window.dispatchEvent(new PointerEvent('pointermove', { clientX: this.pos.x, clientY: this.pos.y }))
+      },
+      ease.inOut,
+    )
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: x1, clientY: y1 }))
+    await press
     await this.idle()
     if (s.after) await this.sleep(s.after)
   }
