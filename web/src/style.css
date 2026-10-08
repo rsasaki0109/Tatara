@@ -609,6 +609,7 @@ button.primary:disabled {
 .card-title .row-gap {
   display: flex;
   gap: 6px;
+  white-space: nowrap;
 }
 
 .card-title .small {
