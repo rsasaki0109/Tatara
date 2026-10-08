@@ -161,6 +161,7 @@ fn array(mesh: &Mesh, count: u32, offset: Vec3) -> Mesh {
         vertices: Vec::with_capacity(mesh.vertices.len() * count as usize),
         faces: Vec::with_capacity(mesh.faces.len() * count as usize),
         uvs: Vec::new(),
+        seams: Vec::new(),
     };
     for c in 0..count {
         let d = c as f64;
@@ -177,6 +178,8 @@ fn array(mesh: &Mesh, count: u32, offset: Vec3) -> Mesh {
                 .map(|f| f.iter().map(|&i| i + c * n).collect()),
         );
         out.uvs.extend(mesh.uvs.iter().cloned());
+        out.seams
+            .extend(mesh.seams.iter().map(|&[a, b]| [a + c * n, b + c * n]));
     }
     out
 }
@@ -198,6 +201,7 @@ fn deform(mesh: &Mesh, f: impl Fn(Vec3, f64) -> Vec3) -> Mesh {
             .collect(),
         faces: mesh.faces.clone(),
         uvs: mesh.uvs.clone(),
+        seams: mesh.seams.clone(),
     }
 }
 

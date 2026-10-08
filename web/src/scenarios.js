@@ -863,4 +863,40 @@ export const nodes = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes }
+// UV editor: unwrap a can, lay its islands out over the UV grid, then wrap a
+// painted label around the side through the mesh's own UVs.
+export const uv = {
+  title: 'UV editor',
+  width: 800,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 1.4, height: 0.08, segments: 96 }, translation: [0, 0.04, 0], color: '#26272b', roughness: 0.85 },
+    { op: 'add', name: 'Can', primitive: { kind: 'cylinder', radius: 0.42, height: 1.1, segments: 48 }, translation: [0, 0.63, 0], color: '#e8e4dc', roughness: 0.35, metalness: 0.2 },
+    { op: 'shade', id: 'Can', smooth: true },
+  ],
+  camera: { azimuth: 18, elevation: 14, distance: 3.6, target: [-0.55, 0.62, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Unwrap a mesh in the UV editor', hint: 'unwrap · cylinder' },
+    { pick: 'Can', after: 100 },
+    { click: '[data-uv-open]', after: 500 },
+    { click: '[data-unwrap=cylinder]', after: 800 },
+    { caption: 'Drag an island: the grid follows on the model', hint: 'transform_uvs' },
+    { uv: 'Can', face: 48, drag: [0, 0.18], ms: 800, after: 400 },
+    { click: '[data-uv-op=shrink]', after: 500 },
+    { click: '[data-uv-op=shrink]', after: 500 },
+    { click: '[data-uv-op=fill]', after: 700 },
+    { caption: 'Paint a label onto exactly the side', hint: 'image texture · own UVs' },
+    { click: '[data-uv-close]', after: 200 },
+    { click: '[data-pattern=image]', after: 150 },
+    { upload: '#image-input', paint: 'sunset', name: 'Label.png', after: 700 },
+    { select: null },
+    { cursor: false },
+    { caption: 'UVs export with the mesh', hint: 'GLB · TEXCOORD_0' },
+    { camera: { azimuth: 18, elevation: 14, distance: 3.2, target: [0, 0.62, 0] }, ms: 1200, async: true },
+    { spin: 7 },
+    { wait: 2400 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv }

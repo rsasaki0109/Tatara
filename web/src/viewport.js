@@ -11,6 +11,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
 import { ease } from './clock.js'
 import { isAnimated, pose } from './anim.js'
 import { createStroke } from './sculpt.js'
+import { uvGridCanvas } from './uveditor.js'
 
 const CREASE = THREE.MathUtils.degToRad(38)
 const SELECT = 0xff8a4c
@@ -226,10 +227,18 @@ float metalnessFactor = metalness;
   }
 }
 
+/** A fingerprint of a mesh's own UVs (empty when it has none). */
+function uvKey(mesh) {
+  if (!mesh.uvs?.length) return ''
+  let h = mesh.uvs.length
+  for (const f of mesh.uvs) for (const [u, v] of f) h = (h * 1.000193 + u * 5.3 + v * 9.1) % 1e9
+  return `:uv${h.toFixed(6)}`
+}
+
 /** What the displayed geometry of an object depends on. */
 function geometryKey(o, mesh) {
   const t = o.material?.texture
-  return meshKey(mesh) + (o.smooth ? ':smooth' : '') + (t ? `:${o.transform.scale.join(',')}:${t.fit ? 'fit' : ''}` : '')
+  return meshKey(mesh) + uvKey(mesh) + (o.smooth ? ':smooth' : '') + (t ? `:${o.transform.scale.join(',')}:${t.fit ? 'fit' : ''}` : '')
 }
 
 /** A short, stable fingerprint of a string (cache-busting URLs). */
@@ -575,6 +584,10 @@ export class Viewport {
       new THREE.BufferGeometry(),
       new THREE.LineBasicMaterial({ color: 0xffd0a8, depthTest: false }),
     )
+    // UV seams, drawn red like Blender's while editing or unwrapping.
+    const seams = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xff3b3b, depthTest: false }))
+    seams.visible = false
+    seams.renderOrder = 4
     for (const x of [wire, outline, faceMark, cageLines, points, selPoints, selEdges]) {
       x.visible = false
       x.renderOrder = 2
@@ -583,9 +596,9 @@ export class Viewport {
     points.renderOrder = 4
     selEdges.renderOrder = 4
     selPoints.renderOrder = 5
-    group.add(mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges)
+    group.add(mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges, seams)
     this.root.add(group)
-    const node = { id: o.id, group, mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges, data: o, key: null, cageKey: null, triFace: [] }
+    const node = { id: o.id, group, mesh, wire, outline, faceMark, cage, cageLines, points, selPoints, selEdges, seams, data: o, key: null, cageKey: null, triFace: [] }
     this.nodes.set(o.id, node)
     const posed = pose(o, this.currentFrame)
     this.setTransform(node.group, posed.transform)
@@ -616,7 +629,7 @@ export class Viewport {
             const s = morph[i]
             for (let k = 0; k < 3; k++) verts[i][k] = s[k] + (end[i][k] - s[k]) * t
           }
-          const live = { vertices: verts, faces: o.mesh.faces }
+          const live = { vertices: verts, faces: o.mesh.faces, uvs: o.mesh.uvs }
           this.setMesh(node, live, t < 1 ? null : key)
           this.setCage(node, live, t < 1 ? null : meshKey(o.mesh))
         })
@@ -626,6 +639,7 @@ export class Viewport {
       }
     }
     if (meshKey(o.mesh) !== node.cageKey && !this.anim.has(`mesh:${o.id}`)) this.setCage(node, o.mesh)
+    else if (JSON.stringify(o.mesh.seams || []) !== node.seamKey) this.setSeams(node, o.mesh)
     const posed = pose(o, this.currentFrame)
     const tf = posed.transform
     const animated = isAnimated(o)
@@ -716,7 +730,8 @@ export class Viewport {
   }
 
   applyMaterial(m, mat) {
-    this.applyTexture(m, mat)
+    if (m.userData.uvPreview) this.applyUvGrid(m)
+    else this.applyTexture(m, mat)
     if (!m.userData.bakedColor || !m.map) m.color.set(mat.color)
     // A baked roughness/metalness map already holds the material's values.
     m.roughness = m.userData.ormUrl ? 1 : mat.roughness
@@ -813,7 +828,9 @@ export class Viewport {
       return
     }
     this.loadImage(url).then((image) => {
-      if (!image || m.userData[key] !== url) return
+      if (m.userData[key] !== url) return
+      // Forget a map that failed to load so the next update asks again.
+      if (!image) return void (m.userData[key] = undefined)
       const tex = new THREE.Texture(image)
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping
       tex.colorSpace = slot === 'map' ? THREE.SRGBColorSpace : THREE.NoColorSpace
@@ -830,7 +847,8 @@ export class Viewport {
   loadImage(url) {
     let image = this.textureImages.get(url)
     if (!image) {
-      image = this.clock.track(
+      // A busy server or decoder can fail once; try again before giving up.
+      const attempt = (left) =>
         fetch(url)
           .then((r) => {
             if (!r.ok) throw new Error(r.statusText)
@@ -842,6 +860,9 @@ export class Viewport {
             await img.decode()
             return img
           })
+          .catch((e) => (left > 1 ? attempt(left - 1) : Promise.reject(e)))
+      image = this.clock.track(
+        attempt(3)
           .catch(() => {
             this.textureImages.delete(url)
             return null
@@ -959,7 +980,57 @@ export class Viewport {
     node.points.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(base.vertices.flat(), 3))
     node.baseMesh = base
     if (key) node.cageKey = key
+    this.setSeams(node, base)
     if (this.selected === node.id) this.setSelection(node.id, this.face)
+  }
+
+  setSeams(node, base) {
+    const pos = []
+    for (const [a, b] of base.seams || []) pos.push(...base.vertices[a], ...base.vertices[b])
+    node.seams.geometry.dispose()
+    node.seams.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+    node.seamKey = JSON.stringify(base.seams || [])
+    node.seams.visible = pos.length > 0 && ((this.edit.active && this.selected === node.id) || this.uvPreview === node.id)
+  }
+
+  /**
+   * Show a UV grid on object `id` (or none) so its unwrap reads at a
+   * glance, as in Blender's UV editing; its own textures come back after.
+   */
+  setUvPreview(id) {
+    if (this.uvPreview === id) return
+    const prev = this.nodes.get(this.uvPreview)
+    this.uvPreview = id
+    for (const node of [prev, this.nodes.get(id)]) {
+      if (!node) continue
+      const m = node.mesh.material
+      m.userData.uvPreview = node.id === id
+      if (!m.userData.uvPreview) {
+        // Let the real textures load again.
+        for (const slot of ['map', 'normalMap', 'roughnessMap', 'metalnessMap']) {
+          m[slot] = null
+          m.userData[`${slot}Url`] = undefined
+        }
+      }
+      this.applyMaterial(m, pose(node.data, this.currentFrame).material)
+      m.needsUpdate = true
+      this.setSeams(node, node.baseMesh || node.data.mesh)
+    }
+  }
+
+  applyUvGrid(m) {
+    this.uvGrid ||= Object.assign(new THREE.CanvasTexture(uvGridCanvas()), { colorSpace: THREE.SRGBColorSpace, anisotropy: 8 })
+    for (const slot of ['normalMap', 'roughnessMap', 'metalnessMap']) {
+      m[slot] = null
+      m.userData[`${slot}Url`] = undefined
+    }
+    m.map = this.uvGrid
+    m.userData.mapUrl = '#uv-grid'
+    m.userData.ormUrl = null
+    m.userData.bakedColor = true
+    m.userData.textured = false
+    m.userData.textureScale = 1
+    this.syncRepeat(m)
   }
 
   setSelection(id, face) {
@@ -974,6 +1045,7 @@ export class Viewport {
       node.outline.visible = (on && !editing) || (warned && !editing)
       node.outline.material.color.set(on ? SELECT : WARN)
       node.cageLines.visible = editing || (on && Boolean(node.data.display))
+      node.seams.visible = node.seams.geometry.attributes.position?.count > 0 && (editing || this.uvPreview === node.id)
       node.cageLines.material.opacity = editing ? 0.9 : 0.7
       node.cageLines.material.color.set(editing ? 0x111316 : SELECT)
       node.points.visible = editing && ed.mode === 'vertex'

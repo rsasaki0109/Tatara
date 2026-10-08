@@ -263,7 +263,7 @@ button.primary:disabled {
   background: radial-gradient(120% 90% at 50% 38%, #4a4c53 0%, #303238 48%, #1b1c20 100%);
 }
 
-.viewport canvas {
+.viewport > canvas {
   display: block;
   position: absolute;
   inset: 0;
@@ -1624,4 +1624,59 @@ input[type='range'] {
   top: 50%;
   margin-top: -5px;
   background: var(--accent-2);
+}
+
+/* ---- UV editor ----------------------------------------------------------- */
+
+.uv-editor {
+  position: absolute;
+  left: 10px;
+  top: 96px;
+  width: 324px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-radius: 10px;
+  background: rgba(16, 17, 20, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+  z-index: 4;
+}
+
+.uv-editor[hidden] {
+  display: none;
+}
+
+.uv-bar,
+.uv-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.uv-bar .uv-close {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.uv-row .chip {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.uv-editor .uv-canvas {
+  display: block;
+  width: 300px;
+  height: 300px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  cursor: pointer;
+  touch-action: none;
 }

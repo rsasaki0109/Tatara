@@ -47,6 +47,27 @@ for (let i = 0; i < 100; i++) {
 
 const browser = await chromium.launch({ executablePath: findBrowser(), args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] })
 let failed = false
+// page.waitForFunction treats a returned promise as truthy, so waits on
+// the server (fetch) poll here and await the page's answer. Then wait for
+// the editor to show that revision too, so the next click does not act on
+// a stale scene (and get a stale-revision error).
+async function until(page, fn, arg) {
+  const deadline = Date.now() + 30000
+  const wait = async (what, ok) => {
+    while (!(await ok())) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+      await page.waitForTimeout(50)
+    }
+  }
+  await wait(fn, () => page.evaluate(fn, arg))
+  await wait('the editor to catch up', () =>
+    page.evaluate(() =>
+      fetch('/api/scene')
+        .then((r) => r.json())
+        .then((s) => document.querySelector('#status-rev').textContent === `Revision ${s.revision}`),
+    ),
+  )
+}
 const check = (ok, what) => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`)
   if (!ok) failed = true
@@ -69,7 +90,7 @@ try {
   await settled()
 
   await page.keyboard.press('Escape') // detach the gizmo from the cube's centre
-  const box = await page.locator('#viewport canvas').boundingBox()
+  const box = await page.locator('#viewport > canvas').boundingBox()
   await page.keyboard.down('Alt')
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
   await page.keyboard.up('Alt')
@@ -154,37 +175,37 @@ try {
   await page.click('#outliner li')
   const material = () => page.evaluate(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material))
   await page.click('[data-preset=glass]')
-  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.transmission === 1))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.transmission === 1))
   await page.$eval('#p-opacity', (el) => {
     el.value = '0.5'
     el.dispatchEvent(new Event('change', { bubbles: true }))
   })
-  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.opacity === 0.5))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.opacity === 0.5))
   check(true, 'glass preset and opacity slider edit the material')
   await page.click('[data-preset=neon]')
-  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.emissive_strength > 1))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.emissive_strength > 1))
   const neon = await material()
   check(neon.emissive === neon.color && neon.opacity === 1, `neon preset glows in its colour (${neon.emissive})`)
   // Textures: a pattern chip sets one; the viewport shows the baked tile.
   await page.click('[data-pattern=brick]')
-  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.pattern === 'brick'))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.pattern === 'brick'))
   await page.waitForFunction(() => window.__tatara.debug().textured === 1)
   await page.$eval('#p-tscale', (el) => {
     el.value = '1.5'
     el.dispatchEvent(new Event('change', { bubbles: true }))
   })
-  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.scale === 1.5))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.scale === 1.5))
   check(true, 'a pattern chip textures the object; the tile size slider rescales it')
   check((await page.evaluate(() => window.__tatara.debug().triplanar)) === 1, 'projected textures blend in the triplanar shader')
   await page.$eval('#p-relief', (el) => {
     el.value = '0.6'
     el.dispatchEvent(new Event('change', { bubbles: true }))
   })
-  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.relief === 0.6))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.texture?.relief === 0.6))
   await page.waitForFunction(() => window.__tatara.debug().normalMapped === 1)
   check(true, 'the relief slider adds a normal map')
   await page.setInputFiles('#image-input', { name: 'label.png', mimeType: 'image/png', buffer: TINY_PNG })
-  await page.waitForFunction(() =>
+  await until(page, () =>
     fetch('/api/scene')
       .then((r) => r.json())
       .then((s) => s.images?.label && s.objects[0].material.texture?.image === 'label' && s.objects[0].material.texture.fit),
@@ -197,7 +218,7 @@ try {
   await page.click('[data-pattern=nodes]')
   await page.waitForSelector('#node-editor:not([hidden]) .ne-node')
   await page.selectOption('#ne-preset', 'rust')
-  await page.waitForFunction(() =>
+  await until(page, () =>
     fetch('/api/scene')
       .then((r) => r.json())
       .then((s) => s.objects[0].material.texture?.graph?.output?.metalness?.node === 'metal'),
@@ -209,6 +230,27 @@ try {
   await page.click('[data-pattern=none]')
   await page.waitForFunction(() => window.__tatara.debug().textured === 0)
   await page.waitForTimeout(300)
+
+  // UV editor: unwrap into islands, then move one island.
+  await page.click('[data-uv-open]')
+  await page.waitForSelector('#uv-editor:not([hidden]) .uv-canvas')
+  await page.click('[data-unwrap=cube]')
+  await page.waitForFunction(() => document.querySelector('#uv-hint')?.textContent.startsWith('6 islands'))
+  check(true, 'unwrapping a cube lays out six islands')
+  const uvBox = await page.locator('.uv-canvas').boundingBox()
+  const uv0 = await page.evaluate(() =>
+    fetch('/api/scene')
+      .then((r) => r.json())
+      .then((s) => s.objects[0].mesh.uvs[0]),
+  )
+  const [cu, cv] = uv0.reduce((a, p) => [a[0] + p[0] / uv0.length, a[1] + p[1] / uv0.length], [0, 0])
+  await page.mouse.click(uvBox.x + cu * uvBox.width, uvBox.y + (1 - cv) * uvBox.height)
+  await page.waitForFunction(() => document.querySelector('#uv-hint')?.textContent.startsWith('Island'))
+  await page.click('[data-uv-op=grow]')
+  await page.waitForFunction(() => document.querySelector('#activity li .what')?.textContent === 'transform_uvs')
+  check(true, 'an island scales with one transform_uvs command')
+  await page.click('[data-uv-close]')
+  await page.waitForSelector('#uv-editor[hidden]', { state: 'attached' })
 
   // Sculpt mode: a drag on the object is one sculpt command, not an orbit.
   const before = await faces()
@@ -224,7 +266,7 @@ try {
   await page.mouse.down()
   for (let i = 1; i <= 8; i++) await page.mouse.move(cx - 40 + i * 10, cy - i * 2)
   await page.mouse.up()
-  await page.waitForFunction((rev) => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision === rev + 1), rev0)
+  await until(page, (rev) => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision === rev + 1), rev0)
   await page.waitForFunction(() => document.querySelector('#activity li .what')?.textContent === 'sculpt')
   check(true, 'dragging in sculpt mode sends one sculpt command')
   const orbit1 = await page.evaluate(() => JSON.stringify(window.__tatara.camera()))
@@ -237,7 +279,7 @@ try {
   await page.mouse.down()
   for (let i = 1; i <= 8; i++) await page.mouse.move(cx - 40 + i * 10, cy - i * 2)
   await page.mouse.up()
-  await page.waitForFunction((rev) => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision === rev + 2), rev0)
+  await until(page, (rev) => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision === rev + 2), rev0)
   const sent = await page.evaluate(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].mesh.faces.length))
   check(sent > faces0, `dynamic detail adds faces under the brush (${faces0} → ${sent})`)
   await page.click('[data-brush-toggle=dynamic]')
@@ -288,7 +330,7 @@ try {
   check(x24 > 0 && x24 < 2, `pose is interpolated between keys (x=${x24.toFixed(3)} at frame 24)`)
   await page.fill('#frame-input', '1')
   await page.press('#frame-input', 'Enter')
-  await page.locator('#viewport canvas').focus()
+  await page.locator('#viewport > canvas').focus()
   await page.keyboard.press('Space')
   await page.waitForTimeout(700)
   await page.keyboard.press('Space')

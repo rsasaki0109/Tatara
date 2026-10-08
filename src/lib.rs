@@ -16,3 +16,4 @@ pub mod sculpt;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 pub mod texture;
+pub mod uv;

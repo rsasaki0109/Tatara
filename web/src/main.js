@@ -3,6 +3,7 @@ import { createApi } from './api.js'
 import { Animator, Clock } from './clock.js'
 import { Viewport, displayMesh, hasUvs } from './viewport.js'
 import { NodeEditor, starterGraph } from './nodes.js'
+import { UvEditor } from './uveditor.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
@@ -161,6 +162,13 @@ const nodeEditor = new NodeEditor($('node-editor'), {
   },
 })
 nodeEditor.toast = (m) => toast(m, 'error')
+
+const uvEditor = new UvEditor($('uv-editor'), {
+  onClose: () => closeUv(),
+  onUnwrap: (method) => app.uvTarget != null && run([{ op: 'unwrap', id: app.uvTarget, method }]).catch(() => {}),
+  onTransform: (faces, t) => app.uvTarget != null && run([{ op: 'transform_uvs', id: app.uvTarget, faces, ...t }]).catch(() => {}),
+})
+
 
 
 // ---------------------------------------------------------------------------
@@ -675,6 +683,27 @@ function render() {
   $('chat-status').textContent = app.ai || app.replaying ? $('chat-status').textContent : 'Set TATARA_AI_* on the server to enable'
   renderProperties(sel)
   syncNodeEditor()
+  syncUvEditor()
+}
+
+function openUv(o) {
+  app.uvTarget = o.id
+  uvEditor.show(o)
+  viewport.setUvPreview(o.id)
+}
+
+function closeUv() {
+  app.uvTarget = null
+  uvEditor.hide()
+  viewport.setUvPreview(null)
+}
+
+/** Keep the UV editor on its object, or close it if the object is gone. */
+function syncUvEditor() {
+  if (!uvEditor.open) return
+  const o = objectById(app.uvTarget)
+  if (!o) return closeUv()
+  uvEditor.set(o)
 }
 
 function openNodes(o) {
@@ -721,7 +750,7 @@ let renderedKey = ''
 function renderProperties(o) {
   const el = $('properties')
   const key = o
-    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
+    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
     : 'none'
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -819,6 +848,14 @@ function renderProperties(o) {
         <button class="small-btn" data-action="bevel" title="Bevel selected edges, or all edges (Ctrl+B)">${icon('bevel')}${app.mode === 'edit' && app.selectMode === 'edge' && app.sel.edges.length ? 'Bevel' : 'Bevel all'}</button>
       </div>
       <div class="row"><button class="small-btn wide" data-action="loopCut" ${app.mode === 'edit' && app.selectMode === 'edge' && app.sel.edges.length ? '' : 'disabled'} title="Cut a loop across the selected edge (Ctrl+R)">${icon('loopcut')}Loop cut</button></div>
+    </div>
+    <div class="card">
+      <div class="card-title">UV <span class="muted small">${o.mesh.uvs?.length ? 'unwrapped' : 'projected'}${o.mesh.seams?.length ? ` · ${o.mesh.seams.length} seams` : ''}</span></div>
+      <div class="row"><button class="small-btn" data-uv-open title="Open the UV editor">UV editor</button>${
+        app.mode === 'edit' && app.selectMode === 'edge' && app.sel.edges.length
+          ? '<button class="chip" data-seam="mark" title="Cut the UVs along the selected edges">Mark seam</button><button class="chip" data-seam="clear">Clear seam</button>'
+          : '<span class="muted small">Edge-select in edit mode to mark seams</span>'
+      }</div>
     </div>
     <div class="card boolean">
       <div class="card-title">Boolean <span class="muted small">cut · merge · overlap</span></div>
@@ -1038,6 +1075,11 @@ $('properties').addEventListener('click', (e) => {
     return run([{ op: 'material', id: o0.id, texture: { ...o0.material.texture, fit: !o0.material.texture.fit } }]).catch(() => {})
   }
   if (e.target.closest('[data-edit-nodes]') && o0) return openNodes(o0)
+  if (e.target.closest('[data-uv-open]') && o0) return openUv(o0)
+  const seam = e.target.closest('[data-seam]')
+  if (seam && o0 && app.sel.edges.length) {
+    return run([{ op: 'mark_seams', id: o0.id, edges: app.sel.edges, clear: seam.dataset.seam === 'clear' }]).catch(() => {})
+  }
   const pattern = e.target.closest('[data-pattern]')
   if (pattern && o0) {
     const [id, , color2] = PATTERNS.find(([p]) => p === pattern.dataset.pattern)
