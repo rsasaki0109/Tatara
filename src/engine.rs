@@ -5,7 +5,7 @@
 //! batch never leaves a half-edited scene behind. One successful batch is one
 //! undo step.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -17,6 +17,7 @@ use crate::anim::{self, Animation, Interpolation, KeyValue, Property, Track};
 use crate::assembly::{self, Layout, Side, Template};
 use crate::csg::{self, BoolOp};
 use crate::edit;
+use crate::image::{ImageAsset, MAX_IMAGES, decode_base64};
 use crate::modifiers::{self, Axis, Modifier};
 use crate::sculpt::{self, Brush};
 use crate::texture::{Pattern, Texture};
@@ -32,12 +33,38 @@ const HISTORY_LIMIT: usize = 200;
 // Scene data
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Mesh {
     /// Vertex positions in object space.
     pub vertices: Vec<Vec3>,
     /// Polygons as counter-clockwise vertex index loops (outward normals).
     pub faces: Vec<Vec<u32>>,
+    /// Optional texture coordinates per face corner, `uvs[f][k]` for
+    /// `faces[f][k]` (v up). Empty means box projection; edits that change
+    /// the topology drop them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uvs: Vec<Vec<[f64; 2]>>,
+}
+
+impl Mesh {
+    pub fn new(vertices: Vec<Vec3>, faces: Vec<Vec<u32>>) -> Mesh {
+        Mesh {
+            vertices,
+            faces,
+            uvs: Vec::new(),
+        }
+    }
+
+    /// Whether `uvs` matches the faces corner for corner.
+    pub fn has_uvs(&self) -> bool {
+        !self.uvs.is_empty()
+            && self.uvs.len() == self.faces.len()
+            && self
+                .uvs
+                .iter()
+                .zip(&self.faces)
+                .all(|(u, f)| u.len() == f.len())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -184,10 +211,14 @@ impl MaterialPreset {
                 m.emissive = m.color.clone();
                 m.emissive_strength = 2.0;
             }
-            Wood => m.texture = Some(Texture::new(Pattern::Wood, "#6b4426", 0.6)),
+            Wood => m.texture = Some(Texture::new(Pattern::Wood, "#6b4426", 0.6).with_relief(0.2)),
             Marble => m.texture = Some(Texture::new(Pattern::Marble, "#8f8a85", 1.0)),
-            Brick => m.texture = Some(Texture::new(Pattern::Brick, "#d8d0c4", 0.8)),
-            Tiles => m.texture = Some(Texture::new(Pattern::Tiles, "#8c867c", 1.2)),
+            Brick => {
+                m.texture = Some(Texture::new(Pattern::Brick, "#d8d0c4", 0.8).with_relief(0.7))
+            }
+            Tiles => {
+                m.texture = Some(Texture::new(Pattern::Tiles, "#8c867c", 1.2).with_relief(0.5))
+            }
             _ => {}
         }
         m
@@ -241,6 +272,9 @@ pub struct Scene {
     pub revision: u64,
     #[serde(default)]
     pub animation: Animation,
+    /// Image files by name, for textures and normal maps.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub images: BTreeMap<String, ImageAsset>,
 }
 
 impl Default for Scene {
@@ -250,6 +284,7 @@ impl Default for Scene {
             next_id: 1,
             revision: 0,
             animation: Animation::default(),
+            images: BTreeMap::new(),
         }
     }
 }
@@ -596,6 +631,9 @@ pub enum Command {
         name: Option<String>,
         vertices: Vec<Vec3>,
         faces: Vec<Vec<u32>>,
+        /// Texture coordinates per face corner (v up), like `Mesh::uvs`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uvs: Option<Vec<Vec<[f64; 2]>>>,
         #[serde(default)]
         translation: Option<Vec3>,
         #[serde(default)]
@@ -720,6 +758,17 @@ pub enum Command {
     },
     /// Remove every object.
     Clear {},
+    /// Store a PNG or JPEG image under `name` (replacing one of that name),
+    /// for textures (`{"pattern": "image", "image": name}`) and normal maps.
+    AddImage {
+        name: String,
+        /// The file as base64 (a `data:` URL works too).
+        data: String,
+    },
+    /// Remove an image no material uses.
+    DeleteImage {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1200,6 +1249,7 @@ fn apply_command(
                     .map(|v| to_local.transform_point3(DVec3::from(*v)).to_array())
                     .collect(),
                 faces: b.faces,
+                uvs: Vec::new(),
             };
             if to_local.determinant() < 0.0 {
                 for f in &mut b.faces {
@@ -1341,6 +1391,7 @@ fn apply_command(
             name,
             vertices,
             faces,
+            uvs,
             translation,
             rotation,
             scale,
@@ -1371,6 +1422,7 @@ fn apply_command(
             let mesh = Mesh {
                 vertices: vertices.clone(),
                 faces: faces.clone(),
+                uvs: uvs.clone().unwrap_or_default(),
             };
             if mesh.faces.is_empty() {
                 return err("a mesh needs at least one face");
@@ -1495,6 +1547,49 @@ fn apply_command(
             scene.animation = a;
         }
         Command::Clear {} => scene.objects.clear(),
+        Command::AddImage { name, data } => {
+            let name = check_name(name)?;
+            if !scene.images.contains_key(&name) && scene.images.len() >= MAX_IMAGES {
+                return err(format!("a scene holds at most {MAX_IMAGES} images"));
+            }
+            let image = ImageAsset::from_bytes(decode_base64(data)?)?;
+            scene.images.insert(name, image);
+        }
+        Command::DeleteImage { name } => {
+            if let Some(o) = scene.objects.iter().find(|o| {
+                o.material
+                    .texture
+                    .as_ref()
+                    .is_some_and(|t| t.images().any(|i| i == name))
+            }) {
+                return err(format!("image {name:?} is used by {:?}", o.name));
+            }
+            if scene.images.remove(name).is_none() {
+                return err(format!("no image named {name:?}"));
+            }
+        }
+    }
+    tidy(scene)
+}
+
+/// After every command: drop UVs an edit invalidated, and check that
+/// textures only name images the scene holds.
+fn tidy(scene: &mut Scene) -> Result<(), EngineError> {
+    for o in &mut scene.objects {
+        if !o.mesh.uvs.is_empty() && !o.mesh.has_uvs() {
+            o.mesh.uvs.clear();
+        }
+    }
+    check_images(scene)
+}
+
+fn check_images(scene: &Scene) -> Result<(), EngineError> {
+    for o in &scene.objects {
+        if let Some(t) = &o.material.texture
+            && let Some(missing) = t.images().find(|i| !scene.images.contains_key(*i))
+        {
+            return err(format!("{}: no image named {missing:?}", o.name));
+        }
     }
     Ok(())
 }
@@ -1629,7 +1724,7 @@ pub fn set_material(m: &mut Material, e: &MaterialEdit) -> Result<(), EngineErro
         }
     }
     if let Some(t) = e.texture {
-        if t.pattern == Pattern::None {
+        if t.pattern == Pattern::None && t.normal_map.is_none() {
             m.texture = None;
         } else {
             t.validate()?;
@@ -1696,6 +1791,16 @@ fn validate_scene(scene: &Scene) -> Result<(), EngineError> {
         anim::validate_tracks(o).map_err(ctx)?;
     }
     scene.animation.validate()?;
+    if scene.images.len() > MAX_IMAGES {
+        return err(format!("a scene holds at most {MAX_IMAGES} images"));
+    }
+    for (name, image) in &scene.images {
+        check_name(name)?;
+        image
+            .validate()
+            .map_err(|e| EngineError::new(format!("image {name:?}: {}", e.message)))?;
+    }
+    check_images(scene)?;
     Ok(())
 }
 
@@ -1710,6 +1815,14 @@ fn validate_mesh(mesh: &Mesh) -> Result<(), EngineError> {
     for f in &mesh.faces {
         if f.len() < 3 || f.iter().any(|&i| i >= n) {
             return err("faces need at least 3 valid vertex indices");
+        }
+    }
+    if !mesh.uvs.is_empty() {
+        if !mesh.has_uvs() {
+            return err("uvs need one entry per face corner");
+        }
+        if mesh.uvs.iter().flatten().flatten().any(|x| !x.is_finite()) {
+            return err("uvs must be finite");
         }
     }
     Ok(())
@@ -1796,6 +1909,9 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
         "frame": frame,
         "bounds": bounds,
         "objects": objects,
+        "images": scene.images.iter().map(|(name, i)| serde_json::json!({
+            "name": name, "mime": i.mime, "width": i.width, "height": i.height,
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -1861,6 +1977,7 @@ pub fn build_primitive(p: &Primitive) -> Result<Mesh, EngineError> {
             Mesh {
                 vertices: vec![[-h, 0.0, h], [h, 0.0, h], [h, 0.0, -h], [-h, 0.0, -h]],
                 faces: vec![vec![0, 1, 2, 3]],
+                uvs: Vec::new(),
             }
         }
         Primitive::Sphere {
@@ -1971,7 +2088,7 @@ fn cube(size: f64) -> Mesh {
         vec![7, 6, 2, 3], // +Y
         vec![0, 1, 5, 4], // -Y
     ];
-    Mesh { vertices, faces }
+    Mesh::new(vertices, faces)
 }
 
 /// Revolve a `[radius, height]` polyline around Y. Points with zero radius
@@ -2007,7 +2124,7 @@ pub fn lathe(profile: &[[f64; 2]], segments: u32) -> Mesh {
             }),
         }
     }
-    Mesh { vertices, faces }
+    Mesh::new(vertices, faces)
 }
 
 fn torus(big: f64, small: f64, nu: u32, nv: u32) -> Mesh {
@@ -2033,7 +2150,7 @@ fn torus(big: f64, small: f64, nu: u32, nv: u32) -> Mesh {
             ]);
         }
     }
-    Mesh { vertices, faces }
+    Mesh::new(vertices, faces)
 }
 
 fn vessel(
@@ -2317,7 +2434,7 @@ pub fn catmull_clark(mesh: &Mesh) -> Mesh {
             ]);
         }
     }
-    Mesh { vertices, faces }
+    Mesh::new(vertices, faces)
 }
 
 // ---------------------------------------------------------------------------
@@ -2700,6 +2817,86 @@ mod tests {
                 interpolation: Default::default(),
             }],
         });
+        assert!(Editor::new().load(saved).is_err());
+    }
+
+    #[test]
+    fn images_texture_objects_and_uvs_follow_topology() {
+        use base64::Engine as _;
+        let png = base64::engine::general_purpose::STANDARD.encode(crate::image::tests::tiny_png());
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add_image", "name": "Poster", "data": png},
+            {"op": "add", "name": "Frame", "primitive": {"kind": "cube"}, "texture": {"pattern": "image", "image": "Poster", "scale": 1}},
+            {"op": "add_mesh", "name": "Card", "vertices": [[0,0,0],[1,0,0],[1,1,0],[0,1,0]], "faces": [[0,1,2,3]], "uvs": [[[0,0],[1,0],[1,1],[0,1]]]}
+        ]})))
+        .unwrap();
+        let img = &ed.scene().images["Poster"];
+        assert_eq!((img.width, img.height), (2, 2));
+        assert!(ed.scene().objects[1].mesh.has_uvs());
+
+        for (bad, why) in [
+            (
+                serde_json::json!({"op": "material", "id": "Frame", "texture": {"pattern": "image", "image": "Nope"}}),
+                "unknown image",
+            ),
+            (
+                serde_json::json!({"op": "material", "id": "Frame", "texture": {"pattern": "image"}}),
+                "image pattern without image",
+            ),
+            (
+                serde_json::json!({"op": "material", "id": "Frame", "texture": {"pattern": "wood", "relief": 2}}),
+                "relief range",
+            ),
+            (
+                serde_json::json!({"op": "delete_image", "name": "Poster"}),
+                "image in use",
+            ),
+            (
+                serde_json::json!({"op": "add_image", "name": "Bad", "data": "aGVsbG8="}),
+                "not an image",
+            ),
+            (
+                serde_json::json!({"op": "add_mesh", "vertices": [[0,0,0],[1,0,0],[1,1,0]], "faces": [[0,1,2]], "uvs": [[[0,0]]]}),
+                "uvs per corner",
+            ),
+        ] {
+            assert!(
+                ed.apply(&batch(serde_json::json!({"commands": [bad]})))
+                    .is_err(),
+                "{why}"
+            );
+        }
+
+        // Moving vertices keeps the UVs; extruding (new faces) drops them.
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "move_vertices", "id": "Card", "vertices": [2], "offset": [0, 0.5, 0]}
+        ]})))
+        .unwrap();
+        assert!(ed.scene().objects[1].mesh.has_uvs());
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "extrude", "id": "Card", "face": 0, "distance": 0.2}
+        ]})))
+        .unwrap();
+        assert!(ed.scene().objects[1].mesh.uvs.is_empty());
+
+        // A normal map alone (no colour pattern) is a texture too.
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "material", "id": "Frame", "texture": {"pattern": "none", "normal_map": "Poster"}},
+            {"op": "material", "id": "Card", "texture": {"pattern": "none"}},
+            {"op": "delete_image", "name": "Poster"}
+        ]})))
+        .unwrap_err();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "material", "id": "Frame", "texture": {"pattern": "none"}},
+            {"op": "delete_image", "name": "Poster"}
+        ]})))
+        .unwrap();
+        assert!(ed.scene().images.is_empty());
+        // Saved scenes are checked: images must match their data.
+        ed.undo().unwrap();
+        let mut saved = ed.scene().clone();
+        saved.images.get_mut("Poster").unwrap().width = 9;
         assert!(Editor::new().load(saved).is_err());
     }
 

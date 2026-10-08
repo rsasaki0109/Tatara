@@ -5,11 +5,15 @@
 //! legibility. Several named views are tiled into one labelled PNG. No GPU or
 //! browser is needed: the editor process answers `GET /api/render` directly.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use glam::dcamera::rh::{proj::directx, view::look_at_mat4};
 use glam::{DMat4, DVec2, DVec3, DVec4};
 
 use crate::engine::{Editor, EngineError};
-use crate::texture::{self, Texture};
+use crate::image::Pixels;
+use crate::texture::{BoxProjection, Look, Texture};
 
 const SUPERSAMPLE: usize = 2;
 const SHADOW_SIZE: usize = 1024;
@@ -72,13 +76,33 @@ struct Tri {
     n: [DVec3; 3],
     /// Texture coordinates in tiles (zero when untextured).
     uv: [DVec2; 3],
+    /// World directions of growing u and v (zero when untextured).
+    tangents: [DVec3; 2],
     object: u32,
+}
+
+/// A material's texture with its images decoded.
+struct Textured {
+    base: String,
+    texture: Texture,
+    image: Option<Arc<Pixels>>,
+    normal_map: Option<Arc<Pixels>>,
+}
+
+impl Textured {
+    fn look(&self) -> Look<'_> {
+        Look {
+            base: &self.base,
+            texture: &self.texture,
+            image: self.image.as_deref(),
+            normal_map: self.normal_map.as_deref(),
+        }
+    }
 }
 
 struct Shading {
     color: DVec3,
-    /// The base colour as written, and the pattern mixed into it.
-    texture: Option<(String, Texture)>,
+    texture: Option<Textured>,
     roughness: f64,
     metalness: f64,
     /// Linear emitted light, strength applied.
@@ -91,12 +115,28 @@ impl Shading {
     /// Linear base colour at texture coordinate `uv` (in tiles).
     fn albedo(&self, uv: DVec2) -> DVec3 {
         match &self.texture {
-            Some((base, t)) => {
-                let c = texture::color_at(base, t, uv.x, uv.y);
+            Some(t) => {
+                let c = t.look().color(uv.x, uv.y);
                 DVec3::from_array(c.map(srgb_to_linear))
             }
             None => self.color,
         }
+    }
+
+    /// The shading normal `n` bent by relief or a normal map at `uv`.
+    fn bend(&self, n: DVec3, tangents: [DVec3; 2], uv: DVec2) -> DVec3 {
+        let Some(t) = &self.texture else {
+            return n;
+        };
+        let look = t.look();
+        if !look.bumpy() || tangents[0] == DVec3::ZERO {
+            return n;
+        }
+        let tu = (tangents[0] - n * n.dot(tangents[0])).normalize_or_zero();
+        let tv =
+            (tangents[1] - n * n.dot(tangents[1]) - tu * tu.dot(tangents[1])).normalize_or_zero();
+        let b = look.normal(uv.x, uv.y, 1.0 / 512.0);
+        (tu * b.x + tv * b.y + n * b.z).normalize_or(n)
     }
 
     /// Drawn in the blended pass instead of the opaque one.
@@ -150,6 +190,16 @@ fn tonemap(c: DVec3) -> DVec3 {
 fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepared, EngineError> {
     let mut tris = Vec::new();
     let mut materials = Vec::new();
+    let mut decoded: HashMap<&str, Option<Arc<Pixels>>> = HashMap::new();
+    let images = &ed.scene().images;
+    let mut pixels = |name: &Option<String>| -> Option<Arc<Pixels>> {
+        let name = name.as_deref()?;
+        let (key, image) = images.get_key_value(name)?;
+        decoded
+            .entry(key.as_str())
+            .or_insert_with(|| image.decode().ok().map(Arc::new))
+            .clone()
+    };
     let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
     let (mut flo, mut fhi) = (lo, hi);
     for o in &ed.scene().objects {
@@ -159,20 +209,31 @@ fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepar
         };
         let m = transform.matrix();
         let normal_m = m.inverse().transpose();
-        let shaded = crate::gltf::shade(ed.evaluated(o), o.smooth, material.texture.is_some());
-        let tile = material.texture.as_ref().map_or(1.0, |t| t.scale);
+        let mesh = ed.evaluated(o);
+        let projection = material
+            .texture
+            .as_ref()
+            .map(|t| BoxProjection::new(&mesh.vertices, transform.scale, t.fit));
+        let shaded = crate::gltf::shade(mesh, o.smooth, projection.as_ref());
+        let tile = match &material.texture {
+            Some(t) if !shaded.tiled => t.scale,
+            _ => 1.0,
+        };
         let uvs: Vec<DVec2> = shaded
             .uvs
             .iter()
             .map(|[u, v]| DVec2::new(*u as f64, *v as f64) / tile)
             .collect();
         let index = materials.len() as u32;
+        let texture = material.texture.clone().map(|t| Textured {
+            base: material.color.clone(),
+            image: pixels(&t.image),
+            normal_map: pixels(&t.normal_map),
+            texture: t,
+        });
         materials.push(Shading {
             color: hex(&material.color),
-            texture: material
-                .texture
-                .clone()
-                .map(|t| (material.color.clone(), t)),
+            texture,
             roughness: material.roughness,
             metalness: material.metalness,
             emissive: hex(&material.emissive) * material.emissive_strength,
@@ -203,14 +264,17 @@ fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepar
         }
         for t in shaded.indices.as_chunks::<3>().0 {
             let [a, b, c] = t.map(|i| i as usize);
+            let p = [world[a], world[b], world[c]];
+            let uv = if uvs.is_empty() {
+                [DVec2::ZERO; 3]
+            } else {
+                [uvs[a], uvs[b], uvs[c]]
+            };
             tris.push(Tri {
-                p: [world[a], world[b], world[c]],
+                p,
                 n: [normals[a], normals[b], normals[c]],
-                uv: if uvs.is_empty() {
-                    [DVec2::ZERO; 3]
-                } else {
-                    [uvs[a], uvs[b], uvs[c]]
-                },
+                uv,
+                tangents: tangents(p, uv),
                 object: index,
             });
         }
@@ -241,6 +305,17 @@ fn prepare(ed: &Editor, focus: Option<u64>, frame: Option<f64>) -> Result<Prepar
         radius,
         ground_y: scene_min_y.min(0.0),
     })
+}
+
+/// World-space directions in which u and v grow across a triangle.
+fn tangents(p: [DVec3; 3], uv: [DVec2; 3]) -> [DVec3; 2] {
+    let (e1, e2) = (p[1] - p[0], p[2] - p[0]);
+    let (d1, d2) = (uv[1] - uv[0], uv[2] - uv[0]);
+    let det = d1.x * d2.y - d2.x * d1.y;
+    if det.abs() < 1e-12 {
+        return [DVec3::ZERO; 2];
+    }
+    [(e1 * d2.y - e2 * d1.y) / det, (e2 * d1.x - e1 * d2.x) / det]
 }
 
 /// Rasterize one clip-space triangle with near-plane clipping. `pixel` gets
@@ -428,6 +503,7 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
     let mut normal = vec![DVec3::ZERO; n * n];
     let mut world = vec![DVec3::ZERO; n * n];
     let mut uv = vec![DVec2::ZERO; n * n];
+    let mut tri_at = vec![u32::MAX; n * n];
 
     let g = prep.radius * 8.0 + 4.0;
     let gy = prep.ground_y;
@@ -438,7 +514,7 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
         DVec3::new(c.x + g, gy, c.z + g),
         DVec3::new(c.x - g, gy, c.z + g),
     ];
-    let mut draw = |p: [DVec3; 3], nrm: [DVec3; 3], tuv: [DVec2; 3], object: u32| {
+    let mut draw = |p: [DVec3; 3], nrm: [DVec3; 3], tuv: [DVec2; 3], object: u32, tri: u32| {
         let clip = p.map(|q| vp * q.extend(1.0));
         raster(clip, n, n, |x, y, z, b| {
             let i = y * n + x;
@@ -448,6 +524,7 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
                 normal[i] = (nrm[0] * b[0] + nrm[1] * b[1] + nrm[2] * b[2]).normalize_or_zero();
                 world[i] = p[0] * b[0] + p[1] * b[1] + p[2] * b[2];
                 uv[i] = tuv[0] * b[0] + tuv[1] * b[1] + tuv[2] * b[2];
+                tri_at[i] = tri;
             }
         });
     };
@@ -457,17 +534,19 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
             [DVec3::Y; 3],
             [DVec2::ZERO; 3],
             GROUND,
+            u32::MAX,
         );
         draw(
             [ground[0], ground[3], ground[2]],
             [DVec3::Y; 3],
             [DVec2::ZERO; 3],
             GROUND,
+            u32::MAX,
         );
     }
-    for t in prep.tris.iter() {
+    for (k, t) in prep.tris.iter().enumerate() {
         if !prep.materials[t.object as usize].transparent() {
-            draw(t.p, t.n, t.uv, t.object);
+            draw(t.p, t.n, t.uv, t.object, k as u32);
         }
     }
 
@@ -499,7 +578,8 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
                 o => {
                     let m = &prep.materials[o as usize];
                     let albedo = m.albedo(uv[i]);
-                    let (diffuse, gloss) = surface(m, albedo, world[i], normal[i], eye, shadow);
+                    let bent = m.bend(normal[i], prep.tris[tri_at[i] as usize].tangents, uv[i]);
+                    let (diffuse, gloss) = surface(m, albedo, world[i], bent, eye, shadow);
                     diffuse + gloss + m.emissive
                 }
             };
@@ -551,8 +631,9 @@ fn render_tile(prep: &Prepared, shadow: &ShadowMap, view: &View, size: usize) ->
             }
             let p = t.p[0] * b[0] + t.p[1] * b[1] + t.p[2] * b[2];
             let nn = (t.n[0] * b[0] + t.n[1] * b[1] + t.n[2] * b[2]).normalize_or_zero();
-            let albedo = m.albedo(t.uv[0] * b[0] + t.uv[1] * b[1] + t.uv[2] * b[2]);
-            let (diffuse, gloss) = surface(m, albedo, p, nn, eye, shadow);
+            let at = t.uv[0] * b[0] + t.uv[1] * b[1] + t.uv[2] * b[2];
+            let albedo = m.albedo(at);
+            let (diffuse, gloss) = surface(m, albedo, p, m.bend(nn, t.tangents, at), eye, shadow);
             let facing = nn.dot((eye - p).normalize()).abs();
             let reflect = (1.0 - facing).powi(3);
             let tint = DVec3::ONE.lerp(albedo, 0.55) * m.transmission * (1.0 - reflect);
@@ -865,6 +946,52 @@ mod tests {
         assert!(
             checker > plain + 300,
             "dark squares show: {plain} vs {checker}"
+        );
+    }
+
+    #[test]
+    fn samples_images_and_bends_light_with_relief() {
+        use base64::Engine as _;
+        let png = base64::engine::general_purpose::STANDARD.encode(crate::image::tests::tiny_png());
+        let render = |texture: serde_json::Value| {
+            let mut ed = Editor::new();
+            let batch: CommandBatch = serde_json::from_value(serde_json::json!({"commands": [
+                {"op": "add_image", "name": "Quads", "data": png},
+                {"op": "add", "primitive": {"kind": "cube"}, "translation": [0, 0.5, 0], "color": "#ffffff", "texture": texture}
+            ]}))
+            .unwrap();
+            ed.apply(&batch).unwrap();
+            let opts = RenderOptions {
+                views: parse_views("front").unwrap(),
+                size: 64,
+                focus: None,
+                frame: None,
+            };
+            decode(&render_png(&ed, &opts).unwrap()).2
+        };
+        let image = render(serde_json::json!({"pattern": "image", "image": "Quads", "scale": 1}));
+        let has = |px: &[u8], f: &dyn Fn(&[u8]) -> bool| px.chunks(3).filter(|c| f(c)).count();
+        assert!(
+            has(&image, &|c| c[0] > 120 && c[1] < 60 && c[2] < 60) > 50,
+            "red quarter"
+        );
+        assert!(
+            has(&image, &|c| c[2] as i32 > c[0] as i32 + 40
+                && c[2] as i32 > c[1] as i32 + 40)
+                > 50,
+            "blue quarter"
+        );
+        let flat = render(serde_json::json!({"pattern": "brick", "color2": "#ffffff"}));
+        let bumpy =
+            render(serde_json::json!({"pattern": "brick", "color2": "#ffffff", "relief": 1}));
+        let changed = flat
+            .iter()
+            .zip(&bumpy)
+            .filter(|(a, b)| a.abs_diff(**b) > 8)
+            .count();
+        assert!(
+            changed > 30,
+            "relief shades the mortar edges ({changed} values changed)"
         );
     }
 

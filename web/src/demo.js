@@ -110,6 +110,7 @@ export class DemoRunner {
     if (s.slide) return this.slide(s)
     if (s.stroke) return this.stroke(s)
     if (s.choose) return this.choose(s)
+    if (s.upload) return this.upload(s)
     if (s.scrub !== undefined) return this.scrub(s)
     if (s.chat) return this.chat(s)
     if (s.mcp) return this.mcp(s)
@@ -302,6 +303,20 @@ export class DemoRunner {
     if (s.after) await this.sleep(s.after)
   }
 
+  /** Hand a file input a painted PNG, as if the user had picked it. */
+  async upload(s) {
+    const el = document.querySelector(s.upload)
+    if (!el) throw new Error(`demo: nothing matches ${s.upload}`)
+    const canvas = paint(s.paint)
+    const blob = await this.clock.track(new Promise((resolve) => canvas.toBlob(resolve, 'image/png')))
+    const files = new DataTransfer()
+    files.items.add(new File([blob], s.name, { type: 'image/png' }))
+    el.files = files.files
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    await this.idle()
+    if (s.after) await this.sleep(s.after)
+  }
+
   /** Drag a range input's thumb to `to`, then commit it like a mouse release. */
   async slide(s) {
     const el = document.querySelector(s.slide)
@@ -479,4 +494,53 @@ export class DemoRunner {
       return { text: e.message, isError: true }
     }
   }
+}
+
+/** Deterministic pictures for demos that upload an image. */
+function paint(kind) {
+  const canvas = document.createElement('canvas')
+  canvas.width = 640
+  canvas.height = 448
+  const g = canvas.getContext('2d')
+  const { width: w, height: h } = canvas
+  if (kind !== 'sunset') throw new Error(`demo: no painting ${kind}`)
+  const sky = g.createLinearGradient(0, 0, 0, h * 0.62)
+  sky.addColorStop(0, '#1b2350')
+  sky.addColorStop(0.45, '#7a3b78')
+  sky.addColorStop(0.8, '#f0784a')
+  sky.addColorStop(1, '#ffd27a')
+  g.fillStyle = sky
+  g.fillRect(0, 0, w, h)
+  const sun = g.createRadialGradient(w * 0.62, h * 0.56, 4, w * 0.62, h * 0.56, 120)
+  sun.addColorStop(0, '#fff6d0')
+  sun.addColorStop(0.35, '#ffd27a')
+  sun.addColorStop(1, 'rgba(255,170,90,0)')
+  g.fillStyle = sun
+  g.fillRect(0, 0, w, h)
+  // Ridges, far to near, each darker.
+  const ridges = [
+    ['#5b3a6e', 0.5, 38, 0.011, 1.3],
+    ['#3b2a55', 0.6, 46, 0.017, 4.1],
+    ['#211a3a', 0.72, 30, 0.026, 2.2],
+  ]
+  for (const [color, base, amp, freq, phase] of ridges) {
+    g.fillStyle = color
+    g.beginPath()
+    g.moveTo(0, h)
+    for (let x = 0; x <= w; x += 4) {
+      const y = h * base - amp * (Math.sin(x * freq + phase) * 0.6 + Math.sin(x * freq * 2.7 + phase * 3) * 0.4)
+      g.lineTo(x, y)
+    }
+    g.lineTo(w, h)
+    g.fill()
+  }
+  // A lake mirrors the sky below the last ridge.
+  const lake = g.createLinearGradient(0, h * 0.8, 0, h)
+  lake.addColorStop(0, '#f0985a')
+  lake.addColorStop(1, '#3b2a55')
+  g.fillStyle = lake
+  g.fillRect(0, h * 0.82, w, h * 0.18)
+  g.fillStyle = 'rgba(255,240,200,0.55)'
+  for (let k = 0; k < 7; k++) g.fillRect(w * 0.62 - 60 + k * 9, h * 0.84 + k * 9, 120 - k * 18, 3)
+  return canvas
 }

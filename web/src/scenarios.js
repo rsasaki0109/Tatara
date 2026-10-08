@@ -692,4 +692,42 @@ export const textures = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures }
+// Relief and pictures through the real UI: mortar and grout sink in as the
+// slider moves, and a painted PNG is dropped onto a canvas on the wall.
+export const surfaces = {
+  title: 'Relief and images',
+  width: 800,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Floor', primitive: { kind: 'cube' }, translation: [0, -0.01, 0], scale: [3.4, 0.02, 2.6], color: '#e8e4dc', roughness: 0.3, texture: { pattern: 'tiles', color2: '#8c867c', scale: 1.2 } },
+    { op: 'add', name: 'Wall', primitive: { kind: 'cube' }, translation: [0, 0.8, -1.3], scale: [3.4, 1.6, 0.08], color: '#a4452c', roughness: 0.85, texture: { pattern: 'brick', color2: '#d8d0c4', scale: 0.5 } },
+    { op: 'add', name: 'Frame', primitive: { kind: 'cube' }, translation: [-0.6, 1.1, -1.235], scale: [1.0, 0.72, 0.05], preset: 'wood', color: '#5a3a26' },
+    { op: 'add', name: 'Canvas', primitive: { kind: 'cube' }, translation: [-0.6, 1.1, -1.21], scale: [0.88, 0.6, 0.03], color: '#f4f1ea', roughness: 0.7 },
+    { op: 'build', template: 'table', translation: [0.85, 0, -0.2] },
+    { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 64 }, translation: [1.05, 0.75, -0.25], scale: [0.55, 0.55, 0.55], preset: 'ceramic', color: '#2f4f8f' },
+  ],
+  camera: { azimuth: 14, elevation: 12, distance: 4.8, target: [0, 0.7, -0.3] },
+  steps: [
+    { wait: 150 },
+    { caption: 'Relief: mortar and grout sink in', hint: 'texture.relief' },
+    { pick: 'Wall', after: 100 },
+    { slide: '#p-relief', to: 1, ms: 1100, after: 300 },
+    { pick: 'Floor', after: 100 },
+    { slide: '#p-relief', to: 0.7, ms: 900, after: 300 },
+    { camera: { azimuth: -28, elevation: 8, distance: 3.0, target: [-0.6, 0.85, -0.9] }, ms: 1400 },
+    { caption: 'Drop in a picture: it fits the canvas', hint: 'add_image · pattern "image"' },
+    { pick: 'Canvas', after: 100 },
+    { click: '[data-pattern=image]', after: 150 },
+    { upload: '#image-input', paint: 'sunset', name: 'Sunset.png', after: 600 },
+    { caption: 'Relief works on pictures too', hint: 'relief from brightness' },
+    { slide: '#p-relief', to: 0.6, ms: 900, after: 400 },
+    { select: null },
+    { cursor: false },
+    { caption: 'glTF carries images, UVs and normal maps', hint: 'GLB · baseColorTexture · normalTexture' },
+    { camera: { azimuth: 14, elevation: 14, distance: 4.8, target: [0, 0.7, -0.3] }, ms: 1200, async: true },
+    { spin: 6 },
+    { wait: 2400 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces }

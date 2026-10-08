@@ -1,7 +1,7 @@
 import './style.css'
 import { createApi } from './api.js'
 import { Animator, Clock } from './clock.js'
-import { Viewport, displayMesh } from './viewport.js'
+import { Viewport, displayMesh, hasUvs } from './viewport.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
@@ -70,6 +70,7 @@ const PATTERNS = [
   ['tiles', 'Tiles', '#8c867c'],
   ['checker', 'Checker', '#2b2d33'],
   ['stripes', 'Stripes', '#2b2d33'],
+  ['image', 'Image…'],
 ]
 
 const DEFAULT_VESSEL = [
@@ -275,6 +276,8 @@ function summarize(commands) {
               ? `${c.preset} material`
               : c.op === 'material' && c.texture
                 ? `${c.texture.pattern} texture`
+                : c.op === 'add_image'
+                ? `image ${c.name}`
                 : c.op === 'add_modifier'
                 ? `+ ${c.modifier.type}`
                 : c.op === 'set_modifier'
@@ -495,6 +498,29 @@ $('open-input').addEventListener('change', async (e) => {
   } catch (err) {
     toast(`Could not open ${file.name}: ${err.message}`, 'error')
   }
+})
+
+// An image file becomes a scene image and the selected object's texture.
+$('image-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0]
+  e.target.value = ''
+  const o = objectById(app.imageTarget ?? app.selected)
+  if (!file || !o) return
+  const name = file.name.replace(/\.[^.]+$/, '').replace(/[^\w .-]+/g, ' ').trim().slice(0, 60) || 'Image'
+  const data = await track(() =>
+    clock.track(
+      new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result)
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(file)
+      }),
+    ),
+  )
+  const old = o.material.texture
+  // A picture usually covers a face once, like a label or a poster.
+  const texture = { pattern: 'image', image: name, scale: old?.scale ?? 1, relief: old?.relief ?? 0, fit: true }
+  run([{ op: 'add_image', name, data }, { op: 'material', id: o.id, texture }]).catch(() => {})
 })
 
 // ---------------------------------------------------------------------------
@@ -722,11 +748,7 @@ function renderProperties(o) {
       <label class="slider"><span>Glass</span><input type="range" min="0" max="1" step="0.01" id="p-trans" value="${m.transmission}"><b>${fmt(m.transmission)}</b></label>
       <label class="slider"><span>Opacity${keyed('opacity')}</span><input type="range" min="0" max="1" step="0.01" id="p-opacity" value="${m.opacity}"><b>${fmt(m.opacity)}</b></label>
       <div class="row texture-row"><span>Texture</span>${PATTERNS.map(([id, label]) => `<button class="chip ${(m.texture?.pattern ?? 'none') === id ? 'on' : ''}" data-pattern="${id}">${label}</button>`).join('')}</div>
-      ${
-        m.texture
-          ? `<div class="row emission"><span>Tile size</span><input type="color" id="p-color2" value="${m.texture.color2}" title="Second colour"><input type="range" min="0.05" max="3" step="0.05" id="p-tscale" value="${m.texture.scale}" title="Metres per tile"><b>${fmt(m.texture.scale)}</b></div>`
-          : ''
-      }
+      ${m.texture ? textureControls(m.texture, hasUvs(displayMesh(o))) : ''}
       <div class="row emission"><span>Emission${keyed('emissive') || keyed('emissive_strength')}</span><input type="color" id="p-emissive" value="${m.emissive}"><input type="range" min="0" max="10" step="0.1" id="p-emit" value="${m.emissive_strength}" title="Strength"><b>${fmt(m.emissive_strength, 1)}</b></div>
     </div>
     <div class="card">
@@ -762,6 +784,25 @@ function renderProperties(o) {
       <div class="mod-add">${MODIFIER_TYPES.map((t) => `<button class="chip" data-add-mod="${t}">+ ${MODIFIER_LABEL[t]}</button>`).join('')}</div>
       ${o.modifiers.length ? `<button class="small-btn wide" data-mod-apply>${icon('subdivide')}Apply stack to base mesh</button>` : ''}
     </div>`
+}
+
+/** Second colour or image, tile size (box projection only) and relief. */
+function textureControls(t, ownUvs) {
+  const lead =
+    t.pattern === 'image'
+      ? `<code class="image-name" title="Image">${escapeHtml(t.image)}</code>`
+      : t.pattern === 'none'
+        ? '<span></span>'
+        : `<input type="color" id="p-color2" value="${t.color2}" title="Second colour">`
+  const fit = `<button class="chip ${t.fit ? 'on' : ''}" data-tex-fit title="Stretch one tile over each side">Fit</button>`
+  const size = ownUvs
+    ? '<span class="muted small">Mesh UVs</span><b></b>'
+    : t.fit
+      ? `<span class="muted small">One per side</span>${fit}`
+      : `<input type="range" min="0.05" max="3" step="0.05" id="p-tscale" value="${t.scale}" title="Metres per tile">${fit}`
+  const normal = t.normal_map ? ` <span class="muted small">normal map ${escapeHtml(t.normal_map)}</span>` : ''
+  return `<div class="row tex-size"><span>Tile size</span>${lead}${size}</div>
+      <label class="slider"><span>Relief${normal}</span><input type="range" min="0" max="1" step="0.05" id="p-relief" value="${t.relief ?? 0}" ${t.normal_map ? 'disabled' : ''}><b>${fmt(t.relief ?? 0)}</b></label>`
 }
 
 const num = (n) => n.toLocaleString('en-US')
@@ -882,9 +923,10 @@ $('properties').addEventListener('change', (e) => {
     const strength = pose(o, app.frame).material.emissive_strength
     return run(editCommands(o.id, { emissive: target.value, emissive_strength: strength > 0 ? undefined : 2 })).catch(() => {})
   }
-  if (target.id === 'p-color2' || target.id === 'p-tscale') {
+  if (target.id === 'p-color2' || target.id === 'p-tscale' || target.id === 'p-relief') {
     const texture = { ...o.material.texture }
     if (target.id === 'p-color2') texture.color2 = target.value
+    else if (target.id === 'p-relief') texture.relief = Number(target.value)
     else texture.scale = Number(target.value)
     return run([{ op: 'material', id: o.id, texture }]).catch(() => {})
   }
@@ -938,10 +980,18 @@ $('properties').addEventListener('click', (e) => {
     app.brush = { ...app.brush, [k]: k === 'symmetry' ? (app.brush.symmetry ? null : 'x') : !app.brush.invert }
     return syncEdit()
   }
+  if (e.target.closest('[data-tex-fit]') && o0?.material.texture) {
+    return run([{ op: 'material', id: o0.id, texture: { ...o0.material.texture, fit: !o0.material.texture.fit } }]).catch(() => {})
+  }
   const pattern = e.target.closest('[data-pattern]')
   if (pattern && o0) {
     const [id, , color2] = PATTERNS.find(([p]) => p === pattern.dataset.pattern)
-    const texture = id === 'none' ? { pattern: id } : { pattern: id, color2, scale: o0.material.texture?.scale ?? 0.5 }
+    if (id === 'image') {
+      app.imageTarget = o0.id
+      return $('image-input').click()
+    }
+    const old = o0.material.texture
+    const texture = id === 'none' ? { pattern: id } : { pattern: id, color2, scale: old?.scale ?? 0.5, relief: old?.relief ?? 0 }
     return run([{ op: 'material', id: o0.id, texture }]).catch(() => {})
   }
   const preset = e.target.closest('[data-preset]')
@@ -1295,7 +1345,9 @@ window.__tatara = {
         status.done = true
       })
   },
-  debug: () => ({ pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length }),
+  debug: () => ({ pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
+    normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
+  }),
   async tick(ms) {
     clock.advance(ms)
     await clock.settle()

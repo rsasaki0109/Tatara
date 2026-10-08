@@ -67,7 +67,12 @@ try {
   await page.click('#outliner li')
   await page.click('[data-pattern=wood]')
   await page.waitForFunction(() => window.__tatara.debug().textured === 1)
-  check(true, 'textures are baked by the WebAssembly core')
+  await page.$eval('#p-relief', (el) => {
+    el.value = '0.5'
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await page.waitForFunction(() => window.__tatara.debug().normalMapped === 1)
+  check(true, 'textures and relief normal maps are baked by the WebAssembly core')
 
   const [glb] = await Promise.all([page.waitForEvent('download'), page.click('[data-action=exportGlb]')])
   const bytes = fs.readFileSync(await glb.path())

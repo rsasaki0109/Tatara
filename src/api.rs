@@ -5,6 +5,7 @@
 use serde_json::{Value, json};
 
 use crate::engine::{self, CommandBatch, Editor, EngineError, Scene};
+use crate::texture::{self, Look, Pattern, Texture};
 
 pub struct Response {
     pub status: u16,
@@ -87,6 +88,20 @@ fn query_param(query: &str, key: &str) -> Option<String> {
 /// their evaluated `display` mesh.
 pub fn state(ed: &Editor, ai: bool) -> Value {
     let mut scene = serde_json::to_value(ed.scene()).expect("scene serializes");
+    // Images go by reference; the viewport fetches them from /image.
+    if let Some(images) = scene.get_mut("images") {
+        *images = ed
+            .scene()
+            .images
+            .iter()
+            .map(|(name, i)| {
+                let summary =
+                    json!({ "mime": i.mime, "width": i.width, "height": i.height, "hash": i.hash() });
+                (name.clone(), summary)
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+    }
     if let Some(objects) = scene["objects"].as_array_mut() {
         for (value, o) in objects.iter_mut().zip(&ed.scene().objects) {
             if !o.modifiers.is_empty() {
@@ -147,9 +162,10 @@ fn render(ed: &Editor, query: &str) -> Result<Response, Response> {
     })
 }
 
-/// One tile of a procedural texture as PNG, so the viewport shows exactly
-/// what the renderer and glTF export use. Colours may omit the `#`.
-fn texture(query: &str) -> Result<Response, Response> {
+/// One tile of a texture as PNG, so the viewport shows exactly what the
+/// renderer and glTF export use: its colours, or with `kind=normal` the
+/// normal map of its relief. Colours may omit the `#`.
+fn texture(ed: &Editor, query: &str) -> Result<Response, Response> {
     let color = |key: &str, default: &str| -> Result<String, Response> {
         let c = query_param(query, key).unwrap_or_else(|| default.into());
         let c = if c.starts_with('#') {
@@ -159,7 +175,7 @@ fn texture(query: &str) -> Result<Response, Response> {
         };
         Ok(engine::check_color(&c)?)
     };
-    let pattern: crate::texture::Pattern =
+    let pattern: Pattern =
         serde_json::from_value(json!(query_param(query, "pattern").unwrap_or_default()))
             .map_err(|_| Response::error(400, "unknown texture pattern"))?;
     let size = match query_param(query, "size") {
@@ -170,11 +186,67 @@ fn texture(query: &str) -> Result<Response, Response> {
             .ok_or_else(|| Response::error(400, "size must be 8-1024"))?,
         None => 256,
     };
-    let t = crate::texture::Texture::new(pattern, &color("color2", "#3b2a22")?, 1.0);
+    let relief = match query_param(query, "relief") {
+        Some(r) => r
+            .parse::<f64>()
+            .ok()
+            .filter(|r| (0.0..=1.0).contains(r))
+            .ok_or_else(|| Response::error(400, "relief must be 0-1"))?,
+        None => 0.0,
+    };
+    let image = match pattern {
+        Pattern::Image => {
+            let name = query_param(query, "image").unwrap_or_default();
+            let asset = ed
+                .scene()
+                .images
+                .get(&name)
+                .ok_or_else(|| Response::error(404, format!("no image named {name:?}")))?;
+            Some((name, asset.decode()?))
+        }
+        _ => None,
+    };
+    let t = Texture {
+        image: image.as_ref().map(|(name, _)| name.clone()),
+        ..Texture::new(pattern, &color("color2", "#3b2a22")?, 1.0).with_relief(relief)
+    };
+    let base = color("color", "#9aa0a6")?;
+    let look = Look {
+        base: &base,
+        texture: &t,
+        image: image.as_ref().map(|(_, px)| px),
+        normal_map: None,
+    };
+    let body = match query_param(query, "kind").as_deref() {
+        Some("normal") => texture::bake_normal_png(&look, size),
+        Some("color") | None => texture::bake_png(&base, &t, size),
+        Some(_) => return Err(Response::error(400, "kind must be color or normal")),
+    };
     Ok(Response {
         status: 200,
         content_type: "image/png",
-        body: crate::texture::bake_png(&color("color", "#9aa0a6")?, &t, size),
+        body,
+        changed: None,
+        disposition: None,
+    })
+}
+
+/// A scene image file as stored.
+fn image(ed: &Editor, query: &str) -> Result<Response, Response> {
+    let name = query_param(query, "name").unwrap_or_default();
+    let asset = ed
+        .scene()
+        .images
+        .get(&name)
+        .ok_or_else(|| Response::error(404, format!("no image named {name:?}")))?;
+    Ok(Response {
+        status: 200,
+        content_type: if asset.mime == "image/png" {
+            "image/png"
+        } else {
+            "image/jpeg"
+        },
+        body: asset.data.to_vec(),
         changed: None,
         disposition: None,
     })
@@ -267,7 +339,8 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
             .changed(r.revision))
         }
         ("GET", "/render") => render(ed, query),
-        ("GET", "/texture") => texture(query),
+        ("GET", "/texture") => texture(ed, query),
+        ("GET", "/image") => image(ed, query),
         _ => Err(Response::error(
             404,
             format!("no route for {method} /api{path}"),
@@ -360,6 +433,57 @@ mod tests {
             handle(&mut ed, "GET", "/texture?pattern=plaid", &[], false).status,
             400
         );
+        let normal = handle(
+            &mut ed,
+            "GET",
+            "/texture?pattern=tiles&relief=0.5&kind=normal&size=16",
+            &[],
+            false,
+        );
+        assert_eq!((normal.status, normal.content_type), (200, "image/png"));
+        assert_eq!(
+            handle(
+                &mut ed,
+                "GET",
+                "/texture?pattern=tiles&relief=2",
+                &[],
+                false
+            )
+            .status,
+            400
+        );
+
+        // Images are served as stored, and summarized in /state.
+        use base64::Engine as _;
+        let png = crate::image::tests::tiny_png();
+        let data = base64::engine::general_purpose::STANDARD.encode(&png);
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands": [{"op": "add_image", "name": "Logo", "data": data}]}),
+        );
+        assert_eq!(status, 200);
+        let img = handle(&mut ed, "GET", "/image?name=Logo", &[], false);
+        assert_eq!(
+            (img.status, img.content_type, img.body),
+            (200, "image/png", png)
+        );
+        assert_eq!(
+            handle(&mut ed, "GET", "/image?name=Nope", &[], false).status,
+            404
+        );
+        let (_, st) = call(&mut ed, "GET", "/state", Value::Null);
+        assert_eq!(st["scene"]["images"]["Logo"]["width"], 2);
+        assert!(st["scene"]["images"]["Logo"].get("data").is_none());
+        let embossed = handle(
+            &mut ed,
+            "GET",
+            "/texture?pattern=image&image=Logo&relief=1&kind=normal&size=16",
+            &[],
+            false,
+        );
+        assert_eq!(embossed.status, 200);
     }
 
     #[test]

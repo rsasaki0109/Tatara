@@ -13,6 +13,7 @@ default-members = ["."]
 [dependencies]
 base64 = "0.23.1"
 glam = "0.34.1"
+jpeg-decoder = { version = "0.3.2", default-features = false }
 png = "0.18.1"
 schemars = "1"
 serde = { version = "1.0.229", features = ["derive"] }

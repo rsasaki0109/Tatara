@@ -245,7 +245,7 @@ mod tests {
                 faces.push(vec![at(x, z), at(x, z + 1), at(x + 1, z + 1), at(x + 1, z)]);
             }
         }
-        Mesh { vertices, faces }
+        Mesh::new(vertices, faces)
     }
 
     fn stroke(brush: Brush, points: &[Vec3]) -> Stroke<'_> {

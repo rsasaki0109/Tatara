@@ -264,7 +264,7 @@ pub fn bevel(mesh: &mut Mesh, edges: Option<&[[u32; 2]]>, width: f64) -> Result<
     if faces.len() > MAX_FACES {
         return err(format!("bevel would exceed {MAX_FACES} faces"));
     }
-    *mesh = Mesh { vertices, faces };
+    *mesh = Mesh::new(vertices, faces);
     drop_unused(mesh);
     Ok(())
 }
