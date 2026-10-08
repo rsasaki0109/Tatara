@@ -1280,3 +1280,21 @@ input[type='range'] {
     border-top: 1px solid var(--line);
   }
 }
+
+/* ---- sculpt -------------------------------------------------------------- */
+
+.brushes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.chip.on {
+  border-color: var(--accent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+}
+
+.small-btn.push {
+  margin-left: auto;
+}

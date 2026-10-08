@@ -73,7 +73,8 @@ pub(crate) struct Shaded {
     pub(crate) indices: Vec<u32>,
 }
 
-pub(crate) fn shade(mesh: &Mesh) -> Shaded {
+/// `smooth` blends normals across every edge (smooth shading).
+pub(crate) fn shade(mesh: &Mesh, smooth: bool) -> Shaded {
     let normals: Vec<DVec3> = mesh.faces.iter().map(|f| newell(mesh, f)).collect();
     let mut around: Vec<Vec<usize>> = vec![Vec::new(); mesh.vertices.len()];
     for (fi, f) in mesh.faces.iter().enumerate() {
@@ -81,7 +82,11 @@ pub(crate) fn shade(mesh: &Mesh) -> Shaded {
             around[v as usize].push(fi);
         }
     }
-    let cos = CREASE_DEGREES.to_radians().cos();
+    let cos = if smooth {
+        -2.0
+    } else {
+        CREASE_DEGREES.to_radians().cos()
+    };
     let mut out = Shaded {
         positions: Vec::new(),
         normals: Vec::new(),
@@ -177,7 +182,7 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         views.len() - 1
     };
     for o in &ed.scene().objects {
-        let shaded = shade(ed.evaluated(o));
+        let shaded = shade(ed.evaluated(o), o.smooth);
         if shaded.indices.is_empty() {
             continue;
         }
@@ -802,6 +807,27 @@ mod tests {
         })
         .unwrap();
         ed
+    }
+
+    #[test]
+    fn smooth_shading_shares_normals_across_edges() {
+        let cube = |smooth| {
+            let mut ed = editor_with(json!([{"op": "add", "primitive": {"kind": "cube"}}]));
+            if smooth {
+                ed.apply(
+                    &serde_json::from_value::<CommandBatch>(
+                        json!({"commands": [{"op": "shade", "id": 1, "smooth": true}]}),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+            shade(&ed.scene().objects[0].mesh, ed.scene().objects[0].smooth)
+                .positions
+                .len()
+        };
+        assert_eq!(cube(false), 24, "creased: four corners per face");
+        assert_eq!(cube(true), 8, "smooth: one normal per vertex");
     }
 
     #[test]

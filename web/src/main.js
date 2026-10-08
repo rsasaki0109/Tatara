@@ -89,6 +89,8 @@ const app = {
   mode: 'object',
   selectMode: 'face',
   sel: { verts: [], edges: [], faces: [] },
+  // Sculpt mode brush (radius in world units).
+  brush: { brush: 'draw', radius: 0.15, strength: 0.5, invert: false, symmetry: 'x' },
 }
 
 const viewport = new Viewport($('viewport'), clock, animator, {
@@ -100,6 +102,7 @@ const viewport = new Viewport($('viewport'), clock, animator, {
     else select(hit.id)
   },
   onTransform: (id, tf) => run(editCommands(id, tf), 'Gizmo').catch(() => {}),
+  onSculpt: (id, stroke) => run([{ op: 'sculpt', id, ...stroke }], 'Sculpt').catch(() => viewport.revertSculpt(id)),
   onMoveVertices: (id, vertices, offset) =>
     run([{ op: 'move_vertices', id, vertices, offset: offset.map((v) => Math.round(v * 1e6) / 1e6) }], 'Gizmo').catch(() => {}),
 })
@@ -138,6 +141,7 @@ async function refresh(animate = true) {
 /** Push edit-mode state to the viewport and redraw panels. */
 function syncEdit() {
   const active = app.mode === 'edit' && app.selected != null
+  viewport.setSculptState({ active: app.mode === 'sculpt' && app.selected != null, ...app.brush })
   viewport.setEditState({ active, mode: app.selectMode, ...app.sel })
   viewport.setSelection(app.selected, app.face)
   render()
@@ -148,7 +152,7 @@ function clearComponents() {
 }
 
 function setMode(mode) {
-  if (mode === 'edit' && app.selected == null) return toast('Select an object to edit its mesh')
+  if (mode !== 'object' && app.selected == null) return toast(`Select an object to ${mode} it`)
   app.mode = mode
   clearComponents()
   if (mode === 'object') app.face = null
@@ -503,7 +507,7 @@ function showTab(name) {
 }
 app.showTab = showTab
 
-const KIND_ICON = { cube: 'cube', sphere: 'sphere', cylinder: 'cylinder', torus: 'torus', vessel: 'vessel', plane: 'plane' }
+const KIND_ICON = { quadsphere: 'sphere', cube: 'cube', sphere: 'sphere', cylinder: 'cylinder', torus: 'torus', vessel: 'vessel', plane: 'plane' }
 
 const SELECT_MODES = [
   ['vertex', 'Vertex (1)'],
@@ -511,17 +515,28 @@ const SELECT_MODES = [
   ['face', 'Face (3)'],
 ]
 
+const BRUSHES = [
+  ['draw', 'Draw', 'Raise the surface (Ctrl: carve)'],
+  ['inflate', 'Inflate', 'Swell along the normals (Ctrl: shrink)'],
+  ['smooth', 'Smooth', 'Relax bumps (or hold Shift)'],
+  ['flatten', 'Flatten', 'Press onto a plane'],
+  ['grab', 'Grab', 'Drag a region'],
+]
+
 function renderModeBar() {
   const edit = app.mode === 'edit'
+  const mode = (m, label, title) =>
+    `<button data-mode="${m}" class="${app.mode === m ? 'on' : ''}" ${m !== 'object' && app.selected == null ? 'disabled' : ''} title="${title}">${icon(m)}${label}</button>`
   $('mode-bar').innerHTML =
-    `<div class="mode-group"><button data-mode="object" class="${edit ? '' : 'on'}" title="Object mode">${icon('object')}Object</button>` +
-    `<button data-mode="edit" class="${edit ? 'on' : ''}" ${app.selected == null ? 'disabled' : ''} title="Edit mode (Tab)">${icon('edit')}Edit</button></div>` +
+    `<div class="mode-group">${mode('object', 'Object', 'Object mode')}${mode('edit', 'Edit', 'Edit mode (Tab)')}${mode('sculpt', 'Sculpt', 'Sculpt mode')}</div>` +
     (edit
       ? `<div class="mode-group">${SELECT_MODES.map(([m, t]) => `<button data-select-mode="${m}" class="icon-btn ${app.selectMode === m ? 'on' : ''}" title="${t}">${icon(`sel-${m}`)}</button>`).join('')}</div>`
       : '')
   $('status-hint').textContent = edit
     ? '1/2/3 vertex/edge/face · Shift+click add · A all · G move · Ctrl+B bevel · Ctrl+R loop cut · Tab exit'
-    : 'Alt+click a face · Tab edit mode · G/R/S transform · F frame · W wireframe'
+    : app.mode === 'sculpt'
+      ? 'Drag on the object to sculpt · Shift smooth · Ctrl invert · [ ] radius · Esc exit'
+      : 'Alt+click a face · Tab edit mode · G/R/S transform · F frame · W wireframe'
 }
 
 function render() {
@@ -570,7 +585,7 @@ let renderedKey = ''
 function renderProperties(o) {
   const el = $('properties')
   const key = o
-    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, o.modifiers, app.face, app.mode, app.selectMode, app.sel])
+    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush])
     : 'none'
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -595,11 +610,28 @@ function renderProperties(o) {
   const presets = PRESETS.map(
     ([id, name, swatch]) => `<button class="chip preset" data-preset="${id}" title="${name} preset"><i style="--c:${swatch}"></i>${name}</button>`,
   ).join('')
-  el.innerHTML = `
+  const b = app.brush
+  const brushCard =
+    app.mode === 'sculpt'
+      ? `<div class="card brush-card">
+      <div class="card-title">Brush <span class="muted small">${num(o.mesh.faces.length)} faces</span></div>
+      <div class="brushes">${BRUSHES.map(([id, label, title]) => `<button class="chip ${b.brush === id ? 'on' : ''}" data-brush="${id}" title="${title}">${label}</button>`).join('')}</div>
+      <label class="slider"><span>Radius</span><input type="range" min="0.02" max="1" step="0.01" id="b-radius" value="${b.radius}"><b>${fmt(b.radius)}</b></label>
+      <label class="slider"><span>Strength</span><input type="range" min="0.05" max="1" step="0.01" id="b-strength" value="${b.strength}"><b>${fmt(b.strength)}</b></label>
+      <div class="row">
+        <button class="chip ${b.invert ? 'on' : ''}" data-brush-toggle="invert" title="Carve instead of raise (or hold Ctrl)">Invert</button>
+        <button class="chip ${b.symmetry ? 'on' : ''}" data-brush-toggle="symmetry" title="Mirror strokes across X">Mirror X</button>
+        <button class="small-btn push" data-action="subdivide" title="Subdivide for finer detail">${icon('subdivide')}Add detail</button>
+      </div>
+      ${o.mesh.faces.length < 1500 ? '<div class="muted small">Low-poly meshes sculpt coarsely: add detail first.</div>' : ''}
+    </div>`
+      : ''
+  el.innerHTML = `${brushCard}
     <div class="card">
       <div class="card-title">Object <span class="muted small">#${o.id} · ${o.kind}</span></div>
       <input class="name-input" id="p-name" value="${escapeHtml(o.name)}" spellcheck="false">
       <div class="meta">${num(displayMesh(o).vertices.length)} vertices · ${num(displayMesh(o).faces.length)} faces${o.display ? ` <span class="muted">(base ${num(o.mesh.faces.length)})</span>` : ''}</div>
+      <div class="row"><button class="chip ${o.smooth ? 'on' : ''}" data-shade title="Blend normals across every edge (Shade Smooth)">Smooth shading</button></div>
     </div>
     <div class="card">
       <div class="card-title">Transform</div>
@@ -739,6 +771,10 @@ $('properties').addEventListener('change', (e) => {
     if (!next) return render()
     return actions.setModifier(i, next).catch(() => {})
   }
+  if (target.id === 'b-radius' || target.id === 'b-strength') {
+    app.brush = { ...app.brush, [target.id === 'b-radius' ? 'radius' : 'strength']: Number(target.value) }
+    return syncEdit()
+  }
   if (target.id === 'p-color') return run(editCommands(o.id, { color: target.value })).catch(() => {})
   if (target.id === 'p-rough') return run(editCommands(o.id, { roughness: Number(target.value) })).catch(() => {})
   if (target.id === 'p-metal') return run(editCommands(o.id, { metalness: Number(target.value) })).catch(() => {})
@@ -773,6 +809,18 @@ $('properties').addEventListener('click', (e) => {
     const next = { ...o0.modifiers[i] }
     next[set.dataset.set] = set.dataset.set === 'levels' ? Number(set.dataset.value) : set.dataset.value
     return actions.setModifier(i, next).catch(() => {})
+  }
+  if (e.target.closest('[data-shade]') && o0) return run([{ op: 'shade', id: o0.id, smooth: !o0.smooth }]).catch(() => {})
+  const brush = e.target.closest('[data-brush]')
+  if (brush) {
+    app.brush = { ...app.brush, brush: brush.dataset.brush }
+    return syncEdit()
+  }
+  const toggle = e.target.closest('[data-brush-toggle]')
+  if (toggle) {
+    const k = toggle.dataset.brushToggle
+    app.brush = { ...app.brush, [k]: k === 'symmetry' ? (app.brush.symmetry ? null : 'x') : !app.brush.invert }
+    return syncEdit()
   }
   const preset = e.target.closest('[data-preset]')
   if (preset && o0) return run([{ op: 'material', id: o0.id, preset: preset.dataset.preset }]).catch(() => {})
@@ -887,6 +935,11 @@ document.addEventListener('keydown', (e) => {
   }
   if (app.mode === 'edit' && ['1', '2', '3'].includes(k)) return setSelectMode(['vertex', 'edge', 'face'][Number(k) - 1])
   if (app.mode === 'edit' && k === 'a') return selectAll()
+  if (app.mode === 'sculpt' && (k === '[' || k === ']')) {
+    const radius = Math.min(1, Math.max(0.02, app.brush.radius * (k === ']' ? 1.25 : 0.8)))
+    app.brush = { ...app.brush, radius: Math.round(radius * 1000) / 1000 }
+    return syncEdit()
+  }
   if (k === 'g') viewport.setGizmoMode('translate')
   else if (k === 'r') viewport.setGizmoMode('rotate')
   else if (k === 's') viewport.setGizmoMode('scale')
@@ -897,7 +950,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'd' && e.shiftKey) actions.duplicate()?.catch?.(() => {})
   else if ((k === 'delete' || k === 'backspace' || k === 'x') && app.mode === 'object') actions.delete()?.catch?.(() => {})
   else if (k === 'escape') {
-    if (app.mode === 'edit') setMode('object')
+    if (app.mode !== 'object') setMode('object')
     else select(null)
   }
 })
@@ -1076,6 +1129,7 @@ window.__tatara = {
   selection: () => ({ id: app.selected, face: app.face }),
   frame: () => app.frame,
   position: (id) => viewport.nodes.get(id)?.group.position.toArray(),
+  camera: () => viewport.getOrbit(),
   meta: (id) => {
     const s = SCENARIOS[id]
     return s && { id, title: s.title, width: s.width || 800, external: Boolean(s.external) }
@@ -1097,6 +1151,11 @@ window.__tatara = {
     clock.advance(ms)
     await clock.settle()
     stepFrame()
+    // Wait for the GPU (reading a pixel blocks until the frame is drawn), so
+    // heavy frames (glass, bloom) cannot pile up behind a caller that does
+    // not screenshot every tick.
+    const gl = viewport.renderer.getContext()
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4))
     return { done: status.done, error: status.error, time: clock.now() }
   },
   /** Start a tick without returning a promise; poll `tickResult` for completion. */

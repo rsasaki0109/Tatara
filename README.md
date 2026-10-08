@@ -19,6 +19,14 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Connect</b> — any MCP agent edits the scene you are looking at.</td>
   </tr>
   <tr>
+    <td width="50%"><img src="docs/media/sculpt.gif" alt="In sculpt mode a clay ball becomes a goblin head: mirrored draw strokes raise a nose and brow, Ctrl-strokes carve eyes and a mouth, the grab brush pulls out pointed ears, inflate swells the cheeks and a Shift-stroke smooths the face"></td>
+    <td width="50%"><img src="docs/media/materials.gif" alt="Four plain objects become glass, gold, jade and a neon ring with one click each; the neon glow is turned up, its colour is keyed from pink to cyan to amber and the animation plays back with bloom"></td>
+  </tr>
+  <tr>
+    <td><b>Sculpt</b> — draw, carve, grab, inflate and smooth with mirror symmetry.</td>
+    <td><b>Shade</b> — glass, metal, jade and neon presets; glowing surfaces bloom and are keyable.</td>
+  </tr>
+  <tr>
     <td width="50%"><img src="docs/media/editing.gif" alt="In edit mode a cube gets a loop cut, its ridge vertices are raised into a gable roof, two front panels are inset and pushed in, then every edge is bevelled and smoothed"></td>
     <td width="50%"><img src="docs/media/modeling.gif" alt="A cube is extruded face by face into a cactus, subdivided with Catmull-Clark, glazed and shown in wireframe"></td>
   </tr>
@@ -27,20 +35,15 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Model</b> — Alt+click a face, extrude, subdivide, glaze.</td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/media/materials.gif" alt="Four plain objects become glass, gold, jade and a neon ring with one click each; the neon glow is turned up, its colour is keyed from pink to cyan to amber and the animation plays back with bloom"></td>
     <td width="50%"><img src="docs/media/animate.gif" alt="A vessel is keyed at frame 1, the timeline is scrubbed to frames 36 and 72 where edits auto-key a lift, a tilt and a cobalt glaze, then the animation plays back"></td>
-  </tr>
-  <tr>
-    <td><b>Shade</b> — glass, metal, jade and neon presets; glowing surfaces bloom and are keyable.</td>
-    <td><b>Animate</b> — key a pose, scrub, edit (auto-key), play; exports as a glTF animation.</td>
-  </tr>
-  <tr>
     <td width="50%"><img src="docs/media/modifiers.gif" alt="A slab is inset and extruded, then stacked with array, twist, taper and subdivision modifiers; extruding the base face updates every layer"></td>
-    <td width="50%"><img src="docs/media/agent.gif" alt="A chat request becomes a validated command batch that builds a tea set; a second request recolors the cups by name"></td>
   </tr>
   <tr>
+    <td><b>Animate</b> — key a pose, scrub, edit (auto-key), play; exports as a glTF animation.</td>
     <td><b>Stack</b> — non-destructive modifiers; edit the base and every layer follows.</td>
-    <td><b>Ask</b> — chat turns into an atomic, undoable command batch.</td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/media/agent.gif" width="50%" alt="A chat request becomes a validated command batch that builds a tea set; a second request recolors the cups by name"><br><b>Ask</b> — chat turns into an atomic, undoable command batch.</td>
   </tr>
 </table>
 
@@ -80,8 +83,9 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 ## What works today
 
 - **Workspace:** studio lighting with shadows, orbit and zoom, outliner, properties panel, transform gizmo, polygon wireframe, axis widget and a phone layout.
-- **Geometry (Rust):** cube, plane, UV sphere, cylinder or cone, torus, and hollow **vessels** revolved from a smoothed cross section.
+- **Geometry (Rust):** cube, plane, UV sphere, quad sphere (even quads for sculpting), cylinder or cone, torus, and hollow **vessels** revolved from a smoothed cross section.
 - **Modeling:** transform, glaze presets and PBR material, rename, duplicate, array, delete, per-face inset and extrusion, and Catmull-Clark subdivision.
+- **Sculpt mode:** draw, inflate, smooth, flatten and grab brushes with a smooth falloff and X mirror symmetry. Ctrl carves, Shift smooths and `[` `]` resize the brush. The stroke previews live while you drag and is committed as one `sculpt` command (one undo step), so agents sculpt with exactly the same operation. **Smooth shading** blends normals across edges, in the viewport, agent renders and glTF export alike.
 - **Edit mode (Tab):** vertex, edge and face selection with Shift+click and select all; move a selection with the gizmo; loop cut; bevel selected edges or every edge; extrude and inset several faces at once.
 - **Materials:** PBR colour, roughness and metalness, plus emission (with a strength above 1 for glow), opacity and transmission for glass. Twelve presets cover glass, frosted glass, chrome, steel, gold, copper, jade, ceramic, clay, plastic, rubber and neon; any field given alongside a preset overrides it. Emissive surfaces bloom in the viewport and in agent renders, and glass shows what is behind it in both.
 - **Animation:** keyframes for location, rotation, scale, colour, roughness, metalness, emission and opacity, with ease, linear or step interpolation. The timeline plays back, scrubs and marks keys with diamonds. **K** keys every property, and editing a value that already has keys adds a key at the current frame (auto-key). Transform tracks export as glTF animation channels, which pass the Khronos validator. Agents can read a pose (`get_scene` with `frame`) and render any frame (`render_view` with `frame`).
@@ -150,8 +154,10 @@ curl http://127.0.0.1:3000/api/commands \
 
 | Op | Fields |
 | --- | --- |
-| `add` | `primitive` (`cube`, `plane`, `sphere`, `cylinder`, `torus`, `vessel`), optional `name`, `translation`, `rotation`, `scale` and material fields |
+| `add` | `primitive` (`cube`, `plane`, `sphere`, `quadsphere`, `cylinder`, `torus`, `vessel`), optional `name`, `translation`, `rotation`, `scale` and material fields |
 | `transform` / `material` / `rename` | `id`, plus the fields to change |
+| `sculpt` | `id`, `brush` (`draw`, `inflate`, `smooth`, `flatten`, `grab`), `points` (stroke path in object space), `radius`, optional `strength` (0–1), `invert`, `symmetry` (`x`, `y`, `z`) and, for `grab`, `offset` |
+| `shade` | `id`, `smooth` (`true` for smooth shading) |
 | material fields | `preset` (`glass`, `frosted`, `chrome`, `steel`, `gold`, `copper`, `jade`, `ceramic`, `clay`, `plastic`, `rubber`, `neon`), `color`, `roughness`, `metalness`, `emissive` (`#rrggbb`), `emissive_strength` (0–20), `opacity`, `transmission` |
 | `duplicate` / `array` | `id`, `offset` (and `count` for `array`) |
 | `extrude` / `inset` | `id`, `face`, and `distance` or `fraction` (0–1) |
@@ -225,6 +231,7 @@ The native server and the WebAssembly build answer `/api` through the same `api:
 | Modifier stack evaluation | Rust: `src/modifiers.rs` |
 | Bevel, loop cut, vertex moves | Rust: `src/edit.rs` |
 | Keyframes and sampling | Rust: `src/anim.rs` (mirrored for playback in `web/src/anim.js`) |
+| Sculpt brushes | Rust: `src/sculpt.rs` (mirrored for the live stroke preview in `web/src/sculpt.js`) |
 | HTTP API, live events, chat provider | Rust: `src/server.rs` (axum) |
 | Stdio MCP bridge | Rust: `src/mcp.rs` |
 | Editor UI and WebGL presentation | JavaScript + Three.js: `web/src` |
@@ -252,7 +259,7 @@ node scripts/static-check.mjs    # drives it under a /Tatara/ sub-path with no s
 
 The aim is a creation suite that surpasses Blender for human and agent collaboration, taken one verifiable step at a time:
 
-1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓; next: multi-segment bevel, knife, merge and dissolve, booleans, and solidify/bevel/boolean modifiers.
+1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓, ~~sculpting~~ ✓; next: dynamic topology and multires sculpting, multi-segment bevel, knife, merge and dissolve, booleans, and solidify/bevel/boolean modifiers.
 2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓; next: UVs and textures in glTF, and opening `.tatara.json` links directly in the web build.
 3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓; next: a node-based material system, UVs and textures, and a path-traced preview.
 4. **Motion:** ~~keyframes and timeline~~ ✓; next: a graph editor for curves, animating modifier parameters, constraints, then rigging.

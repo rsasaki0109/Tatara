@@ -34,6 +34,7 @@ const P = {
   play: '<path d="M4.5 2.8v10.4L13 8z" fill="currentColor"/>',
   pause: '<path d="M4.5 3v10M11.5 3v10" stroke-width="2.4"/>',
   cursor: '<path d="M3.5 2.5 12.5 8l-4 1-2 4.5z"/>',
+  sculpt: '<path d="M10.6 2.2 13.8 5.4 7.4 11.8 4.2 8.6z"/><path d="M4.2 8.6c-1.6.4-2.2 1.6-2.2 3.2 0 .9-.2 1.6-.6 2.2 2.2.2 4.4-.4 6-2.2"/>',
 }
 
 export function icon(name) {

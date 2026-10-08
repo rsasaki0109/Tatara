@@ -108,6 +108,7 @@ export class DemoRunner {
       return s.after ? this.sleep(s.after) : undefined
     }
     if (s.slide) return this.slide(s)
+    if (s.stroke) return this.stroke(s)
     if (s.scrub !== undefined) return this.scrub(s)
     if (s.chat) return this.chat(s)
     if (s.mcp) return this.mcp(s)
@@ -250,6 +251,37 @@ export class DemoRunner {
       this.pos = { x: x(f), y }
       this.placeCursor()
     })
+    if (s.after) await this.sleep(s.after)
+  }
+
+  /**
+   * Drag a sculpt stroke through world points (projected to the screen, so
+   * the brush follows the real surface). `shift` smooths, `ctrl` inverts.
+   */
+  async stroke(s) {
+    const vp = this.app.viewport
+    const pts = s.stroke.map((p) => vp.clientOf(p))
+    const lengths = [0]
+    for (let i = 1; i < pts.length; i++) lengths.push(lengths[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y))
+    const total = lengths.at(-1)
+    const at = (d) => {
+      let i = 1
+      while (i < pts.length - 1 && lengths[i] < d) i++
+      const span = lengths[i] - lengths[i - 1] || 1
+      const t = Math.min(1, Math.max(0, (d - lengths[i - 1]) / span))
+      return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t }
+    }
+    await this.moveTo(pts[0].x, pts[0].y)
+    vp.sculptMove(pts[0].x, pts[0].y)
+    this.press()
+    if (!vp.sculptDown(pts[0].x, pts[0].y, { shiftKey: s.shift, ctrlKey: s.ctrl })) throw new Error('demo: stroke starts off the object')
+    await this.app.animator.add('stroke', s.ms ?? 900, (t) => {
+      this.pos = at(total * t)
+      vp.sculptMove(this.pos.x, this.pos.y)
+      this.placeCursor()
+    })
+    vp.sculptUp()
+    await this.idle()
     if (s.after) await this.sleep(s.after)
   }
 

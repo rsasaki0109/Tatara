@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::anim::{self, Animation, Interpolation, KeyValue, Property, Track};
 use crate::edit;
-use crate::modifiers::{self, Modifier};
+use crate::modifiers::{self, Axis, Modifier};
+use crate::sculpt::{self, Brush};
 
 pub type Vec3 = [f64; 3];
 
@@ -199,6 +200,10 @@ pub struct Object {
     /// Keyframe tracks; animated properties override the static values.
     #[serde(default)]
     pub tracks: Vec<Track>,
+    /// Smooth shading: normals blend across every edge instead of splitting
+    /// at sharp creases. On by default for quadspheres (sculpting).
+    #[serde(default)]
+    pub smooth: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -266,6 +271,9 @@ fn d_thickness() -> f64 {
 fn d_vessel_seg() -> u32 {
     48
 }
+fn d_quad_level() -> u32 {
+    4
+}
 fn d_levels() -> u32 {
     1
 }
@@ -321,6 +329,14 @@ pub enum Primitive {
         #[serde(default = "d_minor_seg")]
         minor_segments: u32,
     },
+    /// Sphere of even quads (a subdivided cube pushed out to `radius`): the
+    /// best start for sculpting. `level` 1-6 gives 24 to 24,576 faces.
+    Quadsphere {
+        #[serde(default = "d_radius")]
+        radius: f64,
+        #[serde(default = "d_quad_level")]
+        level: u32,
+    },
     /// Hollow vessel revolved around Y from an outer cross section.
     /// `profile` is a list of `[radius, height]` points from the foot to the rim.
     Vessel {
@@ -344,6 +360,7 @@ impl Primitive {
             Primitive::Cylinder { .. } => "cylinder",
             Primitive::Torus { .. } => "torus",
             Primitive::Vessel { .. } => "vessel",
+            Primitive::Quadsphere { .. } => "quadsphere",
         }
     }
 }
@@ -417,6 +434,11 @@ pub enum Command {
     Rename {
         id: ObjRef,
         name: String,
+    },
+    /// Smooth shading on or off (off splits normals at sharp creases).
+    Shade {
+        id: ObjRef,
+        smooth: bool,
     },
     /// Copy an object. `offset` is added to the copy's translation.
     Duplicate {
@@ -506,6 +528,25 @@ pub enum Command {
         edge: [u32; 2],
         #[serde(default = "d_half")]
         fraction: f64,
+    },
+    /// Sculpt the base mesh with one brush stroke. `points` is the stroke path
+    /// in object space; dabs land every `radius / 5` along it. `strength` is
+    /// 0-1 (one draw dab at full strength rises `0.15 * radius`). `invert`
+    /// carves instead of raising; `grab` moves the region under the first
+    /// point by `offset`; `symmetry` mirrors every dab across an axis.
+    Sculpt {
+        id: ObjRef,
+        brush: Brush,
+        points: Vec<Vec3>,
+        radius: f64,
+        #[serde(default = "d_half")]
+        strength: f64,
+        #[serde(default)]
+        invert: bool,
+        #[serde(default)]
+        offset: Option<Vec3>,
+        #[serde(default)]
+        symmetry: Option<Axis>,
     },
     /// Append a modifier, or insert it at `index`.
     AddModifier {
@@ -850,6 +891,7 @@ fn apply_command(
                 mesh,
                 modifiers: Vec::new(),
                 tracks: Vec::new(),
+                smooth: kind == "quadsphere",
             });
             scene.next_id += 1;
             created.push(id);
@@ -895,6 +937,10 @@ fn apply_command(
         Command::Rename { id, name } => {
             let i = resolve(scene, id)?;
             scene.objects[i].name = check_name(name)?;
+        }
+        Command::Shade { id, smooth } => {
+            let i = resolve(scene, id)?;
+            scene.objects[i].smooth = *smooth;
         }
         Command::Duplicate { id, name, offset } => {
             let i = resolve(scene, id)?;
@@ -966,6 +1012,30 @@ fn apply_command(
             let i = resolve(scene, id)?;
             edit::loop_cut(&mut scene.objects[i].mesh, *edge, *fraction)?;
         }
+        Command::Sculpt {
+            id,
+            brush,
+            points,
+            radius,
+            strength,
+            invert,
+            offset,
+            symmetry,
+        } => {
+            let i = resolve(scene, id)?;
+            sculpt::sculpt(
+                &mut scene.objects[i].mesh,
+                &sculpt::Stroke {
+                    brush: *brush,
+                    points,
+                    radius: *radius,
+                    strength: *strength,
+                    invert: *invert,
+                    offset: *offset,
+                    symmetry: *symmetry,
+                },
+            )?;
+        }
         Command::AddMesh {
             name,
             vertices,
@@ -1021,6 +1091,7 @@ fn apply_command(
                 mesh,
                 modifiers: Vec::new(),
                 tracks: Vec::new(),
+                smooth: false,
             });
             scene.next_id += 1;
             created.push(id);
@@ -1535,6 +1606,21 @@ pub fn build_primitive(p: &Primitive) -> Result<Mesh, EngineError> {
                 seg(minor_segments, 3, 128, "minor_segments")?,
             )
         }
+        Primitive::Quadsphere { radius, level } => {
+            let r = positive(radius, "radius")?;
+            if !(1..=6).contains(&level) {
+                return err("level must be between 1 and 6");
+            }
+            let mut mesh = cube(1.0);
+            for _ in 0..level {
+                mesh = catmull_clark(&mesh);
+            }
+            for v in &mut mesh.vertices {
+                let p = DVec3::from(*v).normalize() * r;
+                *v = p.to_array();
+            }
+            mesh
+        }
         Primitive::Vessel {
             ref profile,
             thickness,
@@ -1986,6 +2072,10 @@ mod tests {
                 major_segments: 32,
                 minor_segments: 12,
             },
+            Primitive::Quadsphere {
+                radius: 1.0,
+                level: 3,
+            },
             Primitive::Vessel {
                 profile: vec![[0.3, 0.0], [0.5, 0.4], [0.2, 0.9], [0.25, 1.0]],
                 thickness: 0.05,
@@ -2159,6 +2249,7 @@ mod tests {
             mesh: cube(1.0),
             modifiers: Vec::new(),
             tracks: Vec::new(),
+            smooth: false,
         });
         assert!(ed.load(scene.clone()).is_err(), "id must be below next_id");
         scene.next_id = 6;
@@ -2350,6 +2441,58 @@ mod tests {
     }
 
     #[test]
+    fn sculpt_command_is_one_undo_step() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "name": "Head", "primitive": {"kind": "quadsphere", "radius": 0.5}}
+        ]})))
+        .unwrap();
+        let before = ed.scene().objects[0].mesh.clone();
+        assert_eq!(before.faces.len(), 6 * 4usize.pow(4));
+        assert!(before.vertices.iter().all(|v| {
+            let r = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            (r - 0.5).abs() < 1e-9
+        }));
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "sculpt", "id": "Head", "brush": "draw", "points": [[0.15, 0.1, 0.48], [0.15, -0.1, 0.48]], "radius": 0.15, "strength": 1, "symmetry": "x"}
+        ]})))
+        .unwrap();
+        let after = &ed.scene().objects[0].mesh;
+        assert_eq!(after.faces, before.faces);
+        let reach = |m: &Mesh, x: f64| {
+            m.vertices
+                .iter()
+                .filter(|v| (v[0] - x).abs() < 0.05 && v[1].abs() < 0.1)
+                .map(|v| v[2])
+                .fold(f64::MIN, f64::max)
+        };
+        assert!(reach(after, 0.15) > reach(&before, 0.15) + 0.02);
+        assert!(
+            reach(after, -0.15) > reach(&before, -0.15) + 0.02,
+            "mirrored"
+        );
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().objects[0].mesh, before);
+        assert!(ed.scene().objects[0].smooth, "quadspheres start smooth");
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "shade", "id": "Head", "smooth": false}
+        ]})))
+        .unwrap();
+        assert!(!ed.scene().objects[0].smooth);
+        for bad in [
+            serde_json::json!({"op": "sculpt", "id": "Head", "brush": "draw", "points": [], "radius": 0.1}),
+            serde_json::json!({"op": "sculpt", "id": "Head", "brush": "draw", "points": [[0, 0, 0]], "radius": 0}),
+            serde_json::json!({"op": "sculpt", "id": "Head", "brush": "grab", "points": [[0, 0, 0]], "radius": 0.1}),
+            serde_json::json!({"op": "sculpt", "id": "Head", "brush": "draw", "points": [[0, 0, 0], [1000, 0, 0]], "radius": 0.001}),
+        ] {
+            assert!(
+                ed.apply(&batch(serde_json::json!({"commands": [bad]})))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn schema_lists_operations() {
         let s = command_schema().to_string();
         for op in [
@@ -2362,6 +2505,8 @@ mod tests {
             "twist",
             "emissive_strength",
             "neon",
+            "sculpt",
+            "quadsphere",
         ] {
             assert!(s.contains(op));
         }
