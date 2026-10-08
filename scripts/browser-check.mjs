@@ -90,7 +90,7 @@ try {
   await settled()
 
   await page.keyboard.press('Escape') // detach the gizmo from the cube's centre
-  const box = await page.locator('#viewport > canvas').boundingBox()
+  const box = await page.locator('#viewport > canvas[data-engine]').boundingBox()
   await page.keyboard.down('Alt')
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
   await page.keyboard.up('Alt')
@@ -339,7 +339,7 @@ try {
   check(x24 > 0 && x24 < 2, `pose is interpolated between keys (x=${x24.toFixed(3)} at frame 24)`)
   await page.fill('#frame-input', '1')
   await page.press('#frame-input', 'Enter')
-  await page.locator('#viewport > canvas').focus()
+  await page.locator('#viewport > canvas[data-engine]').focus()
   await page.keyboard.press('Space')
   await page.waitForTimeout(700)
   await page.keyboard.press('Space')
