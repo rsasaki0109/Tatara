@@ -44,6 +44,9 @@ export class FinalRender {
     this.running = false
     el.addEventListener('click', (e) => this.click(e))
     el.addEventListener('change', (e) => this.change(e))
+    el.addEventListener('input', (e) => {
+      if (e.target.id === 'fr-blur') e.target.nextElementSibling.textContent = e.target.value
+    })
   }
 
   get open() {

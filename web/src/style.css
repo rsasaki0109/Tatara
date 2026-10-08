@@ -1671,7 +1671,7 @@ input[type='range'] {
   position: absolute;
   right: 10px;
   top: 52px;
-  width: 380px;
+  width: min(520px, calc(100% - 20px));
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1715,6 +1715,12 @@ input[type='range'] {
 
 .fr-blur {
   flex: 1;
+}
+
+.final-render input[type='checkbox'] {
+  width: auto;
+  flex: none;
+  margin: 0;
 }
 
 .final-render .fr-canvas {

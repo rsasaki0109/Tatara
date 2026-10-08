@@ -142,7 +142,7 @@ async function record(browser, bin, id) {
       // Poll instead of awaiting the page's promise: with an exposed binding
       // in play, Chromium can collect a long-awaited evaluate promise.
       await page.evaluate((ms) => window.__tatara.startTick(ms), 1000 / fps)
-      const st = await (await page.waitForFunction(() => window.__tatara.tickResult, null, { polling: 5 })).jsonValue()
+      const st = await (await page.waitForFunction(() => window.__tatara.tickResult, null, { polling: 5, timeout: 300000 })).jsonValue()
       if (st.error) throw new Error(`scenario ${id} failed: ${st.error}`)
       await page.screenshot({ path: path.join(frames, `${String(++n).padStart(4, '0')}.png`) })
       if (st.done) break
