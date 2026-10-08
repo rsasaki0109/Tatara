@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/media/hero.gif" width="960" alt="Tatara building a ceramic vessel study in the browser editor: revolve a profile, glaze it, add a bowl, bottle and cups, undo and redo, then orbit the scene">
+  <img src="docs/media/hero.gif" width="960" alt="A tour of Tatara: a clay ball is sculpted into a goblin head with mirrored strokes and turned to gold in one click; an agent adds a glass vase, a chrome orb and a neon ring over MCP and checks the result with render_view; the neon colour is keyed and plays back with bloom">
 </p>
 
 <h1 align="center">Tatara</h1>
@@ -76,7 +76,7 @@ npm --prefix web run build
 cargo run --release
 ```
 
-Open **http://127.0.0.1:3000** and click **Build a vessel study**, or add a primitive from the toolbar.
+Open **http://127.0.0.1:3000** and click **Play the tour**, or add a primitive from the toolbar.
 
 The Rust process owns the scene and keeps it in memory. Use **Save** to download a `.tatara.json` file and **Open** to restore one. **Open** also imports `.glb` / `.gltf` models into the current scene, and **GLB** / **OBJ** export the scene for other tools.
 
@@ -215,7 +215,7 @@ node scripts/record-demo.mjs hero modeling  # selected ones
 node scripts/record-demo.mjs --fps 12 --mp4 # lower frame rate, also write MP4
 ```
 
-This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright's own browser is not installed. To add a GIF, add a scenario to `SCENARIOS`; the recorder picks it up automatically. The **Build a vessel study** button plays the `hero` scenario live.
+This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright's own browser is not installed. To add a GIF, add a scenario to `SCENARIOS`; the recorder picks it up automatically. The **Play the tour** button plays the `hero` scenario live.
 
 ## Architecture
 
