@@ -231,8 +231,8 @@ try {
   await page.waitForFunction(() => window.__tatara.debug().textured === 0)
   await page.waitForTimeout(300)
 
-  // Rendered preview: Z path traces the view and keeps refining it.
-  await page.keyboard.press('Escape')
+  // Rendered preview: the shading button path traces the view and keeps
+  // refining it.
   await page.click('#shading-btn')
   await page.waitForFunction(() => window.__tatara.debug().pathSamples >= 2, null, { timeout: 60000 })
   check((await page.textContent('.view-label')).includes('Rendered'), 'the rendered preview path traces the view and refines it')
