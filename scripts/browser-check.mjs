@@ -215,6 +215,18 @@ try {
   check(true, 'dragging in sculpt mode sends one sculpt command')
   const orbit1 = await page.evaluate(() => JSON.stringify(window.__tatara.camera()))
   check(orbit0 === orbit1, 'the stroke does not orbit the camera')
+  // Dynamic detail: the same drag now splits edges under the brush.
+  const faces0 = await page.evaluate(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].mesh.faces.length))
+  await page.click('[data-brush-toggle=dynamic]')
+  await page.waitForSelector('#b-detail')
+  await page.mouse.move(cx - 40, cy)
+  await page.mouse.down()
+  for (let i = 1; i <= 8; i++) await page.mouse.move(cx - 40 + i * 10, cy - i * 2)
+  await page.mouse.up()
+  await page.waitForFunction((rev) => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision === rev + 2), rev0)
+  const sent = await page.evaluate(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].mesh.faces.length))
+  check(sent > faces0, `dynamic detail adds faces under the brush (${faces0} → ${sent})`)
+  await page.click('[data-brush-toggle=dynamic]')
   await page.keyboard.press('Escape')
   await page.waitForSelector('[data-mode=object].on')
 

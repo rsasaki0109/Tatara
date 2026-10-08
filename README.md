@@ -68,11 +68,11 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
   </tr>
   <tr>
     <td width="50%"><img src="docs/media/wrap.gif" alt="Marble goes on a vase, wood on a torus and marble on a clay ball, all without seams; the ball is then sculpted into a face with a nose, brow and carved eyes while the marble veins stay in place, and the agent's render shows the same blended textures"></td>
-    <td width="50%"></td>
+    <td width="50%"><img src="docs/media/dyntopo.gif" alt="A coarse 384-face clay ball is shown in wireframe; with dynamic detail on, strokes for a nose, brow and carved eyes fill only those areas with small triangles while the rest of the ball keeps its large quads, then the wireframe turns off and the head spins"></td>
   </tr>
   <tr>
     <td><b>Wrap</b> — textures blend across curved surfaces with no seams, even while you sculpt.</td>
-    <td></td>
+    <td><b>Refine</b> — dynamic detail adds faces only where the brush goes.</td>
   </tr>
 </table>
 
@@ -114,7 +114,7 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **Workspace:** studio lighting with shadows, orbit and zoom, outliner, properties panel, transform gizmo, polygon wireframe, axis widget and a phone layout.
 - **Geometry (Rust):** cube, plane, UV sphere, quad sphere (even quads for sculpting), cylinder or cone, torus, and hollow **vessels** revolved from a smoothed cross section.
 - **Modeling:** transform, glaze presets and PBR material, rename, duplicate, array, delete, per-face inset and extrusion, and Catmull-Clark subdivision.
-- **Sculpt mode:** draw, inflate, smooth, flatten and grab brushes with a smooth falloff and X mirror symmetry. Ctrl carves, Shift smooths and `[` `]` resize the brush. The stroke previews live while you drag and is committed as one `sculpt` command (one undo step), so agents sculpt with exactly the same operation. **Smooth shading** blends normals across edges, in the viewport, agent renders and glTF export alike.
+- **Sculpt mode:** draw, inflate, smooth, flatten and grab brushes with a smooth falloff and X mirror symmetry. Ctrl carves, Shift smooths and `[` `]` resize the brush. The stroke previews live while you drag and is committed as one `sculpt` command (one undo step), so agents sculpt with exactly the same operation. **Dynamic detail** (dynamic topology) splits the edges under the brush that are longer than the detail size, so a coarse ball grows fine faces exactly where you sculpt and stays light everywhere else. **Smooth shading** blends normals across edges, in the viewport, agent renders and glTF export alike.
 - **Booleans:** `boolean` cuts one object out of another (`difference`), merges them (`union`) or keeps their overlap (`intersect`), with a BSP-tree CSG in Rust. The result is welded and its T-junctions repaired, so it stays watertight and renders without cracks. The Properties panel has a Boolean card, and the cutter is consumed unless you keep it.
 - **Edit mode (Tab):** vertex, edge and face selection with Shift+click and select all; move a selection with the gizmo; loop cut; bevel selected edges or every edge; extrude and inset several faces at once.
 - **Materials:** PBR colour, roughness and metalness, plus emission (with a strength above 1 for glow), opacity and transmission for glass. Sixteen presets cover glass, frosted glass, chrome, steel, gold, copper, jade, ceramic, clay, plastic, rubber, neon, wood, marble, brick and tiles; any field given alongside a preset overrides it. Emissive surfaces bloom in the viewport and in agent renders, and glass shows what is behind it in both.
@@ -190,7 +190,7 @@ curl http://127.0.0.1:3000/api/commands \
 | --- | --- |
 | `add` | `primitive` (`cube`, `plane`, `sphere`, `quadsphere`, `cylinder`, `torus`, `vessel`), optional `name`, `translation`, `rotation`, `scale` and material fields |
 | `transform` / `material` / `rename` | `id`, plus the fields to change |
-| `sculpt` | `id`, `brush` (`draw`, `inflate`, `smooth`, `flatten`, `grab`), `points` (stroke path in object space), `radius`, optional `strength` (0–1), `invert`, `symmetry` (`x`, `y`, `z`) and, for `grab`, `offset` |
+| `sculpt` | `id`, `brush` (`draw`, `inflate`, `smooth`, `flatten`, `grab`), `points` (stroke path in object space), `radius`, optional `strength` (0–1), `invert`, `symmetry` (`x`, `y`, `z`), `detail` (dynamic topology: split edges under the brush longer than about this, radius/40 to the radius) and, for `grab`, `offset` |
 | `shade` | `id`, `smooth` (`true` for smooth shading) |
 | `drop` | `id`: move it straight down onto the floor or the object below it (or up, out of whatever it sank into) |
 | `build` | `template` (`table`, `chair`, `lamp`, `mug`, `plant`, `shelf`), optional `name` (the group), `translation`, `rotation_y`, `scale`, `color` |
@@ -306,7 +306,7 @@ node scripts/static-check.mjs    # drives it under a /Tatara/ sub-path with no s
 
 The aim is a creation suite that surpasses Blender for human and agent collaboration, taken one verifiable step at a time:
 
-1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓, ~~sculpting~~ ✓; ~~booleans~~ ✓; next: dynamic topology and multires sculpting, multi-segment bevel, knife, merge and dissolve, and solidify/bevel/boolean modifiers.
+1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓, ~~sculpting~~ ✓; ~~booleans~~ ✓, ~~dynamic topology~~ ✓; next: edge collapse for dynamic topology, multires sculpting, multi-segment bevel, knife, merge and dissolve, and solidify/bevel/boolean modifiers.
 2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓, ~~textures and UVs in glTF~~ ✓, ~~image and normal textures both ways~~ ✓; next: metallic-roughness, occlusion and emissive maps, and opening `.tatara.json` links directly in the web build.
 3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓, ~~procedural textures~~ ✓, ~~relief, image textures and normal maps~~ ✓, ~~seamless triplanar blending~~ ✓; next: a node-based material system, UV editing and a path-traced preview.
 4. **Motion:** ~~keyframes and timeline~~ ✓; next: a graph editor for curves, animating modifier parameters, constraints, then rigging.

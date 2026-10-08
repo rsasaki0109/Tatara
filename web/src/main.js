@@ -121,7 +121,9 @@ const app = {
   // Assemblies expanded in the outliner.
   openGroups: new Set(),
   // Sculpt mode brush (radius in world units).
-  brush: { brush: 'draw', radius: 0.15, strength: 0.5, invert: false, symmetry: 'x' },
+  // `dynamic` turns on dynamic topology; `detail` is its edge length as a
+  // fraction of the radius.
+  brush: { brush: 'draw', radius: 0.15, strength: 0.5, invert: false, symmetry: 'x', dynamic: false, detail: 0.25 },
 }
 
 const viewport = new Viewport($('viewport'), clock, animator, {
@@ -719,9 +721,19 @@ function renderProperties(o) {
       <div class="row">
         <button class="chip ${b.invert ? 'on' : ''}" data-brush-toggle="invert" title="Carve instead of raise (or hold Ctrl)">Invert</button>
         <button class="chip ${b.symmetry ? 'on' : ''}" data-brush-toggle="symmetry" title="Mirror strokes across X">Mirror X</button>
-        <button class="small-btn push" data-action="subdivide" title="Subdivide for finer detail">${icon('subdivide')}Add detail</button>
+        <button class="small-btn push" data-action="subdivide" title="Subdivide the whole mesh">${icon('subdivide')}Add detail</button>
       </div>
-      ${o.mesh.faces.length < 1500 ? '<div class="muted small">Low-poly meshes sculpt coarsely: add detail first.</div>' : ''}
+      <div class="row">
+        <button class="chip ${b.dynamic ? 'on' : ''}" data-brush-toggle="dynamic" title="Split edges under the brush so detail appears where you sculpt (dynamic topology)">Dynamic detail</button>
+        <span class="muted small">${b.dynamic ? 'refines under the brush' : 'off: topology stays fixed'}</span>
+      </div>
+      ${
+        b.dynamic
+          ? `<label class="slider"><span>Detail</span><input type="range" min="0.1" max="0.5" step="0.01" id="b-detail" value="${b.detail}" title="Edge length as a fraction of the radius: smaller is finer"><b>${fmt(b.detail)}</b></label>`
+          : o.mesh.faces.length < 1500
+            ? '<div class="muted small">Low-poly meshes sculpt coarsely: add detail first, or turn on dynamic detail.</div>'
+            : ''
+      }
     </div>`
       : ''
   el.innerHTML = `${brushCard}
@@ -909,8 +921,8 @@ $('properties').addEventListener('change', (e) => {
     app.boolKeep = target.checked
     return
   }
-  if (target.id === 'b-radius' || target.id === 'b-strength') {
-    app.brush = { ...app.brush, [target.id === 'b-radius' ? 'radius' : 'strength']: Number(target.value) }
+  if (target.id === 'b-radius' || target.id === 'b-strength' || target.id === 'b-detail') {
+    app.brush = { ...app.brush, [{ 'b-radius': 'radius', 'b-strength': 'strength', 'b-detail': 'detail' }[target.id]]: Number(target.value) }
     return syncEdit()
   }
   if (target.id === 'p-color') return run(editCommands(o.id, { color: target.value })).catch(() => {})
@@ -977,7 +989,7 @@ $('properties').addEventListener('click', (e) => {
   const toggle = e.target.closest('[data-brush-toggle]')
   if (toggle) {
     const k = toggle.dataset.brushToggle
-    app.brush = { ...app.brush, [k]: k === 'symmetry' ? (app.brush.symmetry ? null : 'x') : !app.brush.invert }
+    app.brush = { ...app.brush, [k]: k === 'symmetry' ? (app.brush.symmetry ? null : 'x') : !app.brush[k] }
     return syncEdit()
   }
   if (e.target.closest('[data-tex-fit]') && o0?.material.texture) {
