@@ -52,7 +52,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "apply_commands",
-            "description": "Apply an atomic batch of modeling commands to the shared scene (one undo step). Pass expected_revision from get_scene to reject stale edits. Units are meters, Y up, rotations in radians.",
+            "description": "Apply an atomic batch of modeling commands to the shared scene (one undo step). Pass expected_revision from get_scene to reject stale edits. Units are meters, Y up, rotations in radians. Materials take a preset (glass, gold, chrome, neon, jade, ...) plus colour, roughness, metalness, emissive, opacity and transmission.",
             "inputSchema": batch_schema
         },
         {
@@ -87,7 +87,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "render_view",
-            "description": "Look at the shared scene: returns a PNG rendered from one or more labelled camera views (tiled two per row), with shadows, outlines and a 1 m ground grid. Use it after editing to check proportions, placement and intersections.",
+            "description": "Look at the shared scene: returns a PNG rendered from one or more labelled camera views (tiled two per row), with shadows, outlines, see-through glass, glowing emissive surfaces and a 1 m ground grid. Use it after editing to check proportions, placement and intersections.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

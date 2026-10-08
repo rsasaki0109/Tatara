@@ -374,4 +374,47 @@ export const animate = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate }
+// Material presets through the real UI, then a keyed neon colour cycle.
+const NEON = ['#ff4fd8', '#30e0ff', '#ffb02e', '#ff4fd8']
+export const materials = {
+  title: 'Materials',
+  width: 800,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 1.6, height: 0.08, segments: 72 }, translation: [0, 0.04, 0], color: '#3a3b40', roughness: 0.45 },
+    { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 72 }, translation: [-0.78, 0.08, 0.15], scale: [1.35, 1.35, 1.35] },
+    { op: 'add', name: 'Orb', primitive: { kind: 'sphere', radius: 0.3, segments: 48, rings: 24 }, translation: [0.02, 0.38, 0.45] },
+    { op: 'add', name: 'Bottle', primitive: { kind: 'vessel', profile: BOTTLE, thickness: 0.018, segments: 72 }, translation: [0.8, 0.08, 0.1], scale: [1.3, 1.3, 1.3] },
+    { op: 'add', name: 'Ring', primitive: { kind: 'torus', major_radius: 0.95, minor_radius: 0.04, major_segments: 96, minor_segments: 16 }, translation: [0, 1.05, -0.75], rotation: [Math.PI / 2, 0, 0] },
+  ],
+  camera: { azimuth: 6, elevation: 11, distance: 5.2, target: [0, 0.75, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'One click turns clay into glass, metal or light', hint: 'material · preset' },
+    { click: '#outliner li:nth-child(2)', after: 120 },
+    { click: '[data-preset=glass]', after: 350 },
+    { click: '#outliner li:nth-child(3)', after: 120 },
+    { click: '[data-preset=gold]', after: 350 },
+    { click: '#outliner li:nth-child(4)', after: 120 },
+    { click: '[data-preset=jade]', after: 350 },
+    { click: '#outliner li:nth-child(5)', after: 120 },
+    { click: '[data-preset=neon]', after: 450 },
+    { caption: 'Turn up the glow', hint: 'emissive_strength' },
+    { slide: '#p-emit', to: 4.5, ms: 800, after: 350 },
+    { caption: 'Glow and colour are keyable', hint: 'set_keyframe · emissive' },
+    {
+      run: NEON.flatMap((c, i) => [
+        { op: 'set_keyframe', id: 'Ring', property: 'color', frame: 1 + i * 31, value: c },
+        { op: 'set_keyframe', id: 'Ring', property: 'emissive', frame: 1 + i * 31, value: c },
+      ]),
+      after: 300,
+    },
+    { cursor: false },
+    { click: '#play-btn', after: 4200 },
+    { caption: 'Exports to glTF with emission, transmission and alpha', hint: 'GLB · KHR_materials_*' },
+    { spin: 7 },
+    { wait: 2000 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials }

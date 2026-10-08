@@ -21,19 +21,43 @@ pub enum Property {
     Color,
     Roughness,
     Metalness,
+    /// Emitted light colour; key it with `#rrggbb`.
+    Emissive,
+    EmissiveStrength,
+    Opacity,
 }
 
 impl Property {
     pub fn width(self) -> usize {
+        self.range().map_or(3, |_| 1)
+    }
+
+    /// The allowed range of a scalar property (`None` for vectors and colours).
+    pub fn range(self) -> Option<(f64, f64)> {
         match self {
-            Property::Roughness | Property::Metalness => 1,
-            _ => 3,
+            Property::Roughness | Property::Metalness | Property::Opacity => Some((0.0, 1.0)),
+            Property::EmissiveStrength => Some((0.0, 20.0)),
+            _ => None,
         }
     }
 
-    pub fn all() -> [Property; 6] {
+    pub fn is_color(self) -> bool {
+        matches!(self, Property::Color | Property::Emissive)
+    }
+
+    pub fn all() -> [Property; 9] {
         use Property::*;
-        [Translation, Rotation, Scale, Color, Roughness, Metalness]
+        [
+            Translation,
+            Rotation,
+            Scale,
+            Color,
+            Roughness,
+            Metalness,
+            Emissive,
+            EmissiveStrength,
+            Opacity,
+        ]
     }
 }
 
@@ -147,15 +171,16 @@ pub fn key_value(property: Property, value: &KeyValue) -> Result<Vec<f64>, Engin
         ))
     };
     let v = match (property, value) {
-        (Property::Color, KeyValue::Color(c)) => hex_to_rgb(&check_color(c)?).to_vec(),
-        (Property::Color, _) => return bad("a #rrggbb colour"),
-        (Property::Roughness | Property::Metalness, KeyValue::Scalar(x)) => {
-            if !(0.0..=1.0).contains(x) {
-                return bad("a value between 0 and 1");
+        (p, KeyValue::Color(c)) if p.is_color() => hex_to_rgb(&check_color(c)?).to_vec(),
+        (p, _) if p.is_color() => return bad("a #rrggbb colour"),
+        (p, value) if p.range().is_some() => {
+            let (lo, hi) = p.range().unwrap();
+            match value {
+                KeyValue::Scalar(x) if (lo..=hi).contains(x) => vec![*x],
+                KeyValue::Scalar(_) => return bad(&format!("a value between {lo} and {hi}")),
+                _ => return bad("a number"),
             }
-            vec![*x]
         }
-        (Property::Roughness | Property::Metalness, _) => return bad("a number"),
         (_, KeyValue::Vector(v)) => {
             if v.iter().any(|x| !x.is_finite() || x.abs() > 1e6) {
                 return bad("finite numbers");
@@ -179,6 +204,9 @@ pub fn rest_value(o: &Object, property: Property) -> Vec<f64> {
         Property::Color => hex_to_rgb(&o.material.color).to_vec(),
         Property::Roughness => vec![o.material.roughness],
         Property::Metalness => vec![o.material.metalness],
+        Property::Emissive => hex_to_rgb(&o.material.emissive).to_vec(),
+        Property::EmissiveStrength => vec![o.material.emissive_strength],
+        Property::Opacity => vec![o.material.opacity],
     }
 }
 
@@ -232,10 +260,18 @@ pub fn pose(o: &Object, frame: f64) -> (Transform, Material) {
         rotation: v3(Property::Rotation),
         scale: v3(Property::Scale),
     };
+    let scalar = |p: Property| {
+        let (lo, hi) = p.range().unwrap();
+        value_at(o, p, frame)[0].clamp(lo, hi)
+    };
     let material = Material {
         color: rgb_to_hex(v3(Property::Color)),
-        roughness: value_at(o, Property::Roughness, frame)[0].clamp(0.0, 1.0),
-        metalness: value_at(o, Property::Metalness, frame)[0].clamp(0.0, 1.0),
+        roughness: scalar(Property::Roughness),
+        metalness: scalar(Property::Metalness),
+        emissive: rgb_to_hex(v3(Property::Emissive)),
+        emissive_strength: scalar(Property::EmissiveStrength),
+        opacity: scalar(Property::Opacity),
+        transmission: o.material.transmission,
     };
     (transform, material)
 }
@@ -363,6 +399,10 @@ mod tests {
         assert!(key_value(Property::Color, &KeyValue::Scalar(1.0)).is_err());
         assert!(key_value(Property::Roughness, &KeyValue::Scalar(1.5)).is_err());
         assert!(key_value(Property::Scale, &KeyValue::Vector([1.0, 0.0, 1.0])).is_err());
+        assert!(key_value(Property::Emissive, &KeyValue::Color("#00ffcc".into())).is_ok());
+        assert!(key_value(Property::EmissiveStrength, &KeyValue::Scalar(8.0)).is_ok());
+        assert!(key_value(Property::EmissiveStrength, &KeyValue::Scalar(21.0)).is_err());
+        assert!(key_value(Property::Opacity, &KeyValue::Vector([1.0; 3])).is_err());
         assert_eq!(rgb_to_hex(hex_to_rgb("#8fb9a0")), "#8fb9a0");
     }
 }

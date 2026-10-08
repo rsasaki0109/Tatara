@@ -31,6 +31,22 @@ export const GLAZES = [
   ['Bronze', '#b08d57', 0.32, 0.9],
 ]
 
+// Material presets (src/engine.rs MaterialPreset), with a swatch colour.
+export const PRESETS = [
+  ['glass', 'Glass', '#cfe3ee'],
+  ['frosted', 'Frosted', '#e3e9ec'],
+  ['chrome', 'Chrome', '#e9ecef'],
+  ['steel', 'Steel', '#a9adb3'],
+  ['gold', 'Gold', '#e8b04a'],
+  ['copper', 'Copper', '#d9825b'],
+  ['jade', 'Jade', '#4f9d7a'],
+  ['ceramic', 'Ceramic', '#ece6da'],
+  ['clay', 'Clay', '#b8714f'],
+  ['plastic', 'Plastic', '#3f7fd8'],
+  ['rubber', 'Rubber', '#26272b'],
+  ['neon', 'Neon', '#ff4fd8'],
+]
+
 const DEFAULT_VESSEL = [
   [0.16, 0],
   [0.27, 0.1],
@@ -212,11 +228,13 @@ function summarize(commands) {
     const label =
       c.op === 'add'
         ? `add ${c.primitive.kind}`
-        : c.op === 'add_modifier'
-          ? `+ ${c.modifier.type}`
-          : c.op === 'set_modifier'
-            ? `${c.modifier.type}`
-            : c.op
+        : c.op === 'material' && c.preset
+          ? `${c.preset} material`
+          : c.op === 'add_modifier'
+            ? `+ ${c.modifier.type}`
+            : c.op === 'set_modifier'
+              ? `${c.modifier.type}`
+              : c.op
     const last = parts.at(-1)
     if (last && last.label === label) last.n++
     else parts.push({ label, n: 1 })
@@ -573,6 +591,10 @@ function renderProperties(o) {
     ([name, color, rough, metal = 0]) =>
       `<button class="glaze ${shown.material.color === color ? 'on' : ''}" data-glaze="${color},${rough},${metal}" title="${name}" style="--c:${color}"></button>`,
   ).join('')
+  const m = shown.material
+  const presets = PRESETS.map(
+    ([id, name, swatch]) => `<button class="chip preset" data-preset="${id}" title="${name} preset"><i style="--c:${swatch}"></i>${name}</button>`,
+  ).join('')
   el.innerHTML = `
     <div class="card">
       <div class="card-title">Object <span class="muted small">#${o.id} · ${o.kind}</span></div>
@@ -588,9 +610,13 @@ function renderProperties(o) {
     <div class="card">
       <div class="card-title">Material${keyed('color')}</div>
       <div class="glazes">${glazes}</div>
+      <div class="presets">${presets}</div>
       <div class="row"><input type="color" id="p-color" value="${shown.material.color}"><code class="muted">${shown.material.color}</code></div>
       <label class="slider"><span>Roughness</span><input type="range" min="0" max="1" step="0.01" id="p-rough" value="${shown.material.roughness}"><b>${fmt(shown.material.roughness)}</b></label>
       <label class="slider"><span>Metalness</span><input type="range" min="0" max="1" step="0.01" id="p-metal" value="${shown.material.metalness}"><b>${fmt(shown.material.metalness)}</b></label>
+      <label class="slider"><span>Glass</span><input type="range" min="0" max="1" step="0.01" id="p-trans" value="${m.transmission}"><b>${fmt(m.transmission)}</b></label>
+      <label class="slider"><span>Opacity${keyed('opacity')}</span><input type="range" min="0" max="1" step="0.01" id="p-opacity" value="${m.opacity}"><b>${fmt(m.opacity)}</b></label>
+      <div class="row emission"><span>Emission${keyed('emissive') || keyed('emissive_strength')}</span><input type="color" id="p-emissive" value="${m.emissive}"><input type="range" min="0" max="10" step="0.1" id="p-emit" value="${m.emissive_strength}" title="Strength"><b>${fmt(m.emissive_strength, 1)}</b></div>
     </div>
     <div class="card">
       <div class="card-title">Mesh</div>
@@ -716,6 +742,14 @@ $('properties').addEventListener('change', (e) => {
   if (target.id === 'p-color') return run(editCommands(o.id, { color: target.value })).catch(() => {})
   if (target.id === 'p-rough') return run(editCommands(o.id, { roughness: Number(target.value) })).catch(() => {})
   if (target.id === 'p-metal') return run(editCommands(o.id, { metalness: Number(target.value) })).catch(() => {})
+  if (target.id === 'p-trans') return run(editCommands(o.id, { transmission: Number(target.value) })).catch(() => {})
+  if (target.id === 'p-opacity') return run(editCommands(o.id, { opacity: Number(target.value) })).catch(() => {})
+  if (target.id === 'p-emissive') {
+    // A colour on its own would barely show, so give it a visible glow.
+    const strength = pose(o, app.frame).material.emissive_strength
+    return run(editCommands(o.id, { emissive: target.value, emissive_strength: strength > 0 ? undefined : 2 })).catch(() => {})
+  }
+  if (target.id === 'p-emit') return run(editCommands(o.id, { emissive_strength: Number(target.value) })).catch(() => {})
   const field = target.dataset.field
   if (field) {
     const values = [...pose(o, app.frame).transform[field]]
@@ -740,11 +774,14 @@ $('properties').addEventListener('click', (e) => {
     next[set.dataset.set] = set.dataset.set === 'levels' ? Number(set.dataset.value) : set.dataset.value
     return actions.setModifier(i, next).catch(() => {})
   }
+  const preset = e.target.closest('[data-preset]')
+  if (preset && o0) return run([{ op: 'material', id: o0.id, preset: preset.dataset.preset }]).catch(() => {})
   const g = e.target.closest('[data-glaze]')
   const o = objectById(app.selected)
   if (!g || !o) return
   const [color, roughness, metalness] = g.dataset.glaze.split(',')
-  run(editCommands(o.id, { color, roughness: Number(roughness), metalness: Number(metalness) })).catch(() => {})
+  // Glazes are opaque ceramics: they also clear glass and glow.
+  run(editCommands(o.id, { color, roughness: Number(roughness), metalness: Number(metalness), transmission: 0, emissive: '#000000' })).catch(() => {})
 })
 
 function renderActivity() {

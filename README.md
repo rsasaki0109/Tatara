@@ -27,15 +27,20 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Model</b> — Alt+click a face, extrude, subdivide, glaze.</td>
   </tr>
   <tr>
+    <td width="50%"><img src="docs/media/materials.gif" alt="Four plain objects become glass, gold, jade and a neon ring with one click each; the neon glow is turned up, its colour is keyed from pink to cyan to amber and the animation plays back with bloom"></td>
+    <td width="50%"><img src="docs/media/animate.gif" alt="A vessel is keyed at frame 1, the timeline is scrubbed to frames 36 and 72 where edits auto-key a lift, a tilt and a cobalt glaze, then the animation plays back"></td>
+  </tr>
+  <tr>
+    <td><b>Shade</b> — glass, metal, jade and neon presets; glowing surfaces bloom and are keyable.</td>
+    <td><b>Animate</b> — key a pose, scrub, edit (auto-key), play; exports as a glTF animation.</td>
+  </tr>
+  <tr>
     <td width="50%"><img src="docs/media/modifiers.gif" alt="A slab is inset and extruded, then stacked with array, twist, taper and subdivision modifiers; extruding the base face updates every layer"></td>
     <td width="50%"><img src="docs/media/agent.gif" alt="A chat request becomes a validated command batch that builds a tea set; a second request recolors the cups by name"></td>
   </tr>
   <tr>
     <td><b>Stack</b> — non-destructive modifiers; edit the base and every layer follows.</td>
     <td><b>Ask</b> — chat turns into an atomic, undoable command batch.</td>
-  </tr>
-  <tr>
-    <td colspan="2"><img src="docs/media/animate.gif" width="50%" alt="A vessel is keyed at frame 1, the timeline is scrubbed to frames 36 and 72 where edits auto-key a lift, a tilt and a cobalt glaze, then the animation plays back"><br><b>Animate</b> — key a pose, scrub, edit (auto-key), play; exports as a glTF animation.</td>
   </tr>
 </table>
 
@@ -78,11 +83,12 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **Geometry (Rust):** cube, plane, UV sphere, cylinder or cone, torus, and hollow **vessels** revolved from a smoothed cross section.
 - **Modeling:** transform, glaze presets and PBR material, rename, duplicate, array, delete, per-face inset and extrusion, and Catmull-Clark subdivision.
 - **Edit mode (Tab):** vertex, edge and face selection with Shift+click and select all; move a selection with the gizmo; loop cut; bevel selected edges or every edge; extrude and inset several faces at once.
-- **Animation:** keyframes for location, rotation, scale, colour, roughness and metalness, with ease, linear or step interpolation. The timeline plays back, scrubs and marks keys with diamonds. **K** keys every property, and editing a value that already has keys adds a key at the current frame (auto-key). Transform tracks export as glTF animation channels, which pass the Khronos validator. Agents can read a pose (`get_scene` with `frame`) and render any frame (`render_view` with `frame`).
+- **Materials:** PBR colour, roughness and metalness, plus emission (with a strength above 1 for glow), opacity and transmission for glass. Twelve presets cover glass, frosted glass, chrome, steel, gold, copper, jade, ceramic, clay, plastic, rubber and neon; any field given alongside a preset overrides it. Emissive surfaces bloom in the viewport and in agent renders, and glass shows what is behind it in both.
+- **Animation:** keyframes for location, rotation, scale, colour, roughness, metalness, emission and opacity, with ease, linear or step interpolation. The timeline plays back, scrubs and marks keys with diamonds. **K** keys every property, and editing a value that already has keys adds a key at the current frame (auto-key). Transform tracks export as glTF animation channels, which pass the Khronos validator. Agents can read a pose (`get_scene` with `frame`) and render any frame (`render_view` with `frame`).
 - **Modifier stack:** non-destructive Mirror, Subdivision, Array, Twist and Taper, evaluated in Rust in order. The base mesh stays editable and is drawn as an orange cage. **Apply** bakes the stack into the base mesh.
 - **History:** each batch is one undo step, and an invalid batch changes nothing.
 - **Files:** validated JSON scene save/open, and OBJ export with transforms applied.
-- **glTF 2.0:** export a binary `.glb` with one node, mesh and PBR material per object, modifiers applied and normals split at creases; it passes the Khronos glTF Validator with no issues. Import `.glb` or `.gltf` with embedded buffers through the node hierarchy. Split vertices are welded and coplanar triangle pairs become quads again, so imported models stay editable. The whole import is one undo step.
+- **glTF 2.0:** export a binary `.glb` with one node, mesh and PBR material per object (emission, `KHR_materials_emissive_strength`, `KHR_materials_transmission` and alpha blending included), modifiers applied and normals split at creases; it passes the Khronos glTF Validator with no issues. Import `.glb` or `.gltf` with embedded buffers through the node hierarchy. Split vertices are welded and coplanar triangle pairs become quads again, so imported models stay editable. The whole import is one undo step.
 - **Agents:** a stdio MCP bridge, generated command schemas, scene bounds, optional full mesh reads and `render_view`. That tool gives agents eyes: a headless Rust renderer returns labelled multi-view PNGs, and the Agent panel shows the same image to you.
 - **Chat (optional):** an OpenAI-compatible Chat Completions endpoint translates requests into validated commands.
 
@@ -123,7 +129,7 @@ You can also build once and point the client at `target/release/tatara` with `ar
 | `apply_commands` | Apply a validated, atomic batch. Pass `expected_revision` to reject stale edits. |
 | `undo` / `redo` | Step the shared history. |
 | `import_gltf` / `export_gltf` | Read a local `.glb`/`.gltf` into the scene, or write the scene to a `.glb`. |
-| `render_view` | **Look at the scene.** Returns a PNG of up to six labelled views (`front`, `back`, `left`, `right`, `top`, `bottom`, `iso` or `azimuth:elevation`). It has shadows, outlines and a 1 m ground grid. Pass `object` to frame one object, and `frame` to pose animation at that frame. |
+| `render_view` | **Look at the scene.** Returns a PNG of up to six labelled views (`front`, `back`, `left`, `right`, `top`, `bottom`, `iso` or `azimuth:elevation`). It has shadows, outlines, see-through glass, glowing emission and a 1 m ground grid. Pass `object` to frame one object, and `frame` to pose animation at that frame. |
 
 Example request for your agent:
 
@@ -144,14 +150,15 @@ curl http://127.0.0.1:3000/api/commands \
 
 | Op | Fields |
 | --- | --- |
-| `add` | `primitive` (`cube`, `plane`, `sphere`, `cylinder`, `torus`, `vessel`), optional `name`, `translation`, `rotation`, `scale`, `color`, `roughness`, `metalness` |
+| `add` | `primitive` (`cube`, `plane`, `sphere`, `cylinder`, `torus`, `vessel`), optional `name`, `translation`, `rotation`, `scale` and material fields |
 | `transform` / `material` / `rename` | `id`, plus the fields to change |
+| material fields | `preset` (`glass`, `frosted`, `chrome`, `steel`, `gold`, `copper`, `jade`, `ceramic`, `clay`, `plastic`, `rubber`, `neon`), `color`, `roughness`, `metalness`, `emissive` (`#rrggbb`), `emissive_strength` (0–20), `opacity`, `transmission` |
 | `duplicate` / `array` | `id`, `offset` (and `count` for `array`) |
 | `extrude` / `inset` | `id`, `face`, and `distance` or `fraction` (0–1) |
 | `move_vertices` | `id`, `vertices` (indices), `offset` |
 | `bevel` | `id`, `width`, optional `edges` as `[[a, b], …]` (all edges when omitted) |
 | `loop_cut` | `id`, `edge` `[a, b]`, optional `fraction` |
-| `set_keyframe` | `id`, `property` (`translation`, `rotation`, `scale`, `color`, `roughness`, `metalness`), `frame`, optional `value` (current value if omitted; colours as `#rrggbb`) and `interpolation` (`ease`, `linear`, `step`) |
+| `set_keyframe` | `id`, `property` (`translation`, `rotation`, `scale`, `color`, `roughness`, `metalness`, `emissive`, `emissive_strength`, `opacity`), `frame`, optional `value` (current value if omitted; colours as `#rrggbb`) and `interpolation` (`ease`, `linear`, `step`) |
 | `delete_keyframe` / `clear_animation` | `id`, `frame` / optional `property` |
 | `set_animation` | `fps`, `start`, `end` |
 | `add_modifier` / `set_modifier` / `remove_modifier` | `id`, `modifier` (`mirror`, `subdivision`, `array`, `twist`, `taper`), `index` |
@@ -247,11 +254,11 @@ The aim is a creation suite that surpasses Blender for human and agent collabora
 
 1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓; next: multi-segment bevel, knife, merge and dissolve, booleans, and solidify/bevel/boolean modifiers.
 2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓; next: UVs and textures in glTF, and opening `.tatara.json` links directly in the web build.
-3. **Look development:** a node-based material system, UVs and textures, and a path-traced preview.
+3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓; next: a node-based material system, UVs and textures, and a path-traced preview.
 4. **Motion:** ~~keyframes and timeline~~ ✓; next: a graph editor for curves, animating modifier parameters, constraints, then rigging.
 5. **Agents:** ~~visual feedback (`render_view`)~~ ✓; next: measurements and collision reports as tool results, reviewable change proposals and multi-user sessions.
 
-Not yet available: `.blend` compatibility, UV editing, rigging and a production renderer. Extrusion moves a face along its normal and does not repair self-intersections. OBJ carries geometry only. glTF carries geometry, transforms and base PBR factors, and transform animation, but no textures, UVs or material animation yet. Importing a sheared node hierarchy bakes the transform into the vertices. Save the native scene to keep modifiers and edit history.
+Not yet available: `.blend` compatibility, UV editing, rigging and a production renderer. Extrusion moves a face along its normal and does not repair self-intersections. OBJ carries geometry only. glTF carries geometry, transforms, PBR factors with emission, transmission and alpha, and transform animation, but no textures, UVs or material animation yet. Importing a sheared node hierarchy bakes the transform into the vertices. Save the native scene to keep modifiers and edit history.
 
 ## License
 

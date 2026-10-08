@@ -140,6 +140,23 @@ try {
   check(rendered === 514, `agent view renders four tiles (${rendered}px wide)`)
   await page.click('.tabs [data-tab=properties]')
 
+  // Materials: presets and sliders reach the engine; neon renders with bloom.
+  await page.click('#outliner li')
+  const material = () => page.evaluate(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material))
+  await page.click('[data-preset=glass]')
+  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.transmission === 1))
+  await page.$eval('#p-opacity', (el) => {
+    el.value = '0.5'
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.opacity === 0.5))
+  check(true, 'glass preset and opacity slider edit the material')
+  await page.click('[data-preset=neon]')
+  await page.waitForFunction(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].material.emissive_strength > 1))
+  const neon = await material()
+  check(neon.emissive === neon.color && neon.opacity === 1, `neon preset glows in its colour (${neon.emissive})`)
+  await page.waitForTimeout(300)
+
   // Animation: key, scrub, auto-key an edit, play back.
   await page.click('#outliner li')
   await page.keyboard.press('k')
