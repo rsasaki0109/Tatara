@@ -899,4 +899,41 @@ export const uv = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv }
+// Rendered preview: the view path traced by the Rust core and refined
+// while the camera rests. Glass refracts, chrome and gold mirror the studio,
+// neon lights the plinth; edits and camera moves start it over.
+export const render = {
+  title: 'Rendered preview',
+  width: 800,
+  gizmo: false,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 1.6, height: 0.08, segments: 72 }, translation: [0, 0.04, 0], color: '#3a3b40', roughness: 0.45 },
+    { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 72 }, translation: [-0.78, 0.08, 0.15], scale: [1.35, 1.35, 1.35], preset: 'glass' },
+    { op: 'add', name: 'Orb', primitive: { kind: 'sphere', radius: 0.3, segments: 48, rings: 24 }, translation: [0.02, 0.38, 0.45], preset: 'chrome' },
+    { op: 'add', name: 'Bottle', primitive: { kind: 'vessel', profile: BOTTLE, thickness: 0.018, segments: 72 }, translation: [0.8, 0.08, 0.1], scale: [1.3, 1.3, 1.3], preset: 'gold' },
+    { op: 'add', name: 'Ring', primitive: { kind: 'torus', major_radius: 0.95, minor_radius: 0.04, major_segments: 96, minor_segments: 16 }, translation: [0, 1.05, -0.75], rotation: [Math.PI / 2, 0, 0], preset: 'neon' },
+  ],
+  camera: { azimuth: 6, elevation: 11, distance: 5.2, target: [0, 0.75, 0] },
+  steps: [
+    { wait: 400 },
+    { caption: 'One key: the view is path traced', hint: 'Z · rendered preview' },
+    { click: '#shading-btn', after: 100 },
+    { samples: 48, after: 700 },
+    { caption: 'Glass refracts, metal mirrors, neon lights the plinth', hint: 'GGX · Fresnel · light sampling · denoiser' },
+    { camera: { azimuth: 38, elevation: 15, distance: 4.3, target: [0.05, 0.6, 0] }, ms: 1400 },
+    { samples: 48, after: 700 },
+    { caption: 'Edit live: it refines again', hint: 'material · preset' },
+    { pick: 'Orb', after: 100 },
+    { click: '[data-preset=jade]', after: 100 },
+    { samples: 32, after: 900 },
+    { select: null },
+    { caption: 'Agents can path trace their renders too', hint: 'render_view · samples' },
+    { tab: 'agent' },
+    { click: '#render-pt-btn', after: 300 },
+    { reveal: '#render-out', after: 1800 },
+    { cursor: false },
+    { wait: 1200 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render }

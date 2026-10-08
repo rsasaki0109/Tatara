@@ -890,6 +890,8 @@ pub struct Editor {
     redo: Vec<Scene>,
     /// Evaluated meshes for objects with modifiers, reused while unchanged.
     evaluated: HashMap<u64, Evaluated>,
+    /// The scene as last prepared for path tracing.
+    traced: crate::pathtrace::Cache,
 }
 
 fn fingerprint(o: &Object) -> u64 {
@@ -911,6 +913,10 @@ impl Editor {
 
     pub fn scene(&self) -> &Scene {
         &self.scene
+    }
+
+    pub(crate) fn trace_cache(&self) -> &crate::pathtrace::Cache {
+        &self.traced
     }
 
     /// The mesh an object displays: its base mesh run through its modifiers.

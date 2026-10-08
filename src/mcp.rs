@@ -87,7 +87,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "render_view",
-            "description": "Look at the shared scene: returns a PNG rendered from one or more labelled camera views (tiled two per row), with shadows, outlines, see-through glass, glowing emissive surfaces and a 1 m ground grid. Use it after editing to check proportions, placement and intersections.",
+            "description": "Look at the shared scene: returns a PNG rendered from one or more labelled camera views (tiled two per row), with shadows, outlines, see-through glass, glowing emissive surfaces and a 1 m ground grid; pass `samples` to path trace it instead. Use it after editing to check proportions, placement and intersections.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -99,7 +99,8 @@ pub fn tools() -> Value {
                     },
                     "size": { "type": "integer", "minimum": 64, "maximum": 1024, "default": 512, "description": "Pixel size of each view" },
                     "object": { "type": "string", "description": "Frame one object (name or numeric id) instead of the whole scene" },
-                    "frame": { "type": "number", "description": "Render animated objects as posed at this frame" }
+                    "frame": { "type": "number", "description": "Render animated objects as posed at this frame" },
+                    "samples": { "type": "integer", "minimum": 1, "maximum": 256, "description": "Path trace with this many samples per pixel for realistic light: soft shadows, reflections, refraction through glass and light cast by glowing surfaces. Slower; 16-64 is a good preview." }
                 },
                 "additionalProperties": false
             }
@@ -266,6 +267,9 @@ async fn render_tool(http: &reqwest::Client, base: &str, args: &Value) -> Value 
     }
     if let Some(frame) = args["frame"].as_f64() {
         query.push(("frame", frame.to_string()));
+    }
+    if let Some(samples) = args["samples"].as_u64() {
+        query.push(("samples", samples.to_string()));
     }
     let resp = match http
         .get(format!("{base}/api/render"))

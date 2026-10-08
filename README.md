@@ -82,6 +82,14 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Nodes</b> — wire noise, Voronoi, ramps and maths into materials; agents write the same graph.</td>
     <td><b>Unwrap</b> — cut seams, unwrap to UV islands and lay them out over a UV grid.</td>
   </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/render.gif" alt="Pressing the rendered preview button turns the viewport into a path-traced image that refines from noise to clean in moments: a clear glass vase refracts the plinth, a chrome orb and a gold bottle mirror the studio, and a neon ring casts pink light on the plinth; the camera orbits and the image refines again, the orb is switched to jade and re-renders, then the Agent panel shows four path-traced views from render_view"></td>
+    <td width="50%"></td>
+  </tr>
+  <tr>
+    <td><b>Render</b> — path trace the view: glass, mirrors, soft shadows and glow, refined live.</td>
+    <td></td>
+  </tr>
 </table>
 
 Every GIF above is a deterministic recording of the real editor: real toolbar clicks and face picks, real Rust mesh operations and a real `tatara --mcp` process. The chat clip replays a fixed command batch, so it needs no API key. In the *See* clip the agent's decisions are scripted, but every tool call, including the images it gets back, comes from a real `tatara --mcp` process. Regenerate them all with `node scripts/record-demo.mjs`.
@@ -129,6 +137,7 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **Textures:** procedural wood, marble, brick, tile, checker and stripe patterns mix the material colour with a second colour. Nothing needs UV unwrapping: unless a mesh has its own UVs, textures are projected along the object's axes, and `scale` is the size of one tile in metres of the object as scaled (a long wall gets more bricks, not wider ones). Flat faces take the projection they face; curved surfaces blend the three projections by their normal (triplanar), so vases, spheres and sculpts show no seams, in the viewport's shader and in agent renders alike. Each texture is defined once in Rust (`src/texture.rs`): the viewport shows tiles baked by the core, agent renders sample the same functions, and glTF export bakes them into PNGs with `TEXCOORD_0`, so the model looks the same in any viewer. Furniture from `build` comes in wood grain.
 - **Relief and images:** `relief` (0–1) turns a pattern into bumps: mortar, grout and grain sink in, through a normal map in the viewport, per-pixel normals in agent renders and a baked `normalTexture` with tangents in glTF. Any PNG or JPEG can be stored in the scene (`add_image`, or **Image…** on the Material card) and used as a texture tinted by the material colour, with `fit` to cover each side once like a label or a poster, or as a `normal_map`. Relief also works on pictures, from their brightness. Images travel inside scene files, undo steps and glTF.
 - **UV editor:** `unwrap` lays a mesh out flat in UV islands: `smart` splits it where faces turn more than 66°, `cube` and `cylinder` project like the shapes, and `seams` unrolls each piece cut by seams with least-squares conformal mapping (LSCM), so curved patches flatten without flips. Islands are scaled to their true area, turned to pack tightly and shelf-packed into the unit square. In the editor (**UV editor** on the UV card) click an island to select it, drag it, turn it 90°, scale it or fill the square with it; each edit is one `transform_uvs` command. While it is open the object shows a coloured A1–H8 UV grid, so stretching is visible at a glance. In edge select mode, **Mark seam** and **Clear seam** set seams (`mark_seams`), drawn in red. Once a mesh has UVs, image and pattern textures follow them instead of the box projection, in the viewport, agent renders and glTF.
+- **Rendered preview (path tracing):** the **Z** key (or the shading button) path traces the viewport camera's view in Rust (`src/pathtrace.rs`): a bounding volume hierarchy over the evaluated scene, GGX microfacet reflection with Fresnel, refraction through glass (rough glass too), see-through surfaces, the key and rim lights with soft shadows, direct light sampled from glowing surfaces, and a studio dome that metals and glass mirror. Every material, texture, node graph and modifier counts. The image refines while the camera rests: the server keeps adding samples to it and answers each pass with an edge-aware À-trous denoiser applied (guided by what each pixel sees first, so textures and reflections stay sharp), plus glow and the viewport's tone mapping. Any camera move, edit or frame change starts it over, and tracing runs on all cores without holding up edits. Agents get the same renderer: `render_view` with `samples` path traces every view.
 - **Node materials:** pattern `nodes` takes a node graph that computes colour, roughness, metalness and height: noise, Voronoi cells, the patterns, gradients and images, mixed with maths and colour ramps. The node editor (the **Nodes** chip on the Material card) wires them with drag and drop and ships Rusty metal, Stone wall and Terrazzo presets; agents send the same graph as JSON. Every source repeats a whole number of times across a tile, so the graph is baked into seamless tiles in Rust and used everywhere: the viewport (colour, normal and roughness/metalness maps, blended triplanar), agent renders and glTF (`baseColorTexture`, `normalTexture` and `metallicRoughnessTexture`).
 - **Animation:** keyframes for location, rotation, scale, colour, roughness, metalness, emission and opacity, with ease, linear or step interpolation. The timeline plays back, scrubs and marks keys with diamonds. **K** keys every property, and editing a value that already has keys adds a key at the current frame (auto-key). Transform tracks export as glTF animation channels, which pass the Khronos validator. Agents can read a pose (`get_scene` with `frame`) and render any frame (`render_view` with `frame`).
 - **Modifier stack:** non-destructive Mirror, Subdivision, Array, Twist and Taper, evaluated in Rust in order. The base mesh stays editable and is drawn as an orange cage. **Apply** bakes the stack into the base mesh.
@@ -177,7 +186,7 @@ You can also build once and point the client at `target/release/tatara` with `ar
 | `undo` / `redo` | Step the shared history. |
 | `import_gltf` / `export_gltf` | Read a local `.glb`/`.gltf` into the scene, or write the scene to a `.glb`. |
 | `inspect_scene` | **Measure the scene.** Lists intersections with their depth, floating objects with their gap and objects below the floor, plus each object's world bounds, size and what it rests on. |
-| `render_view` | **Look at the scene.** Returns a PNG of up to six labelled views (`front`, `back`, `left`, `right`, `top`, `bottom`, `iso` or `azimuth:elevation`). It has shadows, outlines, see-through glass, glowing emission and a 1 m ground grid. Pass `object` to frame one object, and `frame` to pose animation at that frame. |
+| `render_view` | **Look at the scene.** Returns a PNG of up to six labelled views (`front`, `back`, `left`, `right`, `top`, `bottom`, `iso` or `azimuth:elevation`). It has shadows, outlines, see-through glass, glowing emission and a 1 m ground grid. Pass `object` to frame one object, `frame` to pose animation at that frame, and `samples` (1–256) to path trace the views instead. |
 
 Example request for your agent:
 
@@ -241,7 +250,7 @@ curl http://127.0.0.1:3000/api/commands \
 ]}
 ```
 
-Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj`, `GET /api/export/glb`, `POST /api/import` (raw `.glb`/`.gltf` body), `GET /api/render?views=front,top&size=512&object=Vase&frame=24` (PNG), `GET /api/context?frame=24` (poses at a frame), `GET /api/inspect` (the `inspect_scene` report) and `GET /api/events`. The last is a server-sent event stream of revisions.
+Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj`, `GET /api/export/glb`, `POST /api/import` (raw `.glb`/`.gltf` body), `GET /api/render?views=front,top&size=512&object=Vase&frame=24&samples=32` (PNG; `samples` path traces it), `GET /api/pathtrace?w=640&h=360&eye=x,y,z&target=x,y,z&fov=36&samples=4` (the next pass of the progressive, denoised rendered preview for that camera: a little-endian u32 sample count, then sRGB RGBA bytes), `GET /api/context?frame=24` (poses at a frame), `GET /api/inspect` (the `inspect_scene` report) and `GET /api/events`. The last is a server-sent event stream of revisions.
 
 ## Optional in-editor chat
 
@@ -280,6 +289,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Geometry, commands, validation, history, OBJ | Rust: `src/engine.rs` |
 | glTF export and import | Rust: `src/gltf.rs` |
 | Headless renderer for agent vision | Rust: `src/render.rs` (CPU rasterizer, shadow map, no GPU needed) |
+| Path tracer (BVH, GGX, glass, light sampling, denoiser) | Rust: `src/pathtrace.rs` (served by `/api/pathtrace`; viewport preview in `web/src/pathpreview.js`) |
 | Scene inspection and `drop` | Rust: `src/inspect.rs` (point-in-mesh, penetration depth, support search) |
 | Assemblies and relational layout | Rust: `src/assembly.rs` (templates, `place`, `arrange`, group moves) |
 | Boolean operations | Rust: `src/csg.rs` (arena BSP trees after csg.js, T-junction repair) |
@@ -324,7 +334,7 @@ The aim is a creation suite that surpasses Blender for human and agent collabora
 
 1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓, ~~sculpting~~ ✓; ~~booleans~~ ✓, ~~dynamic topology~~ ✓; next: edge collapse for dynamic topology, multires sculpting, multi-segment bevel, knife, merge and dissolve, and solidify/bevel/boolean modifiers.
 2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓, ~~textures and UVs in glTF~~ ✓, ~~image and normal textures both ways~~ ✓; next: metallic-roughness, occlusion and emissive maps, and opening `.tatara.json` links directly in the web build.
-3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓, ~~procedural textures~~ ✓, ~~relief, image textures and normal maps~~ ✓, ~~seamless triplanar blending~~ ✓, ~~node-based materials~~ ✓, ~~UV unwrapping and editing~~ ✓; next: more nodes (emission, 3D noise, curves), UV pinning and stitching, texture painting and a path-traced preview.
+3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓, ~~procedural textures~~ ✓, ~~relief, image textures and normal maps~~ ✓, ~~seamless triplanar blending~~ ✓, ~~node-based materials~~ ✓, ~~UV unwrapping and editing~~ ✓, ~~path-traced rendered preview~~ ✓; next: more nodes (emission, 3D noise, curves), UV pinning and stitching, texture painting, HDRI lighting, depth of field and final-frame rendering to files.
 4. **Motion:** ~~keyframes and timeline~~ ✓; next: a graph editor for curves, animating modifier parameters, constraints, then rigging.
 5. **Agents:** ~~visual feedback (`render_view`)~~ ✓, ~~measurements and collision reports (`inspect_scene`)~~ ✓; ~~layout by relation (`build`, `place`, `arrange`)~~ ✓; next: reviewable change proposals, constraints such as "keep on the table", more templates and multi-user sessions.
 

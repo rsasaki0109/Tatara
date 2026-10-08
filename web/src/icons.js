@@ -17,6 +17,7 @@ const P = {
   exportObj: '<path d="M8 10V2M4.8 5 8 1.8 11.2 5"/><path d="M2.6 9.4v3.2c0 .8.6 1.4 1.4 1.4h8c.8 0 1.4-.6 1.4-1.4V9.4"/>',
   exportGlb: '<path d="M8 1.6 13.6 4.8v6.4L8 14.4 2.4 11.2V4.8z"/><path d="M8 5v5.2M5.8 8 8 10.2 10.2 8"/>',
   wire: '<path d="M8 1.8 13.6 5v6L8 14.2 2.4 11V5z"/><path d="M2.4 5 8 8.2 13.6 5M8 8.2v6M2.4 11 13.6 5M2.4 5l11.2 6" opacity=".55"/>',
+  render: '<circle cx="8" cy="8" r="6"/><path d="M8 2 10.2 7.4M14 8l-5.6 2M8 14 5.8 8.6M2 8l5.6-2"/>',
   frame: '<path d="M2 5.4V2h3.4M10.6 2H14v3.4M14 10.6V14h-3.4M5.4 14H2v-3.4"/><circle cx="8" cy="8" r="2.2"/>',
   inset: '<rect x="2" y="2" width="12" height="12" rx="1.5"/><rect x="5.2" y="5.2" width="5.6" height="5.6" rx=".8"/><path d="M2 2l3.2 3.2M14 2l-3.2 3.2M2 14l3.2-3.2M14 14l-3.2-3.2" opacity=".6"/>',
   'mod-mirror': '<path d="M8 1.5v13" stroke-dasharray="1.6 1.6"/><path d="M6 4 2.5 12H6zM10 4l3.5 8H10z"/>',

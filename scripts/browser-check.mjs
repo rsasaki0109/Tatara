@@ -90,7 +90,7 @@ try {
   await settled()
 
   await page.keyboard.press('Escape') // detach the gizmo from the cube's centre
-  const box = await page.locator('#viewport > canvas').boundingBox()
+  const box = await page.locator('#viewport > canvas[data-engine]').boundingBox()
   await page.keyboard.down('Alt')
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
   await page.keyboard.up('Alt')
@@ -231,6 +231,15 @@ try {
   await page.waitForFunction(() => window.__tatara.debug().textured === 0)
   await page.waitForTimeout(300)
 
+  // Rendered preview: the shading button path traces the view and keeps
+  // refining it.
+  await page.click('#shading-btn')
+  await page.waitForFunction(() => window.__tatara.debug().pathSamples >= 2, null, { timeout: 60000 })
+  check((await page.textContent('.view-label')).includes('Rendered'), 'the rendered preview path traces the view and refines it')
+  check(await page.evaluate(() => getComputedStyle(document.querySelector('.pt-canvas')).display !== 'none'), 'the traced image covers the raster view')
+  await page.click('#shading-btn')
+  await page.waitForFunction(() => window.__tatara.debug().pathSamples === null)
+
   // UV editor: unwrap into islands, then move one island.
   await page.click('[data-uv-open]')
   await page.waitForSelector('#uv-editor:not([hidden]) .uv-canvas')
@@ -330,7 +339,7 @@ try {
   check(x24 > 0 && x24 < 2, `pose is interpolated between keys (x=${x24.toFixed(3)} at frame 24)`)
   await page.fill('#frame-input', '1')
   await page.press('#frame-input', 'Enter')
-  await page.locator('#viewport > canvas').focus()
+  await page.locator('#viewport > canvas[data-engine]').focus()
   await page.keyboard.press('Space')
   await page.waitForTimeout(700)
   await page.keyboard.press('Space')

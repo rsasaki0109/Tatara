@@ -11,6 +11,7 @@ pub mod inspect;
 pub mod mcp;
 pub mod modifiers;
 pub mod nodes;
+pub mod pathtrace;
 pub mod render;
 pub mod sculpt;
 #[cfg(not(target_arch = "wasm32"))]

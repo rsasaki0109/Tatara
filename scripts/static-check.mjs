@@ -85,6 +85,10 @@ try {
   await page.click('#render-btn')
   await page.waitForFunction(() => document.querySelector('#render-out img')?.naturalWidth > 0)
   check((await page.evaluate(() => document.querySelector('#render-out img').naturalWidth)) === 514, 'software renderer runs in WebAssembly')
+  await page.click('#shading-btn')
+  await page.waitForFunction(() => window.__tatara.debug().pathSamples >= 1, null, { timeout: 90000 })
+  check(true, 'the path tracer runs in WebAssembly')
+  await page.click('#shading-btn')
   await page.click('.tabs [data-tab=properties]')
 
   await page.click('#demo-btn')

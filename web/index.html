@@ -38,6 +38,7 @@
         <div class="view-toggles">
           <button id="wire-btn" title="Wireframe (W)"></button>
           <button id="frame-btn" title="Frame scene (F)"></button>
+          <button id="shading-btn" title="Rendered preview: path traced (Z)"></button>
         </div>
         <div class="axes" id="axes"></div>
         <div class="timeline" id="timeline">
@@ -77,7 +78,7 @@
             <div class="row end"><button id="batch-apply" class="small-btn">Apply batch</button></div>
           </div>
           <div class="card agent-view">
-            <div class="card-title">What agents see <button id="render-btn" class="small-btn">Render</button></div>
+            <div class="card-title">What agents see <span class="row-gap"><button id="render-pt-btn" class="small-btn" title="render_view with samples: path traced">Path trace</button><button id="render-btn" class="small-btn">Render</button></span></div>
             <div id="render-out" class="muted small">The <code>render_view</code> MCP tool returns this image to your agent.</div>
           </div>
           <div class="card grow">

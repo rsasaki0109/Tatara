@@ -28,7 +28,7 @@ impl Response {
         }
     }
 
-    fn error(status: u16, message: impl Into<String>) -> Self {
+    pub fn error(status: u16, message: impl Into<String>) -> Self {
         Self::json(status, json!({ "error": message.into() }))
     }
 
@@ -112,7 +112,9 @@ pub fn state(ed: &Editor, ai: bool) -> Value {
     json!({ "scene": scene, "history": history(ed), "ai": ai })
 }
 
-fn render(ed: &Editor, query: &str) -> Result<Response, Response> {
+/// Parse a render request and gather the scene for it; `RenderJob::png`
+/// does the (possibly long) rendering.
+pub fn render_job(ed: &Editor, query: &str) -> Result<crate::render::RenderJob, Response> {
     let views =
         crate::render::parse_views(&query_param(query, "views").unwrap_or_else(|| "iso".into()))?;
     let size = match query_param(query, "size") {
@@ -144,22 +146,37 @@ fn render(ed: &Editor, query: &str) -> Result<Response, Response> {
         }
         None => None,
     };
-    let png = crate::render::render_png(
+    let samples = match query_param(query, "samples").filter(|s| !s.is_empty()) {
+        Some(s) => Some(
+            s.parse()
+                .map_err(|_| Response::error(400, "samples must be a number"))?,
+        ),
+        None => None,
+    };
+    Ok(crate::render::render_job(
         ed,
         &crate::render::RenderOptions {
             views,
             size,
             focus,
             frame,
+            samples,
         },
-    )?;
-    Ok(Response {
-        status: 200,
-        content_type: "image/png",
-        body: png,
-        changed: None,
-        disposition: None,
-    })
+    )?)
+}
+
+/// Finish a render job as a PNG response.
+pub fn render_png(job: crate::render::RenderJob) -> Response {
+    match job.png() {
+        Ok(png) => Response {
+            status: 200,
+            content_type: "image/png",
+            body: png,
+            changed: None,
+            disposition: None,
+        },
+        Err(e) => e.into(),
+    }
 }
 
 /// One tile of a texture as PNG, so the viewport shows exactly what the
@@ -309,6 +326,97 @@ fn image(ed: &Editor, query: &str) -> Result<Response, Response> {
     })
 }
 
+/// One path tracing pass: the scene is prepared under the editor lock,
+/// then traced without it (`run`), so other requests are not held up.
+pub struct PathJob {
+    scene: std::sync::Arc<crate::pathtrace::Traced>,
+    camera: crate::pathtrace::Camera,
+    samples: u32,
+}
+
+impl PathJob {
+    /// Add the samples to the camera's progressive image and answer with
+    /// how many it now holds (u32, little-endian) followed by its
+    /// denoised pixels as sRGB RGBA bytes, rows from the top.
+    pub fn run(self) -> Response {
+        let (total, pixels) = self.scene.pass(&self.camera, self.samples);
+        let mut body = total.to_le_bytes().to_vec();
+        body.extend(pixels);
+        Response {
+            status: 200,
+            content_type: "application/octet-stream",
+            body,
+            changed: None,
+            disposition: None,
+        }
+    }
+}
+
+/// Parse a path tracing request: `w`, `h`, `eye` and `target` ("x,y,z"),
+/// optional `fov` (degrees), `samples` and `frame`. Requests for the same
+/// camera and scene keep refining one image.
+pub fn path_job(ed: &Editor, query: &str) -> Result<PathJob, Response> {
+    let number = |key: &str, default: Option<f64>| -> Result<f64, Response> {
+        match query_param(query, key).filter(|s| !s.is_empty()) {
+            Some(v) => v
+                .parse::<f64>()
+                .ok()
+                .filter(|x| x.is_finite())
+                .ok_or_else(|| Response::error(400, format!("{key} must be a number"))),
+            None => default.ok_or_else(|| Response::error(400, format!("{key} is required"))),
+        }
+    };
+    let point = |key: &str| -> Result<glam::DVec3, Response> {
+        let raw = query_param(query, key).unwrap_or_default();
+        let v: Vec<f64> = raw
+            .split(',')
+            .filter_map(|x| x.trim().parse().ok())
+            .collect();
+        match v[..] {
+            [x, y, z] if v.iter().all(|c| c.is_finite()) => Ok(glam::DVec3::new(x, y, z)),
+            _ => Err(Response::error(400, format!("{key} must be x,y,z"))),
+        }
+    };
+    let (w, h) = (number("w", None)?, number("h", None)?);
+    if !(8.0..=2048.0).contains(&w) || !(8.0..=2048.0).contains(&h) {
+        return Err(Response::error(400, "w and h must be between 8 and 2048"));
+    }
+    let fov = number("fov", Some(36.0))?;
+    if !(1.0..=170.0).contains(&fov) {
+        return Err(Response::error(
+            400,
+            "fov must be between 1 and 170 degrees",
+        ));
+    }
+    let samples = number("samples", Some(1.0))?;
+    if !(1.0..=64.0).contains(&samples) {
+        return Err(Response::error(400, "samples must be between 1 and 64"));
+    }
+    let frame = match query_param(query, "frame").filter(|s| !s.is_empty()) {
+        Some(f) => {
+            Some(crate::anim::check_frame(f.parse().map_err(|_| {
+                Response::error(400, "frame must be a number")
+            })?)?)
+        }
+        None => None,
+    };
+    let (eye, target) = (point("eye")?, point("target")?);
+    if eye.distance(target) < 1e-9 {
+        return Err(Response::error(400, "eye and target must differ"));
+    }
+    Ok(PathJob {
+        scene: crate::pathtrace::traced(ed, frame)?,
+        camera: crate::pathtrace::Camera {
+            eye,
+            target,
+            fov,
+            width: w as usize,
+            height: h as usize,
+        },
+        samples: samples as u32,
+    })
+}
+
 /// Route one request. `path` may include a query string; it is relative to
 /// `/api` (e.g. `/commands`). `ai` reports whether chat is configured.
 pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) -> Response {
@@ -395,7 +503,8 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
             )
             .changed(r.revision))
         }
-        ("GET", "/render") => render(ed, query),
+        ("GET", "/render") => render_job(ed, query).map(render_png),
+        ("GET", "/pathtrace") => path_job(ed, query).map(PathJob::run),
         ("GET", "/texture") => texture(ed, query),
         ("GET", "/image") => image(ed, query),
         ("GET", "/nodes") => node_tile(ed, query),
@@ -542,6 +651,56 @@ mod tests {
             false,
         );
         assert_eq!(embossed.status, 200);
+    }
+
+    #[test]
+    fn path_tracing_refines_one_image_per_camera() {
+        let mut ed = Editor::new();
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands": [{"op": "add", "name": "Box", "primitive": {"kind": "cube"}, "translation": [0, 0.5, 0]}]}),
+        );
+        let view = "/pathtrace?w=24&h=16&eye=0,1.5,4&target=0,0.5,0&samples=1";
+        let pass = |ed: &mut Editor, q: &str| {
+            let r = handle(ed, "GET", q, &[], false);
+            assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+            assert_eq!(r.body.len(), 4 + 24 * 16 * 4);
+            let n = u32::from_le_bytes(r.body[..4].try_into().unwrap());
+            (n, r.body[4..].to_vec())
+        };
+        assert_eq!(pass(&mut ed, view).0, 1);
+        let (n, pixels) = pass(&mut ed, view);
+        assert_eq!(n, 2, "the same camera keeps adding samples");
+        // The box covers the middle; the sky is clear.
+        assert_eq!(pixels[(8 * 24 + 12) * 4 + 3], 255);
+        assert_eq!(pixels[3], 0);
+        let moved = view.replace("eye=0,1.5,4", "eye=1,1.5,4");
+        assert_eq!(pass(&mut ed, &moved).0, 1, "a new camera starts over");
+        // An edit starts over too.
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands": [{"op": "material", "id": "Box", "color": "#ff0000"}]}),
+        );
+        assert_eq!(pass(&mut ed, &moved).0, 1);
+        for bad in [
+            "/pathtrace?w=24&h=16&eye=0,1,4&target=0,0,0&samples=0",
+            "/pathtrace?w=4&h=16&eye=0,1,4&target=0,0,0",
+            "/pathtrace?w=24&h=16&eye=0,1&target=0,0,0",
+            "/pathtrace?w=24&h=16&eye=1,1,1&target=1,1,1",
+        ] {
+            assert_eq!(handle(&mut ed, "GET", bad, &[], false).status, 400, "{bad}");
+        }
+        // Agents can ask for a path-traced render too.
+        let r = handle(&mut ed, "GET", "/render?size=64&samples=2", &[], false);
+        assert_eq!((r.status, r.content_type), (200, "image/png"));
+        assert_eq!(
+            handle(&mut ed, "GET", "/render?size=64&samples=999", &[], false).status,
+            422
+        );
     }
 
     #[test]

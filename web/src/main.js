@@ -4,6 +4,7 @@ import { Animator, Clock } from './clock.js'
 import { Viewport, displayMesh, hasUvs } from './viewport.js'
 import { NodeEditor, starterGraph } from './nodes.js'
 import { UvEditor } from './uveditor.js'
+import { PathPreview } from './pathpreview.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
@@ -144,6 +145,21 @@ const viewport = new Viewport($('viewport'), clock, animator, {
 })
 app.viewport = viewport
 
+// Rendered preview: the view path traced by the core, refining while still.
+const preview = new PathPreview(viewport, clock, {
+  budget: browserOnly ? 60000 : 360000,
+  onUpdate: () => syncRenderLabel(),
+})
+
+app.preview = preview
+
+function syncRenderLabel() {
+  const label = document.querySelector('.view-label')
+  const shading = !preview.active ? 'Studio' : preview.samples ? `Rendered · ${preview.samples} samples` : 'Rendered · tracing…'
+  label.innerHTML = `<span class="dot"></span>Perspective · ${shading}`
+  $('shading-btn').classList.toggle('on', preview.active)
+}
+
 // ---------------------------------------------------------------------------
 // Node editor: edits the node graph of one object's material.
 // ---------------------------------------------------------------------------
@@ -198,6 +214,7 @@ async function refresh(animate = true) {
     app.sel.faces = app.sel.faces.filter((f) => f < sel.mesh.faces.length)
   }
   viewport.sync(app.scene, animate)
+  preview.setRevision(app.scene.revision)
   if (app.checks && app.checks.revision !== app.scene.revision && viewport.warned.size) {
     // The scene changed since the last inspection: drop its outlines.
     viewport.setWarnings([])
@@ -466,6 +483,9 @@ const actions = {
   exportGlb() {
     download('/api/export/glb', 'scene.glb')
   },
+  rendered(on = !preview.active) {
+    preview.setActive(on)
+  },
   wireframe(on = !app.wireframe) {
     app.wireframe = on
     viewport.setWireframe(on)
@@ -580,6 +600,7 @@ $('file-group').innerHTML =
   button('open', 'Open', 'Open a .tatara.json scene, or import .glb / .gltf') + button('save', 'Save', 'Save (Ctrl+S)') + button('exportGlb', 'GLB', 'Export glTF (.glb)') + button('exportObj', 'OBJ', 'Export OBJ')
 $('wire-btn').innerHTML = icon('wire')
 $('frame-btn').innerHTML = icon('frame')
+$('shading-btn').innerHTML = icon('render')
 
 document.addEventListener('click', (e) => {
   const add = e.target.closest('[data-add]')
@@ -598,6 +619,7 @@ $('mode-bar').addEventListener('click', (e) => {
   if (sm) setSelectMode(sm.dataset.selectMode)
 })
 $('frame-btn').addEventListener('click', () => actions.frame())
+$('shading-btn').addEventListener('click', () => actions.rendered())
 
 for (const tab of document.querySelectorAll('.tabs button')) tab.addEventListener('click', () => showTab(tab.dataset.tab))
 function showTab(name) {
@@ -1161,14 +1183,18 @@ $('checks-out').addEventListener('click', (e) => {
   if (li && li.dataset.issueId) select(Number(li.dataset.issueId))
 })
 
-$('render-btn').addEventListener('click', async () => {
-  const res = await fetch(`/api/render?views=iso,front,right,top&size=256&frame=${Math.round(app.frame)}`)
+async function agentRender(samples) {
+  const query = `views=iso,front,right,top&size=256&frame=${Math.round(app.frame)}${samples ? `&samples=${samples}` : ''}`
+  const res = await clock.track(fetch(`/api/render?${query}`))
   if (!res.ok) return toast('Render failed', 'error')
   const img = new Image()
-  img.alt = 'Front, right, top and iso views rendered by the Rust engine'
-  img.src = URL.createObjectURL(await res.blob())
+  img.alt = `Front, right, top and iso views ${samples ? 'path traced' : 'rendered'} by the Rust engine`
+  img.src = URL.createObjectURL(await clock.track(res.blob()))
   $('render-out').replaceChildren(img)
-})
+}
+$('render-btn').addEventListener('click', () => agentRender(0))
+// Path tracing in the browser build shares the page's thread: fewer samples.
+$('render-pt-btn').addEventListener('click', () => agentRender(browserOnly ? 4 : 16))
 $('chat-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) sendChat()
 })
@@ -1251,6 +1277,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === 's') viewport.setGizmoMode('scale')
   else if (k === 'f') actions.frame()
   else if (k === 'w') actions.wireframe()
+  else if (k === 'z') actions.rendered()
   else if (k === 'e') actions.extrude()?.catch?.(() => {})
   else if (k === 'i') actions.inset()?.catch?.(() => {})
   else if (k === 'd' && e.shiftKey) actions.duplicate()?.catch?.(() => {})
@@ -1400,6 +1427,7 @@ function stepFrame() {
   animator.step()
   advancePlayback()
   viewport.frame()
+  preview.tick()
 }
 
 function loop() {
@@ -1454,6 +1482,7 @@ window.__tatara = {
   },
   debug: () => ({ pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
+    pathSamples: preview.active ? preview.samples : null,
     triplanar: [...viewport.nodes.values()].filter((n) => 'TRIPLANAR' in n.mesh.material.defines).length,
     roughnessMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.roughnessMap?.image).length,
   }),
