@@ -828,7 +828,9 @@ export class Viewport {
       return
     }
     this.loadImage(url).then((image) => {
-      if (!image || m.userData[key] !== url) return
+      if (m.userData[key] !== url) return
+      // Forget a map that failed to load so the next update asks again.
+      if (!image) return void (m.userData[key] = undefined)
       const tex = new THREE.Texture(image)
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping
       tex.colorSpace = slot === 'map' ? THREE.SRGBColorSpace : THREE.NoColorSpace
@@ -845,7 +847,8 @@ export class Viewport {
   loadImage(url) {
     let image = this.textureImages.get(url)
     if (!image) {
-      image = this.clock.track(
+      // A busy server or decoder can fail once; try again before giving up.
+      const attempt = (left) =>
         fetch(url)
           .then((r) => {
             if (!r.ok) throw new Error(r.statusText)
@@ -857,6 +860,9 @@ export class Viewport {
             await img.decode()
             return img
           })
+          .catch((e) => (left > 1 ? attempt(left - 1) : Promise.reject(e)))
+      image = this.clock.track(
+        attempt(3)
           .catch(() => {
             this.textureImages.delete(url)
             return null
