@@ -24,10 +24,38 @@ function meshKey(mesh) {
   return h.toFixed(6)
 }
 
+function hasStraightCorner(vertices, f) {
+  for (let k = 0; k < f.length; k++) {
+    const p = vertices[f[(k + f.length - 1) % f.length]]
+    const v = vertices[f[k]]
+    const q = vertices[f[(k + 1) % f.length]]
+    const a = [v[0] - p[0], v[1] - p[1], v[2] - p[2]]
+    const b = [q[0] - v[0], q[1] - v[1], q[2] - v[2]]
+    const cx = a[1] * b[2] - a[2] * b[1]
+    const cy = a[2] * b[0] - a[0] * b[2]
+    const cz = a[0] * b[1] - a[1] * b[0]
+    if (Math.hypot(cx, cy, cz) <= 1e-9 * Math.hypot(...a) * Math.hypot(...b)) return true
+  }
+  return false
+}
+
 function buildGeometry(vertices, faces, smooth = false) {
   const pos = []
   const triFace = []
   faces.forEach((f, fi) => {
+    if (f.length > 3 && hasStraightCorner(vertices, f)) {
+      // A corner on a straight edge (a boolean's welded seam) would give
+      // a fan zero-area triangles and leave the corner out of the mesh, so
+      // fan from the centre instead: every corner stays a vertex.
+      const c = [0, 1, 2].map((k) => f.reduce((sum, i) => sum + vertices[i][k], 0) / f.length)
+      for (let k = 0; k < f.length; k++) {
+        const a = vertices[f[k]]
+        const b = vertices[f[(k + 1) % f.length]]
+        pos.push(c[0], c[1], c[2], a[0], a[1], a[2], b[0], b[1], b[2])
+        triFace.push(fi)
+      }
+      return
+    }
     const a = vertices[f[0]]
     for (let k = 1; k < f.length - 1; k++) {
       const b = vertices[f[k]]

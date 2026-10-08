@@ -1371,3 +1371,25 @@ input[type='range'] {
 .row.group-info b {
   color: var(--text);
 }
+
+/* ---- boolean ------------------------------------------------------------- */
+
+.card.boolean select {
+  max-width: 130px;
+}
+
+.card.boolean .keep {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.row.bool-ops {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.row.bool-ops .small-btn {
+  flex: 1 1 40%;
+  justify-content: center;
+}

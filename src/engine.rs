@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::anim::{self, Animation, Interpolation, KeyValue, Property, Track};
 use crate::assembly::{self, Layout, Side, Template};
+use crate::csg::{self, BoolOp};
 use crate::edit;
 use crate::modifiers::{self, Axis, Modifier};
 use crate::sculpt::{self, Brush};
@@ -498,6 +499,17 @@ pub enum Command {
         spacing: f64,
         #[serde(default)]
         radius: Option<f64>,
+    },
+    /// Combine two objects' shapes: `difference` cuts `with` out of `id`,
+    /// `union` merges it in, `intersect` keeps only the overlap. The result
+    /// replaces `id`'s mesh (its modifiers are applied first) and `with` is
+    /// deleted unless `keep` is true. Both should be closed solids.
+    Boolean {
+        id: ObjRef,
+        with: ObjRef,
+        operation: BoolOp,
+        #[serde(default)]
+        keep: bool,
     },
     /// Move an object or group rigidly by `offset` and/or turn it by
     /// `rotate_y` radians about its centre.
@@ -1124,6 +1136,50 @@ fn apply_command(
             *spacing,
             *radius,
         )?,
+        Command::Boolean {
+            id,
+            with,
+            operation,
+            keep,
+        } => {
+            let (i, j) = (resolve(scene, id)?, resolve(scene, with)?);
+            if i == j {
+                return err("an object cannot be combined with itself");
+            }
+            let shape = |o: &Object| {
+                if o.modifiers.is_empty() {
+                    Ok(o.mesh.clone())
+                } else {
+                    modifiers::evaluate(&o.mesh, &o.modifiers)
+                }
+            };
+            let a = shape(&scene.objects[i])?;
+            let b = shape(&scene.objects[j])?;
+            // Bring the second shape into the first one's object space.
+            let to_local =
+                scene.objects[i].transform.matrix().inverse() * scene.objects[j].transform.matrix();
+            let mut b = Mesh {
+                vertices: b
+                    .vertices
+                    .iter()
+                    .map(|v| to_local.transform_point3(DVec3::from(*v)).to_array())
+                    .collect(),
+                faces: b.faces,
+            };
+            if to_local.determinant() < 0.0 {
+                for f in &mut b.faces {
+                    f.reverse();
+                }
+            }
+            let mesh = csg::boolean(&a, &b, *operation)?;
+            validate_mesh(&mesh)?;
+            let o = &mut scene.objects[i];
+            o.mesh = mesh;
+            o.modifiers.clear();
+            if !keep {
+                scene.objects.remove(j);
+            }
+        }
         Command::Move {
             id,
             offset,
@@ -2705,6 +2761,40 @@ mod tests {
     }
 
     #[test]
+    fn boolean_cuts_in_object_space_and_removes_the_cutter() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "name": "Block", "primitive": {"kind": "cube"}, "translation": [2, 0.5, 0], "scale": [2, 1, 1]},
+            {"op": "add", "name": "Drill", "primitive": {"kind": "cylinder", "radius": 0.2, "height": 3}, "translation": [2.5, 0.5, 0]}
+        ]})))
+        .unwrap();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "boolean", "id": "Block", "with": "Drill", "operation": "difference"}
+        ]})))
+        .unwrap();
+        assert_eq!(ed.scene().objects.len(), 1, "the cutter is consumed");
+        let block = &ed.scene().objects[0];
+        // The hole sits 0.5 m right of centre in world space, so at local
+        // x = 0.25 (the block is scaled 2x along X).
+        let near_hole = block
+            .mesh
+            .vertices
+            .iter()
+            .filter(|v| (v[0] - 0.25).abs() < 0.11 && v[2].abs() < 0.11)
+            .count();
+        assert!(
+            near_hole > 10,
+            "the hole's rim is in object space: {near_hole}"
+        );
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().objects.len(), 2);
+        let bad = batch(serde_json::json!({"commands": [
+            {"op": "boolean", "id": "Block", "with": "Block", "operation": "union"}
+        ]}));
+        assert!(ed.apply(&bad).is_err());
+    }
+
+    #[test]
     fn schema_lists_operations() {
         let s = command_schema().to_string();
         for op in [
@@ -2719,6 +2809,8 @@ mod tests {
             "neon",
             "sculpt",
             "quadsphere",
+            "boolean",
+            "intersect",
         ] {
             assert!(s.contains(op));
         }
