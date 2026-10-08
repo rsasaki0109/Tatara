@@ -112,6 +112,7 @@ export class DemoRunner {
     if (s.choose) return this.choose(s)
     if (s.upload) return this.upload(s)
     if (s.wire) return this.wire(s)
+    if (s.uv !== undefined) return this.uv(s)
     if (s.reveal) {
       const el = document.querySelector(s.reveal)
       if (!el) throw new Error(`demo: nothing matches ${s.reveal}`)
@@ -335,6 +336,39 @@ export class DemoRunner {
       },
       ease.inOut,
     )
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: x1, clientY: y1 }))
+    await press
+    await this.idle()
+    if (s.after) await this.sleep(s.after)
+  }
+
+  /** Press on the UV island holding `face` in the UV editor; drag it by `drag` (in UV units). */
+  async uv(s) {
+    const canvas = document.querySelector('#uv-editor:not([hidden]) .uv-canvas')
+    if (!canvas) throw new Error('demo: the UV editor is not open')
+    const id = this.resolveId(s.uv)
+    const uvs = this.app.scene.objects.find((o) => o.id === id)?.mesh.uvs?.[s.face]
+    if (!uvs) throw new Error(`demo: face ${s.face} of ${s.uv} has no UVs`)
+    const [u, v] = uvs.reduce((a, p) => [a[0] + p[0] / uvs.length, a[1] + p[1] / uvs.length], [0, 0])
+    const r = canvas.getBoundingClientRect()
+    const at = (u, v) => [r.left + u * r.width, r.top + (1 - v) * r.height]
+    const [x0, y0] = at(u, v)
+    await this.moveTo(x0, y0)
+    const press = this.press()
+    canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x0, clientY: y0, button: 0 }))
+    const [x1, y1] = at(u + (s.drag?.[0] ?? 0), v + (s.drag?.[1] ?? 0))
+    if (s.drag) {
+      await this.app.animator.add(
+        'cursor',
+        s.ms ?? 700,
+        (t) => {
+          this.pos = { x: x0 + (x1 - x0) * t, y: y0 + (y1 - y0) * t }
+          this.placeCursor()
+          window.dispatchEvent(new PointerEvent('pointermove', { clientX: this.pos.x, clientY: this.pos.y }))
+        },
+        ease.inOut,
+      )
+    }
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: x1, clientY: y1 }))
     await press
     await this.idle()

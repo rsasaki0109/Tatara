@@ -21,6 +21,11 @@ use crate::image::{ImageAsset, MAX_IMAGES, decode_base64};
 use crate::modifiers::{self, Axis, Modifier};
 use crate::sculpt::{self, Brush};
 use crate::texture::{Pattern, Texture};
+use crate::uv;
+
+fn d_uv_margin() -> f64 {
+    0.02
+}
 
 pub type Vec3 = [f64; 3];
 
@@ -44,6 +49,10 @@ pub struct Mesh {
     /// the topology drop them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uvs: Vec<Vec<[f64; 2]>>,
+    /// Edges marked as UV seams, `[low, high]` vertex pairs, where `unwrap`
+    /// with method `seams` cuts the surface open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seams: Vec<[u32; 2]>,
 }
 
 impl Mesh {
@@ -52,6 +61,7 @@ impl Mesh {
             vertices,
             faces,
             uvs: Vec::new(),
+            seams: Vec::new(),
         }
     }
 
@@ -774,6 +784,36 @@ pub enum Command {
     DeleteImage {
         name: String,
     },
+    /// Lay the base mesh's faces out flat in the unit square (its UVs), so
+    /// image and node textures map onto it exactly.
+    Unwrap {
+        id: ObjRef,
+        #[serde(default)]
+        method: uv::Method,
+        /// Gap between pieces, as a fraction of the layout (0-0.2).
+        #[serde(default = "d_uv_margin")]
+        margin: f64,
+    },
+    /// Move, turn (radians) and scale the UVs of some faces (all when
+    /// `faces` is empty) about the centre of their bounding box.
+    TransformUvs {
+        id: ObjRef,
+        #[serde(default)]
+        faces: Vec<u32>,
+        #[serde(default)]
+        offset: [f64; 2],
+        #[serde(default)]
+        rotate: f64,
+        #[serde(default = "d_one")]
+        scale: f64,
+    },
+    /// Mark edges (`[[a, b], …]`) as UV seams, or unmark them with `clear`.
+    MarkSeams {
+        id: ObjRef,
+        edges: Vec<[u32; 2]>,
+        #[serde(default)]
+        clear: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1255,6 +1295,7 @@ fn apply_command(
                     .collect(),
                 faces: b.faces,
                 uvs: Vec::new(),
+                seams: Vec::new(),
             };
             if to_local.determinant() < 0.0 {
                 for f in &mut b.faces {
@@ -1430,6 +1471,7 @@ fn apply_command(
                 vertices: vertices.clone(),
                 faces: faces.clone(),
                 uvs: uvs.clone().unwrap_or_default(),
+                seams: Vec::new(),
             };
             if mesh.faces.is_empty() {
                 return err("a mesh needs at least one face");
@@ -1562,6 +1604,24 @@ fn apply_command(
             let image = ImageAsset::from_bytes(decode_base64(data)?)?;
             scene.images.insert(name, image);
         }
+        Command::Unwrap { id, method, margin } => {
+            let i = resolve(scene, id)?;
+            uv::unwrap(&mut scene.objects[i].mesh, *method, *margin)?;
+        }
+        Command::TransformUvs {
+            id,
+            faces,
+            offset,
+            rotate,
+            scale,
+        } => {
+            let i = resolve(scene, id)?;
+            uv::transform(&mut scene.objects[i].mesh, faces, *offset, *rotate, *scale)?;
+        }
+        Command::MarkSeams { id, edges, clear } => {
+            let i = resolve(scene, id)?;
+            uv::mark_seams(&mut scene.objects[i].mesh, edges, *clear)?;
+        }
         Command::DeleteImage { name } => {
             if let Some(o) = scene.objects.iter().find(|o| {
                 o.material
@@ -1585,6 +1645,13 @@ fn tidy(scene: &mut Scene) -> Result<(), EngineError> {
     for o in &mut scene.objects {
         if !o.mesh.uvs.is_empty() && !o.mesh.has_uvs() {
             o.mesh.uvs.clear();
+        }
+        // Seams on edges an edit removed go with them.
+        if !o.mesh.seams.is_empty() {
+            let edges = uv::edges(&o.mesh);
+            o.mesh
+                .seams
+                .retain(|&[a, b]| edges.contains(&(a.min(b), a.max(b))));
         }
     }
     check_images(scene)
@@ -1824,6 +1891,9 @@ fn validate_mesh(mesh: &Mesh) -> Result<(), EngineError> {
             return err("faces need at least 3 valid vertex indices");
         }
     }
+    if mesh.seams.iter().flatten().any(|&i| i >= n) {
+        return err("seams must name existing vertices");
+    }
     if !mesh.uvs.is_empty() {
         if !mesh.has_uvs() {
             return err("uvs need one entry per face corner");
@@ -1985,6 +2055,7 @@ pub fn build_primitive(p: &Primitive) -> Result<Mesh, EngineError> {
                 vertices: vec![[-h, 0.0, h], [h, 0.0, h], [h, 0.0, -h], [-h, 0.0, -h]],
                 faces: vec![vec![0, 1, 2, 3]],
                 uvs: Vec::new(),
+                seams: Vec::new(),
             }
         }
         Primitive::Sphere {
@@ -2991,6 +3062,83 @@ mod tests {
         assert!(tex(&ed, 1).is_none());
         ed.undo().unwrap();
         assert_eq!(tex(&ed, 1).unwrap().pattern, Pattern::Marble);
+    }
+
+    #[test]
+    fn unwrap_seams_and_island_moves_are_commands() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands": [
+            {"op": "add", "name": "Can", "primitive": {"kind": "cylinder"}}
+        ]})))
+        .unwrap();
+        let mesh = |ed: &Editor| ed.scene().objects[0].mesh.clone();
+        let f = mesh(&ed).faces[0].clone();
+        let run = |ed: &mut Editor, cmd: serde_json::Value| {
+            ed.apply(&batch(serde_json::json!({ "commands": [cmd] })))
+        };
+        assert!(
+            run(
+                &mut ed,
+                serde_json::json!({"op": "transform_uvs", "id": "Can", "scale": 2})
+            )
+            .is_err(),
+            "islands need UVs first"
+        );
+        assert!(
+            run(
+                &mut ed,
+                serde_json::json!({"op": "mark_seams", "id": "Can", "edges": [[0, 9999]]})
+            )
+            .is_err(),
+            "seams must be real edges"
+        );
+        run(
+            &mut ed,
+            serde_json::json!({"op": "mark_seams", "id": "Can", "edges": [[f[1], f[0]]]}),
+        )
+        .unwrap();
+        assert_eq!(mesh(&ed).seams.len(), 1);
+
+        run(
+            &mut ed,
+            serde_json::json!({"op": "unwrap", "id": "Can", "method": "cylinder"}),
+        )
+        .unwrap();
+        let m = mesh(&ed);
+        assert_eq!(m.uvs.len(), m.faces.len());
+        assert!(
+            m.uvs
+                .iter()
+                .flatten()
+                .flatten()
+                .all(|x| (0.0..=1.0).contains(x))
+        );
+
+        run(
+            &mut ed,
+            serde_json::json!({"op": "transform_uvs", "id": "Can", "faces": [0], "offset": [0.25, 0]}),
+        )
+        .unwrap();
+        let moved = mesh(&ed);
+        assert!((moved.uvs[0][0][0] - m.uvs[0][0][0] - 0.25).abs() < 1e-9);
+        assert_eq!(moved.uvs[1], m.uvs[1], "other faces stay put");
+        assert!(
+            run(
+                &mut ed,
+                serde_json::json!({"op": "unwrap", "id": "Can", "margin": 0.5})
+            )
+            .is_err(),
+            "margin is bounded"
+        );
+
+        ed.undo().unwrap();
+        assert_eq!(mesh(&ed).uvs, m.uvs);
+        run(
+            &mut ed,
+            serde_json::json!({"op": "mark_seams", "id": "Can", "edges": [[f[0], f[1]]], "clear": true}),
+        )
+        .unwrap();
+        assert!(mesh(&ed).seams.is_empty());
     }
 
     #[test]

@@ -69,7 +69,7 @@ try {
   await settled()
 
   await page.keyboard.press('Escape') // detach the gizmo from the cube's centre
-  const box = await page.locator('#viewport canvas').boundingBox()
+  const box = await page.locator('#viewport > canvas').boundingBox()
   await page.keyboard.down('Alt')
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
   await page.keyboard.up('Alt')
@@ -210,6 +210,27 @@ try {
   await page.waitForFunction(() => window.__tatara.debug().textured === 0)
   await page.waitForTimeout(300)
 
+  // UV editor: unwrap into islands, then move one island.
+  await page.click('[data-uv-open]')
+  await page.waitForSelector('#uv-editor:not([hidden]) .uv-canvas')
+  await page.click('[data-unwrap=cube]')
+  await page.waitForFunction(() => document.querySelector('#uv-hint')?.textContent.startsWith('6 islands'))
+  check(true, 'unwrapping a cube lays out six islands')
+  const uvBox = await page.locator('.uv-canvas').boundingBox()
+  const uv0 = await page.evaluate(() =>
+    fetch('/api/scene')
+      .then((r) => r.json())
+      .then((s) => s.objects[0].mesh.uvs[0]),
+  )
+  const [cu, cv] = uv0.reduce((a, p) => [a[0] + p[0] / uv0.length, a[1] + p[1] / uv0.length], [0, 0])
+  await page.mouse.click(uvBox.x + cu * uvBox.width, uvBox.y + (1 - cv) * uvBox.height)
+  await page.waitForFunction(() => document.querySelector('#uv-hint')?.textContent.startsWith('Island'))
+  await page.click('[data-uv-op=grow]')
+  await page.waitForFunction(() => document.querySelector('#activity li .what')?.textContent === 'transform_uvs')
+  check(true, 'an island scales with one transform_uvs command')
+  await page.click('[data-uv-close]')
+  await page.waitForSelector('#uv-editor[hidden]', { state: 'attached' })
+
   // Sculpt mode: a drag on the object is one sculpt command, not an orbit.
   const before = await faces()
   await page.click('[data-action=subdivide]')
@@ -288,7 +309,7 @@ try {
   check(x24 > 0 && x24 < 2, `pose is interpolated between keys (x=${x24.toFixed(3)} at frame 24)`)
   await page.fill('#frame-input', '1')
   await page.press('#frame-input', 'Enter')
-  await page.locator('#viewport canvas').focus()
+  await page.locator('#viewport > canvas').focus()
   await page.keyboard.press('Space')
   await page.waitForTimeout(700)
   await page.keyboard.press('Space')

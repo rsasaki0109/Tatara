@@ -1007,6 +1007,7 @@ pub fn rebuild_polygons(
         vertices: mesh.vertices,
         faces,
         uvs: face_uvs,
+        seams: Vec::new(),
     }
 }
 
