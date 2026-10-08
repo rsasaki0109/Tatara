@@ -12,11 +12,11 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
 <table>
   <tr>
     <td width="50%"><img src="docs/media/vision.gif" alt="An agent builds a vase, a cup and a plinth over MCP, calls render_view, sees front and top renders showing the cup overlapping the vase, moves and re-glazes the cup, then renders again to confirm"></td>
-    <td width="50%"><img src="docs/media/mcp.gif" alt="An external agent calls tatara --mcp tools; a stale edit is rejected and undo/redo work from the agent"></td>
+    <td width="50%"><img src="docs/media/inspect.gif" alt="An agent builds a still life over MCP and its render looks fine, but inspect_scene reports a vase and an apple sunk into the plinth, the apple cutting into a book and a chrome orb floating 24 cm up; three drop commands settle them and a second inspection reports no issues"></td>
   </tr>
   <tr>
     <td><b>See</b> — agents render the scene, spot their own mistakes and fix them.</td>
-    <td><b>Connect</b> — any MCP agent edits the scene you are looking at.</td>
+    <td><b>Measure</b> — <code>inspect_scene</code> finds intersections, gaps and sunk objects; <code>drop</code> settles them.</td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/media/sculpt.gif" alt="In sculpt mode a clay ball becomes a goblin head: mirrored draw strokes raise a nose and brow, Ctrl-strokes carve eyes and a mouth, the grab brush pulls out pointed ears, inflate swells the cheeks and a Shift-stroke smooths the face"></td>
@@ -43,7 +43,12 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Stack</b> — non-destructive modifiers; edit the base and every layer follows.</td>
   </tr>
   <tr>
-    <td colspan="2"><img src="docs/media/agent.gif" width="50%" alt="A chat request becomes a validated command batch that builds a tea set; a second request recolors the cups by name"><br><b>Ask</b> — chat turns into an atomic, undoable command batch.</td>
+    <td width="50%"><img src="docs/media/mcp.gif" alt="An external agent calls tatara --mcp tools; a stale edit is rejected and undo/redo work from the agent"></td>
+    <td width="50%"><img src="docs/media/agent.gif" alt="A chat request becomes a validated command batch that builds a tea set; a second request recolors the cups by name"></td>
+  </tr>
+  <tr>
+    <td><b>Connect</b> — any MCP agent edits the scene you are looking at.</td>
+    <td><b>Ask</b> — chat turns into an atomic, undoable command batch.</td>
   </tr>
 </table>
 
@@ -93,7 +98,7 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **History:** each batch is one undo step, and an invalid batch changes nothing.
 - **Files:** validated JSON scene save/open, and OBJ export with transforms applied.
 - **glTF 2.0:** export a binary `.glb` with one node, mesh and PBR material per object (emission, `KHR_materials_emissive_strength`, `KHR_materials_transmission` and alpha blending included), modifiers applied and normals split at creases; it passes the Khronos glTF Validator with no issues. Import `.glb` or `.gltf` with embedded buffers through the node hierarchy. Split vertices are welded and coplanar triangle pairs become quads again, so imported models stay editable. The whole import is one undo step.
-- **Agents:** a stdio MCP bridge, generated command schemas, scene bounds, optional full mesh reads and `render_view`. That tool gives agents eyes: a headless Rust renderer returns labelled multi-view PNGs, and the Agent panel shows the same image to you.
+- **Agents:** a stdio MCP bridge, generated command schemas, scene bounds, optional full mesh reads and `render_view`. That tool gives agents eyes: a headless Rust renderer returns labelled multi-view PNGs, and the Agent panel shows the same image to you. `inspect_scene` gives them a ruler: it measures intersections (with depth), objects floating above their support (with the gap) and anything sunk below the floor, and the **Checks** card shows the same report with the culprits outlined in red. The `drop` command settles an object on whatever is beneath it.
 - **Chat (optional):** an OpenAI-compatible Chat Completions endpoint translates requests into validated commands.
 
 | Key | Action | Key | Action |
@@ -133,6 +138,7 @@ You can also build once and point the client at `target/release/tatara` with `ar
 | `apply_commands` | Apply a validated, atomic batch. Pass `expected_revision` to reject stale edits. |
 | `undo` / `redo` | Step the shared history. |
 | `import_gltf` / `export_gltf` | Read a local `.glb`/`.gltf` into the scene, or write the scene to a `.glb`. |
+| `inspect_scene` | **Measure the scene.** Lists intersections with their depth, floating objects with their gap and objects below the floor, plus each object's world bounds, size and what it rests on. |
 | `render_view` | **Look at the scene.** Returns a PNG of up to six labelled views (`front`, `back`, `left`, `right`, `top`, `bottom`, `iso` or `azimuth:elevation`). It has shadows, outlines, see-through glass, glowing emission and a 1 m ground grid. Pass `object` to frame one object, and `frame` to pose animation at that frame. |
 
 Example request for your agent:
@@ -158,6 +164,7 @@ curl http://127.0.0.1:3000/api/commands \
 | `transform` / `material` / `rename` | `id`, plus the fields to change |
 | `sculpt` | `id`, `brush` (`draw`, `inflate`, `smooth`, `flatten`, `grab`), `points` (stroke path in object space), `radius`, optional `strength` (0–1), `invert`, `symmetry` (`x`, `y`, `z`) and, for `grab`, `offset` |
 | `shade` | `id`, `smooth` (`true` for smooth shading) |
+| `drop` | `id`: move it straight down onto the floor or the object below it (or up, out of whatever it sank into) |
 | material fields | `preset` (`glass`, `frosted`, `chrome`, `steel`, `gold`, `copper`, `jade`, `ceramic`, `clay`, `plastic`, `rubber`, `neon`), `color`, `roughness`, `metalness`, `emissive` (`#rrggbb`), `emissive_strength` (0–20), `opacity`, `transmission` |
 | `duplicate` / `array` | `id`, `offset` (and `count` for `array`) |
 | `extrude` / `inset` | `id`, `face`, and `distance` or `fraction` (0–1) |
@@ -185,7 +192,7 @@ curl http://127.0.0.1:3000/api/commands \
 ]}
 ```
 
-Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj`, `GET /api/export/glb`, `POST /api/import` (raw `.glb`/`.gltf` body), `GET /api/render?views=front,top&size=512&object=Vase&frame=24` (PNG), `GET /api/context?frame=24` (poses at a frame) and `GET /api/events`. The last is a server-sent event stream of revisions.
+Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj`, `GET /api/export/glb`, `POST /api/import` (raw `.glb`/`.gltf` body), `GET /api/render?views=front,top&size=512&object=Vase&frame=24` (PNG), `GET /api/context?frame=24` (poses at a frame), `GET /api/inspect` (the `inspect_scene` report) and `GET /api/events`. The last is a server-sent event stream of revisions.
 
 ## Optional in-editor chat
 
@@ -224,6 +231,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Geometry, commands, validation, history, OBJ | Rust: `src/engine.rs` |
 | glTF export and import | Rust: `src/gltf.rs` |
 | Headless renderer for agent vision | Rust: `src/render.rs` (CPU rasterizer, shadow map, no GPU needed) |
+| Scene inspection and `drop` | Rust: `src/inspect.rs` (point-in-mesh, penetration depth, support search) |
 | Shared API router (server and browser) | Rust: `src/api.rs` |
 | Browser-only build | Rust → WebAssembly: `wasm/` (plain C ABI, no bindgen) + `web/src/backend.js` |
 
@@ -263,7 +271,7 @@ The aim is a creation suite that surpasses Blender for human and agent collabora
 2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓; next: UVs and textures in glTF, and opening `.tatara.json` links directly in the web build.
 3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓; next: a node-based material system, UVs and textures, and a path-traced preview.
 4. **Motion:** ~~keyframes and timeline~~ ✓; next: a graph editor for curves, animating modifier parameters, constraints, then rigging.
-5. **Agents:** ~~visual feedback (`render_view`)~~ ✓; next: measurements and collision reports as tool results, reviewable change proposals and multi-user sessions.
+5. **Agents:** ~~visual feedback (`render_view`)~~ ✓, ~~measurements and collision reports (`inspect_scene`)~~ ✓; next: reviewable change proposals, constraints such as "keep on the table", and multi-user sessions.
 
 Not yet available: `.blend` compatibility, UV editing, rigging and a production renderer. Extrusion moves a face along its normal and does not repair self-intersections. OBJ carries geometry only. glTF carries geometry, transforms, PBR factors with emission, transmission and alpha, and transform animation, but no textures, UVs or material animation yet. Importing a sheared node hierarchy bakes the transform into the vertices. Save the native scene to keep modifiers and edit history.
 

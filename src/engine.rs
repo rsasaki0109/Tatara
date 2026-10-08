@@ -435,6 +435,11 @@ pub enum Command {
         id: ObjRef,
         name: String,
     },
+    /// Move an object straight down until it rests on the floor or on the
+    /// object beneath it (or up, out of whatever it has sunk into).
+    Drop {
+        id: ObjRef,
+    },
     /// Smooth shading on or off (off splits normals at sharp creases).
     Shade {
         id: ObjRef,
@@ -937,6 +942,29 @@ fn apply_command(
         Command::Rename { id, name } => {
             let i = resolve(scene, id)?;
             scene.objects[i].name = check_name(name)?;
+        }
+        Command::Drop { id } => {
+            let i = resolve(scene, id)?;
+            let o = &scene.objects[i];
+            if o.tracks.iter().any(|t| t.property == Property::Translation) {
+                return err(
+                    "drop moves the static position; this object's translation is animated",
+                );
+            }
+            let solids: Vec<crate::inspect::Solid> = scene
+                .objects
+                .iter()
+                .map(|o| {
+                    let mesh = if o.modifiers.is_empty() {
+                        o.mesh.clone()
+                    } else {
+                        modifiers::evaluate(&o.mesh, &o.modifiers)?
+                    };
+                    Ok(crate::inspect::solid(o, &mesh))
+                })
+                .collect::<Result<_, EngineError>>()?;
+            let dy = crate::inspect::settle(&solids, o.id)?;
+            scene.objects[i].transform.translation[1] += dy;
         }
         Command::Shade { id, smooth } => {
             let i = resolve(scene, id)?;

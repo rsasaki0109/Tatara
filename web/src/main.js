@@ -135,6 +135,11 @@ async function refresh(animate = true) {
     app.sel.faces = app.sel.faces.filter((f) => f < sel.mesh.faces.length)
   }
   viewport.sync(app.scene, animate)
+  if (app.checks && app.checks.revision !== app.scene.revision && viewport.warned.size) {
+    // The scene changed since the last inspection: drop its outlines.
+    viewport.setWarnings([])
+    $('checks-out').querySelector('.checks-summary')?.classList.add('stale')
+  }
   syncEdit()
 }
 
@@ -631,7 +636,7 @@ function renderProperties(o) {
       <div class="card-title">Object <span class="muted small">#${o.id} · ${o.kind}</span></div>
       <input class="name-input" id="p-name" value="${escapeHtml(o.name)}" spellcheck="false">
       <div class="meta">${num(displayMesh(o).vertices.length)} vertices · ${num(displayMesh(o).faces.length)} faces${o.display ? ` <span class="muted">(base ${num(o.mesh.faces.length)})</span>` : ''}</div>
-      <div class="row"><button class="chip ${o.smooth ? 'on' : ''}" data-shade title="Blend normals across every edge (Shade Smooth)">Smooth shading</button></div>
+      <div class="row"><button class="chip ${o.smooth ? 'on' : ''}" data-shade title="Blend normals across every edge (Shade Smooth)">Smooth shading</button><button class="chip" data-drop title="Settle onto the floor or the object below">Drop to surface</button></div>
     </div>
     <div class="card">
       <div class="card-title">Transform</div>
@@ -810,6 +815,7 @@ $('properties').addEventListener('click', (e) => {
     next[set.dataset.set] = set.dataset.set === 'levels' ? Number(set.dataset.value) : set.dataset.value
     return actions.setModifier(i, next).catch(() => {})
   }
+  if (e.target.closest('[data-drop]') && o0) return run([{ op: 'drop', id: o0.id }]).catch(() => {})
   if (e.target.closest('[data-shade]') && o0) return run([{ op: 'shade', id: o0.id, smooth: !o0.smooth }]).catch(() => {})
   const brush = e.target.closest('[data-brush]')
   if (brush) {
@@ -855,6 +861,32 @@ $('batch-apply').addEventListener('click', async () => {
   run(commands, 'Batch').catch(() => {})
 })
 $('chat-send').addEventListener('click', sendChat)
+/** Show an inspection report in the Checks card and outline flagged objects. */
+function showChecks(report) {
+  app.checks = report
+  const ids = new Map(report.objects.map((o) => [o.name, o.id]))
+  const flagged = new Set()
+  const items = report.issues.map((issue) => {
+    const names = issue.objects || [issue.object]
+    for (const n of names) if (ids.has(n)) flagged.add(ids.get(n))
+    const level = issue.kind === 'floating' ? 'info' : 'warn'
+    return `<li class="issue ${level}" data-issue-id="${ids.get(names[0]) ?? ''}">${escapeHtml(issue.message)}</li>`
+  })
+  $('checks-out').innerHTML =
+    `<div class="checks-summary ${report.issues.length ? 'bad' : 'good'}">${report.issues.length ? '⚠' : '✓'} ${escapeHtml(report.summary)} <span class="muted">r${report.revision}</span></div>` +
+    (items.length ? `<ul class="issues">${items.join('')}</ul>` : '')
+  viewport.setWarnings([...flagged])
+}
+app.showChecks = showChecks
+
+$('inspect-btn').addEventListener('click', () =>
+  track(async () => showChecks(await api.inspect())).catch((e) => toast(e.message, 'error')),
+)
+$('checks-out').addEventListener('click', (e) => {
+  const li = e.target.closest('[data-issue-id]')
+  if (li && li.dataset.issueId) select(Number(li.dataset.issueId))
+})
+
 $('render-btn').addEventListener('click', async () => {
   const res = await fetch(`/api/render?views=iso,front,right,top&size=256&frame=${Math.round(app.frame)}`)
   if (!res.ok) return toast('Render failed', 'error')

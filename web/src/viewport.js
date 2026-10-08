@@ -14,6 +14,7 @@ import { createStroke } from './sculpt.js'
 
 const CREASE = THREE.MathUtils.degToRad(38)
 const SELECT = 0xff8a4c
+const WARN = 0xff4d5e
 const DEG = Math.PI / 180
 
 function meshKey(mesh) {
@@ -97,6 +98,8 @@ export class Viewport {
     // Sculpt mode: brush settings, and the stroke being dragged (if any).
     this.sculpt = { active: false }
     this.stroke = null
+    // Objects with inspection issues get a red outline.
+    this.warned = new Set()
     // Edit mode: which components of the selected object are selected.
     this.edit = { active: false, mode: 'face', verts: [], edges: [], faces: [] }
     this.nodes = new Map()
@@ -580,7 +583,9 @@ export class Viewport {
       const on = node.id === this.selected
       const editing = on && ed.active
       const mesh = node.baseMesh
-      node.outline.visible = on && !editing
+      const warned = this.warned.has(node.id)
+      node.outline.visible = (on && !editing) || (warned && !editing)
+      node.outline.material.color.set(on ? SELECT : WARN)
       node.cageLines.visible = editing || (on && Boolean(node.data.display))
       node.cageLines.material.opacity = editing ? 0.9 : 0.7
       node.cageLines.material.color.set(editing ? 0x111316 : SELECT)
@@ -611,6 +616,12 @@ export class Viewport {
       }
     }
     this.placeGizmo()
+  }
+
+  /** Outline objects that inspection flagged (ids), or none. */
+  setWarnings(ids = []) {
+    this.warned = new Set(ids)
+    this.setSelection(this.selected, this.face)
   }
 
   setEditState(state) {

@@ -360,6 +360,7 @@ export class DemoRunner {
   async mcp(s) {
     const { app } = this
     const term = $('terminal')
+    if (s.clear) $('terminal-body').replaceChildren()
     if (Number(getComputedStyle(term).opacity) < 0.99 || term.style.display === 'none') await this.fade(term, 1, 250)
     for (const call of s.mcp) {
       if (call.say) {
@@ -388,6 +389,7 @@ export class DemoRunner {
       await this.sleep(call.think ?? 260)
       const result = await this.callTool(call.tool, call.arguments ?? {})
       let summary
+      const details = []
       if (result.isError) {
         let message = result.text
         try {
@@ -401,11 +403,20 @@ export class DemoRunner {
       else {
         const data = JSON.parse(result.text)
         if (call.tool === 'get_scene') summary = `revision ${data.revision} · ${data.objects.length} objects`
+        else if (call.tool === 'inspect_scene') {
+          app.showChecks(data)
+          summary = escapeHtml(data.summary)
+          for (const issue of data.issues) details.push(`<span class="t-err">  ⚠ ${escapeHtml(issue.message)}</span>`)
+        }
         else if (data.created?.length) summary = `revision ${data.revision} · created ${JSON.stringify(data.created)}`
         else summary = `revision ${data.revision}`
-        summary = `<span class="t-ok">✓</span> ${summary}`
+        summary = details.length ? `<span class="t-err">⚠</span> ${summary}` : `<span class="t-ok">✓</span> ${summary}`
       }
       this.termLine(`<span class="t-in">←</span> ${summary}`)
+      for (const line of details) {
+        this.termLine(line)
+        await this.sleep(120)
+      }
       if (result.image) {
         const body = $('terminal-body')
         for (const old of body.querySelectorAll('.t-img')) old.parentElement.remove()
@@ -414,7 +425,7 @@ export class DemoRunner {
         line.querySelector('img').src = result.image
         await this.clock.track(line.querySelector('img').decode().catch(() => {}))
       }
-      if (call.tool !== 'get_scene' && call.tool !== 'render_view' && !result.isError) {
+      if (!['get_scene', 'render_view', 'inspect_scene'].includes(call.tool) && !result.isError) {
         await app.refresh(true)
         app.log('MCP', call.tool === 'apply_commands' ? app.summarize(call.arguments.commands) : call.tool)
       }
@@ -429,6 +440,7 @@ export class DemoRunner {
     try {
       let data
       if (tool === 'get_scene') data = await this.clock.track(fetch('/api/context').then((r) => r.json()))
+      else if (tool === 'inspect_scene') data = await api.inspect()
       else if (tool === 'apply_commands') data = await api.commands(args.commands, args.expected_revision)
       else if (tool === 'render_view') {
         const q = new URLSearchParams({ views: (args.views ?? ['iso']).join(','), size: String(args.size ?? 512) })
