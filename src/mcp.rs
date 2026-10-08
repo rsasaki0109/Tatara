@@ -103,6 +103,11 @@ pub fn tools() -> Value {
                 },
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "inspect_scene",
+            "description": "Measure the shared scene and list problems a picture can hide: objects that intersect (with depth), float above what is beneath them (with gap) or sink below the floor (y = 0), plus every object's world bounds, size and what it rests on. Call it after building; fix floating or sunk objects with the `drop` command.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }
     ])
 }
@@ -211,6 +216,7 @@ async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) 
             None => http.get(format!("{base}/api/context")),
         },
         "apply_commands" => http.post(format!("{base}/api/commands")).json(&args),
+        "inspect_scene" => http.get(format!("{base}/api/inspect")),
         "undo" => http.post(format!("{base}/api/undo")),
         "redo" => http.post(format!("{base}/api/redo")),
         _ => return tool_result(format!("unknown tool: {name}"), true),

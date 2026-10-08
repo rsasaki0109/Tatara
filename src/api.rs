@@ -167,6 +167,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
             Ok(Response::json(200, engine::context_at(ed, frame)))
         }
         ("GET", "/schema") => Ok(Response::json(200, engine::command_schema())),
+        ("GET", "/inspect") => Ok(Response::json(200, crate::inspect::inspect(ed))),
         ("GET", "/ai") => Ok(Response::json(200, json!({ "enabled": ai }))),
         ("POST", "/commands") => {
             let batch: CommandBatch = parse(body)?;

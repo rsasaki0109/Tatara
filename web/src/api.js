@@ -28,6 +28,7 @@ export function createApi(clock) {
     undo: () => request('POST', '/undo'),
     redo: () => request('POST', '/redo'),
     reset: () => request('POST', '/reset'),
+    inspect: () => request('GET', '/inspect'),
     chat: (prompt) => request('POST', '/chat', { prompt }),
     importModel: (bytes) =>
       clock.track(

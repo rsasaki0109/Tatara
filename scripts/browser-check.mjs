@@ -183,6 +183,17 @@ try {
   await page.keyboard.press('Escape')
   await page.waitForSelector('[data-mode=object].on')
 
+  // Checks: the Inspect button shows the report; Drop settles the object.
+  await page.click('.tabs [data-tab=agent]')
+  await page.click('#inspect-btn')
+  await page.waitForSelector('#checks-out .checks-summary')
+  check(true, `inspect reports: ${(await page.textContent('#checks-out .checks-summary')).trim()}`)
+  await page.click('.tabs [data-tab=properties]')
+  await page.click('#outliner li')
+  await page.click('[data-drop]')
+  await page.waitForFunction(() => document.querySelector('#activity li .what')?.textContent === 'drop')
+  check(true, 'drop settles the selected object')
+
   // Animation: key, scrub, auto-key an edit, play back.
   await page.click('#outliner li')
   await page.keyboard.press('k')

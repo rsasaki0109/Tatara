@@ -3,6 +3,7 @@ pub mod api;
 pub mod edit;
 pub mod engine;
 pub mod gltf;
+pub mod inspect;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod modifiers;

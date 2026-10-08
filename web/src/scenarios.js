@@ -480,4 +480,54 @@ export const sculpt = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt }
+// An agent measures its own work: a render looks fine, but inspect_scene
+// finds a sunk vase, an apple through a book and a floating orb; `drop`
+// settles all three and a second inspection comes back clean.
+export const inspect = {
+  title: 'Agents measure their work',
+  width: 800,
+  external: true,
+  tab: 'agent',
+  gizmo: false,
+  camera: { azimuth: 12, elevation: 20, distance: 6.2, target: [-1.1, 0.3, 0] },
+  steps: [
+    { wait: 150 },
+    { caption: 'The agent builds a still life over MCP', hint: 'apply_commands' },
+    {
+      mcp: [
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              { op: 'add', name: 'Plinth', primitive: { kind: 'cube' }, translation: [0, 0.05, 0], scale: [2.4, 0.1, 1.2], color: '#d8d4cb', roughness: 0.7 },
+              { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 64 }, translation: [-0.6, 0.02, 0], color: '#2f4f8f', roughness: 0.2 },
+              { op: 'add', name: 'Book', primitive: { kind: 'cube' }, translation: [0.15, 0.14, 0.05], rotation: [0, 0.3, 0], scale: [0.5, 0.08, 0.35], color: '#9b2c2c', roughness: 0.6 },
+              { op: 'add', name: 'Apple', primitive: { kind: 'sphere', radius: 0.12, segments: 32, rings: 16 }, translation: [0.2, 0.17, 0.05], color: '#7cb342', roughness: 0.35 },
+              { op: 'add', name: 'Orb', primitive: { kind: 'sphere', radius: 0.16, segments: 48, rings: 24 }, translation: [0.8, 0.5, -0.1], preset: 'chrome' },
+            ],
+          },
+          after: 400,
+        },
+        { tool: 'render_view', arguments: { views: ['front'], size: 256 }, after: 500 },
+        { say: 'looks right. measure it before finishing', after: 200 },
+      ],
+    },
+    { caption: 'inspect_scene measures what a picture hides', hint: 'inspect_scene' },
+    { mcp: [{ tool: 'inspect_scene', after: 1600 }], clear: true },
+    { caption: 'One command settles each object on what is below it', hint: 'drop' },
+    {
+      clear: true,
+      mcp: [
+        { say: 'drop the vase, apple and orb onto their supports', after: 200 },
+        { tool: 'apply_commands', arguments: { commands: [{ op: 'drop', id: 'Vase' }, { op: 'drop', id: 'Apple' }, { op: 'drop', id: 'Orb' }] }, after: 500 },
+        { tool: 'inspect_scene', after: 600 },
+        { say: 'no issues. done', after: 500 },
+      ],
+    },
+    { caption: 'Measured, fixed and verified by the agent', hint: 'inspect_scene · drop' },
+    { spin: 8 },
+    { wait: 2000 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect }

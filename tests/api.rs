@@ -188,7 +188,7 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let init = call(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "tatara");
     let tools = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 8);
     let r = call(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "apply_commands", "arguments": {"commands": [{"op": "add", "primitive": {"kind": "torus"}}]}}})).await;
     assert_eq!(r["result"]["isError"], false, "{r}");
     let r = call(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "get_scene", "arguments": {}}})).await;
@@ -243,5 +243,20 @@ async fn mcp_bridge_edits_the_shared_scene() {
     );
     let r = call(json!({"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "render_view", "arguments": {"views": ["sideways"]}}})).await;
     assert_eq!(r["result"]["isError"], true);
+
+    // Measurements: the report lists every object and its issues.
+    let r = call(json!({"jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": {"name": "inspect_scene", "arguments": {}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let report: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(
+        report["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["name"] == "Torus"),
+        "{report}"
+    );
+    assert!(report["summary"].is_string());
     child.kill().await.unwrap();
 }
