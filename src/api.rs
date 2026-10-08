@@ -107,6 +107,18 @@ pub fn state(ed: &Editor, ai: bool) -> Value {
             if !o.modifiers.is_empty() {
                 value["display"] = json!(ed.evaluated(o));
             }
+            // Bone weights of each displayed vertex (four per vertex), so
+            // the viewport bends the mesh exactly like the core.
+            if !o.bones.is_empty() {
+                let weights = crate::rig::weights(ed.evaluated(o), &o.bones);
+                let joints: Vec<u16> = weights.iter().flatten().map(|(j, _)| *j).collect();
+                let amounts: Vec<f64> = weights
+                    .iter()
+                    .flatten()
+                    .map(|(_, w)| (*w as f64 * 1e4).round() / 1e4)
+                    .collect();
+                value["skin"] = json!({ "joints": joints, "weights": amounts });
+            }
         }
     }
     json!({ "scene": scene, "history": history(ed), "ai": ai })

@@ -278,7 +278,8 @@ pub(crate) fn prepare(
         };
         let m = transform.matrix();
         let normal_m = m.inverse().transpose();
-        let mesh = ed.evaluated(o);
+        let posed = ed.posed(o, frame);
+        let mesh = &*posed;
         let projection = material
             .texture
             .as_ref()

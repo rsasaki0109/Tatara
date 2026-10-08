@@ -16,6 +16,7 @@ use crate::engine::{
 };
 use crate::image::{ImageAsset, MAX_IMAGES, Pixels, decode_base64};
 use crate::nodes;
+use crate::rig;
 use crate::texture::{self, BoxProjection, Look, Pattern, Texture};
 
 const CREASE_DEGREES: f64 = 38.0;
@@ -279,6 +280,9 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     let mut nodes = Vec::new();
     let mut channels = Vec::new();
     let mut samplers = Vec::new();
+    let mut skins = Vec::new();
+    // Nodes at the top of the scene (bones hang below their rig node).
+    let mut roots = Vec::new();
     let mut extensions = BTreeSet::new();
     let mut images = Vec::new();
     let mut textures = Vec::new();
@@ -338,6 +342,33 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         accessors.push(json!({ "bufferView": nv, "componentType": 5126, "count": shaded.normals.len(), "type": "VEC3" }));
         accessors.push(json!({ "bufferView": iv, "componentType": 5125, "count": shaded.indices.len(), "type": "SCALAR" }));
         let mut attributes = json!({ "POSITION": a, "NORMAL": a + 1 });
+        if !o.bones.is_empty() {
+            // Weights depend only on where a vertex is, so the split
+            // vertices get the same ones as the mesh.
+            let at = Mesh {
+                vertices: shaded.positions.iter().map(|p| p.map(f64::from)).collect(),
+                faces: Vec::new(),
+                uvs: Vec::new(),
+                seams: Vec::new(),
+            };
+            let weights = rig::weights(&at, &o.bones);
+            let joint_bytes: Vec<u8> = weights
+                .iter()
+                .flatten()
+                .flat_map(|(j, w)| if *w > 0.0 { *j } else { 0 }.to_le_bytes())
+                .collect();
+            let weight_bytes: Vec<u8> = weights
+                .iter()
+                .flatten()
+                .flat_map(|(_, w)| w.to_le_bytes())
+                .collect();
+            let jv = push_view(&mut bin, &joint_bytes, 34962);
+            let wv = push_view(&mut bin, &weight_bytes, 34962);
+            attributes["JOINTS_0"] = json!(accessors.len());
+            accessors.push(json!({ "bufferView": jv, "componentType": 5123, "count": weights.len(), "type": "VEC4" }));
+            attributes["WEIGHTS_0"] = json!(accessors.len());
+            accessors.push(json!({ "bufferView": wv, "componentType": 5126, "count": weights.len(), "type": "VEC4" }));
+        }
         let mut extras = Value::Null;
         let (mut color_map, mut normal_map, mut orm_map) = (None, None, None);
         if let Some(t) = tex {
@@ -478,24 +509,92 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         let t = &o.transform;
         let [rx, ry, rz] = t.rotation;
         let q = DQuat::from_euler(EulerRot::XYZ, rx, ry, rz);
-        nodes.push(json!({
-            "name": o.name,
-            "mesh": meshes.len() - 1,
+        let placed = json!({
             "translation": t.translation,
             "rotation": [q.x, q.y, q.z, q.w],
             "scale": t.scale,
-        }));
+        });
+        // The node that carries the object's transform (and its animation).
+        let node;
+        let mut joints: Vec<usize> = Vec::new();
+        if o.bones.is_empty() {
+            node = nodes.len();
+            let mut n = placed;
+            n["name"] = json!(o.name);
+            n["mesh"] = json!(meshes.len() - 1);
+            nodes.push(n);
+            roots.push(node);
+        } else {
+            // A skinned mesh ignores its own node's transform, so the
+            // object's transform sits on a rig node above the bones, each
+            // bone a joint node placed at its head relative to its parent.
+            node = nodes.len();
+            let mut rig_node = placed;
+            rig_node["name"] = json!(format!("{} rig", o.name));
+            nodes.push(rig_node);
+            roots.push(node);
+            for b in &o.bones {
+                let parent = b
+                    .parent
+                    .as_ref()
+                    .and_then(|p| o.bones.iter().position(|x| &x.name == p));
+                let origin = parent.map_or(DVec3::ZERO, |k| DVec3::from(o.bones[k].head));
+                let [x, y, z] = b.rotation;
+                let r = DQuat::from_euler(EulerRot::XYZ, x, y, z);
+                joints.push(nodes.len());
+                nodes.push(json!({
+                    "name": b.name,
+                    "translation": (DVec3::from(b.head) - origin).to_array(),
+                    "rotation": [r.x, r.y, r.z, r.w],
+                }));
+                let holder = parent.map_or(node, |k| joints[k]);
+                let children = nodes[holder]
+                    .as_object_mut()
+                    .expect("node is an object")
+                    .entry("children")
+                    .or_insert_with(|| json!([]));
+                let joint = *joints.last().expect("just pushed");
+                children
+                    .as_array_mut()
+                    .expect("children")
+                    .push(json!(joint));
+            }
+            // Bind pose: each joint stood at its head with no turn.
+            let ibm: Vec<u8> = o
+                .bones
+                .iter()
+                .flat_map(|b| DMat4::from_translation(-DVec3::from(b.head)).to_cols_array())
+                .flat_map(|v| (v as f32).to_le_bytes())
+                .collect();
+            let iv = push_view(&mut bin, &ibm, 0);
+            accessors.push(json!({ "bufferView": iv, "componentType": 5126, "count": o.bones.len(), "type": "MAT4" }));
+            skins.push(json!({ "name": o.name, "inverseBindMatrices": accessors.len() - 1, "joints": joints, "skeleton": node }));
+            roots.push(nodes.len());
+            nodes
+                .push(json!({ "name": o.name, "mesh": meshes.len() - 1, "skin": skins.len() - 1 }));
+        }
 
-        // Transform tracks become glTF animation channels, baked once per
-        // frame (and at every key) so eased and stepped keys look the same.
-        let node = nodes.len() - 1;
+        // Transform and bone tracks become glTF animation channels, baked
+        // once per frame (and at every key) so eased and stepped keys look
+        // the same.
         for track in &o.tracks {
-            let path = match track.property {
-                Property::Translation => "translation",
-                Property::Rotation => "rotation",
-                Property::Scale => "scale",
+            let (target, path) = match track.property {
+                Property::Translation => (node, "translation"),
+                Property::Rotation => (node, "rotation"),
+                Property::Scale => (node, "scale"),
+                Property::Bone => {
+                    match o
+                        .bones
+                        .iter()
+                        .position(|b| Some(&b.name) == track.bone.as_ref())
+                    {
+                        Some(k) => (joints[k], "rotation"),
+                        None => continue,
+                    }
+                }
                 _ => continue,
             };
+            let turns = matches!(track.property, Property::Rotation | Property::Bone);
             let (first, last) = (track.keys[0].frame, track.keys[track.keys.len() - 1].frame);
             let mut frames: Vec<f64> = (first.ceil() as i64..=last.floor() as i64)
                 .map(|f| f as f64)
@@ -508,7 +607,7 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
                 .iter()
                 .flat_map(|&f| {
                     let v = sample_track(track, f);
-                    if track.property == Property::Rotation {
+                    if turns {
                         let q = DQuat::from_euler(EulerRot::XYZ, v[0], v[1], v[2]);
                         vec![q.x as f32, q.y as f32, q.z as f32, q.w as f32]
                     } else {
@@ -522,10 +621,10 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
             let vv = push_view(&mut bin, &value_bytes, 0);
             let a = accessors.len();
             accessors.push(json!({ "bufferView": tv, "componentType": 5126, "count": times.len(), "type": "SCALAR", "min": [times[0]], "max": [times[times.len() - 1]] }));
-            accessors.push(json!({ "bufferView": vv, "componentType": 5126, "count": times.len(), "type": if track.property == Property::Rotation { "VEC4" } else { "VEC3" } }));
+            accessors.push(json!({ "bufferView": vv, "componentType": 5126, "count": times.len(), "type": if turns { "VEC4" } else { "VEC3" } }));
             samplers.push(json!({ "input": a, "output": a + 1, "interpolation": "LINEAR" }));
             channels.push(
-                json!({ "sampler": samplers.len() - 1, "target": { "node": node, "path": path } }),
+                json!({ "sampler": samplers.len() - 1, "target": { "node": target, "path": path } }),
             );
         }
     }
@@ -535,7 +634,7 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     let mut doc = json!({
         "asset": { "version": "2.0", "generator": concat!("Tatara ", env!("CARGO_PKG_VERSION")) },
         "scene": 0,
-        "scenes": [{ "name": "Scene", "nodes": (0..nodes.len()).collect::<Vec<_>>() }],
+        "scenes": [{ "name": "Scene", "nodes": roots }],
         "nodes": nodes,
         "meshes": meshes,
         "materials": materials,
@@ -553,6 +652,9 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     }
     if !extensions.is_empty() {
         doc["extensionsUsed"] = json!(extensions);
+    }
+    if !skins.is_empty() {
+        doc["skins"] = json!(skins);
     }
     if !channels.is_empty() {
         doc["animations"] =
@@ -1637,6 +1739,60 @@ mod tests {
         // Static scenes have no animations block.
         let still = editor_with(json!([{"op": "add", "primitive": {"kind": "cube"}}]));
         assert!(parse_glb(&export_glb(&still)).unwrap().0["animations"].is_null());
+    }
+
+    #[test]
+    fn rigs_export_as_skins_with_bone_animation() {
+        let ed = editor_with(json!([
+            {"op": "add", "name": "Tail", "primitive": {"kind": "quadsphere", "level": 2}, "translation": [1, 0, 0]},
+            {"op": "rig", "id": "Tail", "chain": 3, "axis": "y"},
+            {"op": "pose", "id": "Tail", "bone": "Bone 2", "rotation": [0, 0, 0.3]},
+            {"op": "set_keyframe", "id": "Tail", "property": "bone", "bone": "Bone 3", "frame": 0, "value": [0, 0, 0]},
+            {"op": "set_keyframe", "id": "Tail", "property": "bone", "bone": "Bone 3", "frame": 12, "value": [0.6, 0, 0]}
+        ]));
+        let (doc, bin) = parse_glb(&export_glb(&ed)).unwrap();
+        let skin = &doc["skins"][0];
+        let joints: Vec<usize> = skin["joints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j.as_u64().unwrap() as usize)
+            .collect();
+        assert_eq!(joints.len(), 3);
+        let node = |i: usize| &doc["nodes"][i];
+        assert_eq!(node(joints[1])["name"], "Bone 2");
+        // Joints chain under the rig node, which holds the transform.
+        let rig = skin["skeleton"].as_u64().unwrap() as usize;
+        assert_eq!(node(rig)["translation"], json!([1.0, 0.0, 0.0]));
+        assert_eq!(node(rig)["children"], json!([joints[0]]));
+        assert_eq!(node(joints[0])["children"], json!([joints[1]]));
+        // The posed bone carries its turn; the skinned mesh sits at the top.
+        assert!(node(joints[1])["rotation"][2].as_f64().unwrap() > 0.1);
+        let roots = doc["scenes"][0]["nodes"].as_array().unwrap();
+        let skinned = roots
+            .iter()
+            .map(|r| node(r.as_u64().unwrap() as usize))
+            .find(|n| n["skin"] == 0)
+            .unwrap();
+        let attrs = &doc["meshes"][skinned["mesh"].as_u64().unwrap() as usize]["primitives"][0]["attributes"];
+        let buffers = load_buffers(&doc, bin).unwrap();
+        let (weights, w) = read_accessor(
+            &doc,
+            &buffers,
+            attrs["WEIGHTS_0"].as_u64().unwrap() as usize,
+        )
+        .unwrap();
+        assert_eq!(w, 4);
+        for v in weights.chunks(4) {
+            assert!((v.iter().sum::<f64>() - 1.0).abs() < 1e-4);
+        }
+        assert!(attrs["JOINTS_0"].is_u64());
+        // The bone track drives the third joint's rotation.
+        let channel = &doc["animations"][0]["channels"][0];
+        assert_eq!(
+            channel["target"],
+            json!({"node": joints[2], "path": "rotation"})
+        );
     }
 
     #[test]

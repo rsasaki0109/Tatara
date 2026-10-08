@@ -119,7 +119,7 @@ pub fn solids(ed: &Editor) -> Vec<Solid> {
     ed.scene()
         .objects
         .iter()
-        .map(|o| solid(o, ed.evaluated(o)))
+        .map(|o| solid(o, &ed.posed(o, None)))
         .filter(|s| !s.tris.is_empty())
         .collect()
 }

@@ -25,6 +25,8 @@ pub enum Property {
     Emissive,
     EmissiveStrength,
     Opacity,
+    /// A bone's pose (Euler XYZ, radians); the track names the bone.
+    Bone,
 }
 
 impl Property {
@@ -84,6 +86,9 @@ pub struct Key {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Track {
     pub property: Property,
+    /// The bone a `bone` track poses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bone: Option<String>,
     /// Sorted by frame, at most one key per frame.
     pub keys: Vec<Key>,
 }
@@ -207,6 +212,7 @@ pub fn rest_value(o: &Object, property: Property) -> Vec<f64> {
         Property::Emissive => hex_to_rgb(&o.material.emissive).to_vec(),
         Property::EmissiveStrength => vec![o.material.emissive_strength],
         Property::Opacity => vec![o.material.opacity],
+        Property::Bone => vec![0.0; 3],
     }
 }
 
@@ -277,19 +283,26 @@ pub fn pose(o: &Object, frame: f64) -> (Transform, Material) {
     (transform, material)
 }
 
-/// Insert or replace the key at `frame`, keeping the track sorted.
+/// Insert or replace the key at `frame` (of `bone` for bone tracks),
+/// keeping the track sorted.
 pub fn set_key(
     o: &mut Object,
     property: Property,
+    bone: Option<&str>,
     frame: f64,
     value: Vec<f64>,
     interpolation: Interpolation,
 ) -> Result<(), EngineError> {
-    let track = match o.tracks.iter_mut().position(|t| t.property == property) {
+    let track = match o
+        .tracks
+        .iter_mut()
+        .position(|t| t.property == property && t.bone.as_deref() == bone)
+    {
         Some(i) => &mut o.tracks[i],
         None => {
             o.tracks.push(Track {
                 property,
+                bone: bone.map(str::to_owned),
                 keys: Vec::new(),
             });
             o.tracks.last_mut().unwrap()
@@ -317,14 +330,19 @@ pub fn set_key(
     Ok(())
 }
 
-/// Remove keys at `frame` (from one property or all); returns how many.
-pub fn delete_key(o: &mut Object, property: Option<Property>, frame: f64) -> usize {
+/// Remove keys at `frame` (from one property or all, and for bones from
+/// one bone or all); returns how many.
+pub fn delete_key(
+    o: &mut Object,
+    property: Option<Property>,
+    bone: Option<&str>,
+    frame: f64,
+) -> usize {
     let mut removed = 0;
-    for t in o
-        .tracks
-        .iter_mut()
-        .filter(|t| property.is_none_or(|p| p == t.property))
-    {
+    for t in o.tracks.iter_mut().filter(|t| {
+        property.is_none_or(|p| p == t.property)
+            && bone.is_none_or(|b| t.bone.as_deref() == Some(b))
+    }) {
         let before = t.keys.len();
         t.keys.retain(|k| (k.frame - frame).abs() >= 1e-9);
         removed += before - t.keys.len();
@@ -334,9 +352,24 @@ pub fn delete_key(o: &mut Object, property: Option<Property>, frame: f64) -> usi
 }
 
 pub fn validate_tracks(o: &Object) -> Result<(), EngineError> {
-    for t in &o.tracks {
+    for (i, t) in o.tracks.iter().enumerate() {
         if t.keys.is_empty() {
             return Err(EngineError::new("a track needs at least one key"));
+        }
+        match (&t.bone, t.property) {
+            (Some(b), Property::Bone) if o.bones.iter().any(|x| &x.name == b) => {}
+            (None, p) if p != Property::Bone => {}
+            _ => {
+                return Err(EngineError::new(
+                    "a bone track must name a bone of the object (and only bone tracks do)",
+                ));
+            }
+        }
+        if o.tracks[..i]
+            .iter()
+            .any(|x| x.property == t.property && x.bone == t.bone)
+        {
+            return Err(EngineError::new("two tracks animate the same property"));
         }
         for (i, k) in t.keys.iter().enumerate() {
             check_frame(k.frame)?;
@@ -361,6 +394,7 @@ mod tests {
     fn track(interp: Interpolation) -> Track {
         Track {
             property: Property::Translation,
+            bone: None,
             keys: vec![
                 Key {
                     frame: 0.0,

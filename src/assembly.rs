@@ -115,6 +115,7 @@ fn post(name: &'static str, radius: f64, height: f64, at: Vec3, material: Materi
             radius_top: None,
             height,
             segments: 16,
+            rings: 1,
         },
         at,
         rotation: [0.0; 3],
@@ -193,6 +194,7 @@ pub fn parts(t: Template) -> Vec<Part> {
                         radius_top: None,
                         height: 0.03,
                         segments: 32,
+                        rings: 1,
                     },
                     ..post("base", 0.0, 0.0, [0.0, 0.015, 0.0], brass.clone())
                 },
@@ -203,6 +205,7 @@ pub fn parts(t: Template) -> Vec<Part> {
                         radius_top: Some(0.08),
                         height: 0.16,
                         segments: 32,
+                        rings: 1,
                     },
                     body: true,
                     ..post("shade", 0.0, 0.0, [0.0, 0.47, 0.0], shade)
@@ -251,6 +254,7 @@ pub fn parts(t: Template) -> Vec<Part> {
                     radius_top: Some(0.15),
                     height: 0.26,
                     segments: 32,
+                    rings: 1,
                 },
                 body: true,
                 ..post("pot", 0.0, 0.0, [0.0, 0.13, 0.0], mat("#b5643c", 0.8))

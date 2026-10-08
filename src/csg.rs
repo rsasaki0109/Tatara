@@ -537,6 +537,7 @@ mod tests {
             radius_top: None,
             height: 2.0,
             segments: 32,
+            rings: 1,
         })
         .unwrap();
         let holed = boolean(&block, &drill, BoolOp::Difference).unwrap();

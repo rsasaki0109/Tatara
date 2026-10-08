@@ -10,6 +10,7 @@ import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
 import { installWasmBackend } from './backend.js'
 import { PROPERTIES, isAnimated, keyFrames, pose, track as trackOf } from './anim.js'
+import { boneRotations, boneTrack } from './rig.js'
 
 const params = new URLSearchParams(location.search)
 const capture = params.has('capture')
@@ -229,6 +230,8 @@ function syncEdit() {
   viewport.setSculptState({ active: app.mode === 'sculpt' && app.selected != null, ...app.brush })
   viewport.setEditState({ active, mode: app.selectMode, ...app.sel })
   viewport.setSelection(app.selected, app.face)
+  const rigged = objectById(app.selected)
+  viewport.setBone(rigged?.bones?.length ? currentBone(rigged).name : null)
   render()
 }
 
@@ -772,7 +775,7 @@ let renderedKey = ''
 function renderProperties(o) {
   const el = $('properties')
   const key = o
-    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
+    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
     : 'none'
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -879,6 +882,7 @@ function renderProperties(o) {
           : '<span class="muted small">Edge-select in edit mode to mark seams</span>'
       }</div>
     </div>
+    ${rigCard(o)}
     <div class="card boolean">
       <div class="card-title">Boolean <span class="muted small">cut · merge · overlap</span></div>
       ${
@@ -978,6 +982,45 @@ function modifierCard(m, i) {
   return `<div class="mod"><div class="mod-head">${icon(`mod-${m.type}`)}<b>${MODIFIER_LABEL[m.type]}</b><span class="muted small">${i + 1}</span><button class="mod-x" data-mod-remove="${i}" title="Remove">×</button></div>${body}</div>`
 }
 
+/** The bone the Rig card works on: the chosen one, or the first. */
+function currentBone(o) {
+  return o.bones?.find((b) => b.name === app.bone) || o.bones?.[0] || null
+}
+
+function rigCard(o) {
+  const head = (extra) => `<div class="card rig"><div class="card-title">Rig <span class="muted small">${extra}</span></div>`
+  if (!o.bones?.length) {
+    return `${head('bones · skinning')}<div class="row"><span class="muted small">Add a bone chain</span>${[2, 3, 4, 5, 6]
+      .map((n) => `<button class="chip" data-rig-chain="${n}" title="${n} bones end to end through the mesh">${n}</button>`)
+      .join('')}</div></div>`
+  }
+  const bone = currentBone(o)
+  const k = o.bones.indexOf(bone)
+  const r = boneRotations(o, app.frame)[k]
+  const keyed = boneTrack(o, bone.name) ? ' <span class="keyed" title="Animated: edits key this frame">◆</span>' : ''
+  const deg = (v) => Math.round((v * 180) / Math.PI)
+  return `${head(`${o.bones.length} bones`)}
+    <div class="brushes">${o.bones.map((b) => `<button class="chip ${b === bone ? 'on' : ''}" data-bone="${escapeHtml(b.name)}">${escapeHtml(b.name)}</button>`).join('')}</div>
+    ${['X', 'Y', 'Z']
+      .map((a, i) => `<label class="slider"><span>Turn ${a}${keyed}</span><input type="range" min="-180" max="180" step="1" id="p-bone-${i}" value="${deg(r[i])}"><b>${deg(r[i])}°</b></label>`)
+      .join('')}
+    <div class="row"><button class="small-btn" data-rig="key" title="Key every bone at this frame">◆ Key pose</button><button class="small-btn" data-rig="reset">Reset pose</button><button class="small-btn" data-rig="remove">Remove rig</button></div>
+  </div>`
+}
+
+/** The chosen bone's rotation from the three Turn sliders, in radians. */
+function boneSliders() {
+  return [0, 1, 2].map((i) => Math.round(((Number($(`p-bone-${i}`).value) * Math.PI) / 180) * 1e5) / 1e5)
+}
+
+/** Commands that set a bone's turn: keyed bones get a key at this frame. */
+function poseCommands(o, name, rotation) {
+  const frame = Math.round(app.frame * 100) / 100
+  return boneTrack(o, name)
+    ? [{ op: 'set_keyframe', id: o.id, property: 'bone', bone: name, frame, value: rotation }]
+    : [{ op: 'pose', id: o.id, bone: name, rotation }]
+}
+
 function modifierField(m, name, raw) {
   const v = Number(raw)
   if (!Number.isFinite(v)) return null
@@ -989,10 +1032,18 @@ function modifierField(m, name, raw) {
   return next
 }
 
+$('properties').addEventListener('input', (e) => {
+  const o = objectById(app.selected)
+  if (!o || !/^p-bone-\d$/.test(e.target.id)) return
+  // Show the turn while dragging; the change commits it.
+  e.target.nextElementSibling.textContent = `${e.target.value}°`
+  viewport.previewBone(o.id, currentBone(o).name, boneSliders())
+})
 $('properties').addEventListener('change', (e) => {
   const o = objectById(app.selected)
   if (!o) return
   const target = e.target
+  if (/^p-bone-\d$/.test(target.id)) return run(poseCommands(o, currentBone(o).name, boneSliders())).catch(() => {})
   if (target.id === 'p-name') return run([{ op: 'rename', id: o.id, name: target.value }]).catch(() => {})
   if (target.id === 'p-dist') {
     app.extrudeDistance = Number(target.value) || 0.3
@@ -1055,6 +1106,20 @@ $('properties').addEventListener('change', (e) => {
   }
 })
 $('properties').addEventListener('click', (e) => {
+  const rigObject = objectById(app.selected)
+  const chain = e.target.closest('[data-rig-chain]')
+  if (chain && rigObject) return run([{ op: 'rig', id: rigObject.id, chain: Number(chain.dataset.rigChain) }]).catch(() => {})
+  const boneChip = e.target.closest('[data-bone]')
+  if (boneChip) {
+    app.bone = boneChip.dataset.bone
+    return render()
+  }
+  const rigAction = e.target.closest('[data-rig]')?.dataset.rig
+  if (rigAction && rigObject?.bones?.length) {
+    if (rigAction === 'key') return keyBones(rigObject).catch(() => {})
+    if (rigAction === 'reset') return run(rigObject.bones.flatMap((b) => poseCommands(rigObject, b.name, [0, 0, 0]))).catch(() => {})
+    if (rigAction === 'remove') return run([{ op: 'rig', id: rigObject.id, bones: [] }]).catch(() => {})
+  }
   const build = e.target.closest('[data-build]')
   if (build) return run([{ op: 'build', template: build.dataset.build, translation: [freeSpot(0.7), 0, 0] }]).then((r) => r && select(r.created[0])).catch(() => {})
   const o0 = objectById(app.selected)
@@ -1391,7 +1456,14 @@ function keyAll() {
   const o = objectById(app.selected)
   if (!o) return toast('Select an object to key')
   const frame = Math.round(app.frame)
-  return run(PROPERTIES.map((property) => ({ op: 'set_keyframe', id: o.id, property, frame })), 'UI')
+  const bones = (o.bones || []).map((b) => ({ op: 'set_keyframe', id: o.id, property: 'bone', bone: b.name, frame }))
+  return run([...PROPERTIES.map((property) => ({ op: 'set_keyframe', id: o.id, property, frame })), ...bones], 'UI')
+}
+
+/** Key every bone's current turn at this frame. */
+function keyBones(o) {
+  const frame = Math.round(app.frame)
+  return run(o.bones.map((b) => ({ op: 'set_keyframe', id: o.id, property: 'bone', bone: b.name, frame })), 'UI')
 }
 
 $('play-btn').addEventListener('click', () => togglePlay())
