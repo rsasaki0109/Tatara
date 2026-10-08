@@ -111,6 +111,12 @@ export class DemoRunner {
     if (s.stroke) return this.stroke(s)
     if (s.choose) return this.choose(s)
     if (s.upload) return this.upload(s)
+    if (s.reveal) {
+      const el = document.querySelector(s.reveal)
+      if (!el) throw new Error(`demo: nothing matches ${s.reveal}`)
+      el.scrollIntoView({ block: 'end' })
+      return s.after ? this.sleep(s.after) : undefined
+    }
     if (s.scrub !== undefined) return this.scrub(s)
     if (s.chat) return this.chat(s)
     if (s.mcp) return this.mcp(s)
