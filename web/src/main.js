@@ -1,4 +1,5 @@
 import './style.css'
+import * as THREE from 'three'
 import { createApi } from './api.js'
 import { Animator, Clock } from './clock.js'
 import { Viewport, displayMesh, hasUvs } from './viewport.js'
@@ -6,6 +7,7 @@ import { NodeEditor, starterGraph } from './nodes.js'
 import { UvEditor } from './uveditor.js'
 import { PathPreview } from './pathpreview.js'
 import { FinalRender } from './finalrender.js'
+import { ProposalTray } from './proposals.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
@@ -181,6 +183,70 @@ const finalRender = new FinalRender($('final-render'), {
 })
 app.finalRender = finalRender
 
+// Proposals: changes offered for review. Hovering one shows the scene with
+// it applied, its additions and changes outlined and what it removes as red
+// ghosts.
+const MARK = { added: 0x4fd18b, changed: 0xffb02e, removed: 0xff5a5a }
+const proposalTray = new ProposalTray($('proposals'), {
+  clock,
+  // Thumbnails look from the viewer's angle, framed on the whole scene.
+  camera: () => {
+    const r = (v) => v.toArray().map((x) => x.toFixed(4)).join(',')
+    const sphere = new THREE.Box3().setFromObject(viewport.root).getBoundingSphere(new THREE.Sphere())
+    const dir = viewport.camera.position.clone().sub(viewport.controls.target).normalize()
+    const fov = 30
+    const distance = (Math.max(sphere.radius, 0.3) * 0.85) / Math.sin(THREE.MathUtils.degToRad(fov / 2))
+    return { eye: r(sphere.center.clone().addScaledVector(dir, distance)), target: r(sphere.center), fov }
+  },
+  onPreview: (id) => showProposal(id),
+  onDecide: (id, accept) => decideProposal(id, accept),
+})
+app.proposals = proposalTray
+app.previewing = null
+let previewToken = 0
+
+async function showProposal(id) {
+  const token = ++previewToken
+  app.previewing = id
+  if (id == null) {
+    viewport.setHighlights(null)
+    viewport.sync(app.scene, true)
+    syncRenderLabel()
+    return
+  }
+  const data = await api.proposal(id).catch(() => null)
+  if (token !== previewToken || !data?.proposal) return
+  const { proposal: p, scene } = data
+  if (app.selected != null) select(null)
+  const marks = new Map()
+  for (const o of p.diff.added) marks.set(o.id, MARK.added)
+  for (const o of p.diff.changed) marks.set(o.id, MARK.changed)
+  for (const r of p.diff.removed) {
+    const o = objectById(r.id)
+    if (!o) continue
+    scene.objects.push({ ...o, material: { ...o.material, color: '#ff5a5a', opacity: 0.28, transmission: 0, metalness: 0, emissive: '#000000', emissive_strength: 0, texture: null } })
+    marks.set(o.id, MARK.removed)
+  }
+  viewport.sync(scene, true)
+  viewport.setHighlights(marks)
+  const label = document.querySelector('.view-label')
+  label.innerHTML = `<span class="dot proposal"></span>Proposal · ${escapeHtml(p.title)}`
+}
+
+async function decideProposal(id, accept) {
+  const p = proposalTray.pending.find((x) => x.id === id)
+  await track(async () => {
+    try {
+      const r = accept ? await api.acceptProposal(id) : await api.rejectProposal(id)
+      await refresh(true)
+      log('Review', `${accept ? 'accepted' : 'rejected'} ${p?.title ?? `proposal ${id}`}`, r.revision ?? app.scene.revision)
+    } catch (e) {
+      toast(e.message, 'error')
+      await refresh(true)
+    }
+  })
+}
+
 function syncRenderLabel() {
   const label = document.querySelector('.view-label')
   const shading = !preview.active ? 'Studio' : preview.samples ? `Rendered · ${preview.samples} samples` : 'Rendered · tracing…'
@@ -241,7 +307,9 @@ async function refresh(animate = true) {
     app.sel.edges = app.sel.edges.filter(([a, b]) => a < nv && b < nv)
     app.sel.faces = app.sel.faces.filter((f) => f < sel.mesh.faces.length)
   }
-  viewport.sync(app.scene, animate)
+  proposalTray.set(st.proposals, app.scene.revision)
+  if (app.previewing != null) showProposal(app.previewing)
+  else viewport.sync(app.scene, animate)
   preview.setRevision(app.scene.revision)
   if (app.checks && app.checks.revision !== app.scene.revision && viewport.warned.size) {
     // The scene changed since the last inspection: drop its outlines.
@@ -1629,6 +1697,10 @@ const ready = (async () => {
   if (!capture) requestAnimationFrame(loop)
   if (!capture && !browserOnly) {
     const events = new EventSource('/api/events')
+    events.addEventListener('proposals', (e) => {
+      if (Number(e.data) === proposalTray.version) return
+      api.proposals().then((p) => proposalTray.set(p, app.scene.revision)).catch(() => {})
+    })
     events.addEventListener('revision', (e) => {
       const rev = Number(e.data)
       if (rev !== app.scene.revision && app.inflight === 0) {
@@ -1645,6 +1717,7 @@ window.__tatara = {
   frame: () => app.frame,
   position: (id) => viewport.nodes.get(id)?.group.position.toArray(),
   camera: () => viewport.getOrbit(),
+  refresh: (animate = false) => refresh(animate),
   meta: (id) => {
     const s = SCENARIOS[id]
     return s && { id, title: s.title, width: s.width || 800, external: Boolean(s.external) }
@@ -1666,6 +1739,8 @@ window.__tatara = {
     pathSamples: preview.active ? preview.samples : null,
     finalSamples: finalRender.open ? finalRender.samples : null,
     world: viewport.worldMap?.source ?? null,
+    proposals: proposalTray.pending.length,
+    previewing: app.previewing,
     worldBackground: Boolean(viewport.scene.background),
     bonesShown: [...viewport.nodes.values()].filter((n) => n.bones.visible).length,
     reachHandle: viewport.ikHandle.visible,

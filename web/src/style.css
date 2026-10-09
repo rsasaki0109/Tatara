@@ -1771,3 +1771,145 @@ input[type='range'] {
 .world-card .world-bg {
   margin-top: 6px;
 }
+
+/* Proposals: changes waiting for review. */
+.proposal-tray {
+  position: absolute;
+  right: 10px;
+  top: 52px;
+  width: min(360px, calc(100% - 20px));
+  max-height: calc(100% - 130px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(16, 17, 20, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+  z-index: 5;
+}
+
+.proposal-tray[hidden] {
+  display: none;
+}
+
+.pt-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 2px 2px;
+}
+
+.pt-head b {
+  font-size: 12px;
+}
+
+.proposal-card {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  grid-template-rows: auto auto;
+  gap: 4px 8px;
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.proposal-card:hover,
+.proposal-card.previewing {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+
+.proposal-card.pinned {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.proposal-card.conflict {
+  opacity: 0.7;
+}
+
+.pc-thumb {
+  grid-row: 1 / 3;
+  width: 120px;
+  height: 90px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #2a2c32;
+}
+
+.pc-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pc-title {
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.pc-meta span {
+  padding: 0 5px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.pc-author {
+  background: #2c2f36;
+  color: var(--muted);
+}
+
+.pc-add {
+  background: rgba(79, 209, 139, 0.16);
+  color: #6fe0a2;
+}
+
+.pc-change {
+  background: rgba(255, 176, 46, 0.16);
+  color: #ffc35c;
+}
+
+.pc-remove {
+  background: rgba(255, 90, 90, 0.16);
+  color: #ff8080;
+}
+
+.pc-note {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pc-conflict {
+  color: var(--bad);
+}
+
+.pc-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.view-label .dot.proposal {
+  background: #ffb02e;
+  box-shadow: 0 0 8px #ffb02e;
+}

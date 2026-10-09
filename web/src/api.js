@@ -30,6 +30,11 @@ export function createApi(clock) {
     reset: () => request('POST', '/reset'),
     inspect: () => request('GET', '/inspect'),
     chat: (prompt) => request('POST', '/chat', { prompt }),
+    proposals: () => request('GET', '/proposals'),
+    propose: (proposal) => request('POST', '/proposals', proposal),
+    proposal: (id) => request('GET', `/proposal?id=${id}`),
+    acceptProposal: (id) => request('POST', `/proposal/accept?id=${id}`),
+    rejectProposal: (id) => request('POST', `/proposal/reject?id=${id}`),
     importModel: (bytes) =>
       clock.track(
         fetch('/api/import', { method: 'POST', body: bytes }).then(async (res) => {

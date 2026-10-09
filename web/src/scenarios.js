@@ -1137,4 +1137,54 @@ export const world = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world }
+// Proposals: an agent offers three glaze sets instead of applying one; each
+// is previewed in place and one is accepted. A second proposal that removes
+// something shows it as a red ghost and is turned down.
+const GLAZE_SETS = [
+  ['Celadon', [{ op: 'material', id: 'Vase', color: '#8fb9a0', roughness: 0.25 }, { op: 'material', id: 'Bottle', color: '#cfe3d5', roughness: 0.3 }]],
+  ['Terracotta', [{ op: 'material', id: 'Vase', color: '#b5643c', roughness: 0.75 }, { op: 'material', id: 'Bottle', color: '#e2b48c', roughness: 0.7 }]],
+  ['Midnight', [{ op: 'material', id: 'Vase', color: '#1d2a4d', roughness: 0.15 }, { op: 'material', id: 'Bottle', preset: 'gold' }, { op: 'add', name: 'Moon', primitive: { kind: 'sphere', radius: 0.14, segments: 32, rings: 16 }, translation: [-0.15, 1.35, -0.5], preset: 'neon', color: '#dfe8ff' }]],
+]
+export const proposals = {
+  title: 'Proposals',
+  width: 800,
+  gizmo: false,
+  external: true,
+  setup: [
+    { op: 'add', name: 'Plinth', primitive: { kind: 'cylinder', radius: 1.6, height: 0.08, segments: 72 }, translation: [0, 0.04, 0], color: '#3a3b40', roughness: 0.45 },
+    { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 72 }, translation: [-0.6, 0.08, 0.1], scale: [1.35, 1.35, 1.35], color: '#e9e6df', roughness: 0.5 },
+    { op: 'add', name: 'Orb', primitive: { kind: 'sphere', radius: 0.3, segments: 48, rings: 24 }, translation: [0.15, 0.38, 0.45], preset: 'chrome' },
+    { op: 'add', name: 'Bottle', primitive: { kind: 'vessel', profile: BOTTLE, thickness: 0.018, segments: 72 }, translation: [0.75, 0.08, -0.1], scale: [1.3, 1.3, 1.3], color: '#e9e6df', roughness: 0.5 },
+  ],
+  camera: { azimuth: 14, elevation: 14, distance: 5.6, target: [-0.35, 0.6, 0] },
+  steps: [
+    { wait: 300 },
+    { caption: 'Ask for options: the agent proposes, nothing changes yet', hint: 'propose_changes · variants' },
+    {
+      mcp: [
+        { say: 'Three glaze sets; let them choose', after: 300 },
+        { tool: 'propose_changes', arguments: { title: 'Glazes', variants: GLAZE_SETS.map(([title, commands]) => ({ title, commands })) }, after: 700 },
+      ],
+    },
+    { terminal: false },
+    { caption: 'Hover to preview each one in place', hint: '+ added · ~ changed · − removed' },
+    { hover: '#proposals .proposal-card:nth-child(2) .pc-title', after: 1100 },
+    { hover: '#proposals .proposal-card:nth-child(3) .pc-title', after: 1100 },
+    { hover: '#proposals .proposal-card:nth-child(4) .pc-title', after: 1300 },
+    { caption: 'Accept the one you like: one undo step', hint: 'Accept · the others drop' },
+    { click: '#proposals .proposal-card:nth-child(3) [data-pc=accept]', after: 1000 },
+    { caption: 'Removals show as red ghosts until you decide', hint: '✕ rejects' },
+    {
+      mcp: [{ tool: 'propose_changes', arguments: { title: 'Swap the orb for a cup', commands: [{ op: 'delete', id: 'Orb' }, { op: 'add', name: 'Cup', primitive: { kind: 'vessel', profile: CUP, thickness: 0.012, segments: 48 }, translation: [0.15, 0.08, 0.45], scale: [1.5, 1.5, 1.5], color: '#d8d4cb' }] }, after: 500 }],
+    },
+    { terminal: false },
+    { hover: '#proposals .proposal-card:nth-child(2) .pc-title', after: 1400 },
+    { click: '#proposals .proposal-card:nth-child(2) [data-pc=reject]', after: 700 },
+    { caption: 'The agent reads back what you decided', hint: 'list_proposals' },
+    { mcp: [{ tool: 'list_proposals', arguments: {}, after: 1800 }] },
+    { cursor: false },
+    { wait: 500 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals }

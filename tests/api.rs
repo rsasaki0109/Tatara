@@ -188,7 +188,7 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let init = call(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "tatara");
     let tools = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 11);
     let r = call(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "apply_commands", "arguments": {"commands": [{"op": "add", "primitive": {"kind": "torus"}}]}}})).await;
     assert_eq!(r["result"]["isError"], false, "{r}");
     let r = call(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "get_scene", "arguments": {}}})).await;
@@ -232,6 +232,17 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let r = call(json!({"jsonrpc": "2.0", "id": 31, "method": "tools/call", "params": {"name": "render_image", "arguments": {"path": png, "eye": [0, 1, 4]}}})).await;
     assert_eq!(r["result"]["isError"], true);
     std::fs::remove_dir_all(dir).ok();
+
+    // Proposals: offered for review, listed back with the author.
+    let r = call(json!({"jsonrpc": "2.0", "id": 32, "method": "tools/call", "params": {"name": "propose_changes", "arguments": {"title": "A lamp", "commands": [{"op": "add", "name": "Lamp", "primitive": {"kind": "sphere"}}]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc": "2.0", "id": 33, "method": "tools/call", "params": {"name": "list_proposals", "arguments": {}}})).await;
+    let listed: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(listed["pending"][0]["title"], "A lamp");
+    assert_eq!(listed["pending"][0]["author"], "agent");
+    let r = call(json!({"jsonrpc": "2.0", "id": 34, "method": "tools/call", "params": {"name": "propose_changes", "arguments": {"title": "Broken", "commands": [{"op": "delete", "id": "Nope"}]}}})).await;
+    assert_eq!(r["result"]["isError"], true);
 
     // Vision: the agent gets a PNG back.
     let r = call(json!({"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "render_view", "arguments": {"views": ["front", "top"], "size": 64}}})).await;
