@@ -298,6 +298,9 @@ pub struct Scene {
     /// Relations kept true through every edit (see `constraint.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<Constraint>,
+    /// Row, grid or circle arrangements maintained through later edits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arrangements: Vec<crate::layout::Arrangement>,
 }
 
 impl Default for Scene {
@@ -310,6 +313,7 @@ impl Default for Scene {
             images: BTreeMap::new(),
             world: World::default(),
             constraints: Vec::new(),
+            arrangements: Vec::new(),
         }
     }
 }
@@ -582,7 +586,9 @@ pub enum Command {
     },
     /// Lay objects or groups out in a row (along X), a grid, or a circle
     /// around `around` (or `center` [x, z]) with each turned to face the
-    /// middle, `spacing` metres apart, then settle each one.
+    /// middle, `spacing` metres apart, then settle each one. `keep: true`
+    /// maintains this arrangement after every later batch. The reference leads;
+    /// individual item moves snap back. Without `around`, the centre is fixed.
     Arrange {
         ids: Vec<ObjRef>,
         layout: Layout,
@@ -594,6 +600,12 @@ pub enum Command {
         spacing: f64,
         #[serde(default)]
         radius: Option<f64>,
+        #[serde(default)]
+        keep: bool,
+    },
+    /// Stop maintaining an arrangement by its id from the scene.
+    Unarrange {
+        id: u64,
     },
     /// Combine two objects' shapes: `difference` cuts `with` out of `id`,
     /// `union` merges it in, `intersect` keeps only the overlap. The result
@@ -1741,15 +1753,31 @@ fn apply_command(
             center,
             spacing,
             radius,
-        } => assembly::arrange(
-            scene,
-            ids,
-            *layout,
-            around.as_ref(),
-            *center,
-            *spacing,
-            *radius,
-        )?,
+            keep,
+        } => {
+            if *keep {
+                crate::layout::add(
+                    scene,
+                    ids,
+                    *layout,
+                    around.as_ref(),
+                    *center,
+                    *spacing,
+                    *radius,
+                )?;
+            } else {
+                assembly::arrange(
+                    scene,
+                    ids,
+                    *layout,
+                    around.as_ref(),
+                    *center,
+                    *spacing,
+                    *radius,
+                )?;
+            }
+        }
+        Command::Unarrange { id } => crate::layout::remove(scene, *id)?,
         Command::Boolean {
             id,
             with,
@@ -2301,6 +2329,7 @@ fn tidy(scene: &mut Scene) -> Result<(), EngineError> {
         .collect();
     let mut keep = alive.into_iter();
     scene.constraints.retain(|_| keep.next().unwrap_or(false));
+    crate::layout::prune(scene);
     for o in &mut scene.objects {
         // Animation of bones that are gone goes with them.
         let bones = &o.bones;
@@ -2543,6 +2572,7 @@ fn validate_scene(scene: &Scene) -> Result<(), EngineError> {
     }
     check_images(scene)?;
     constraint::validate(scene)?;
+    crate::layout::validate(scene)?;
     Ok(())
 }
 
@@ -2654,6 +2684,7 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
         "animation": scene.animation,
         "world": scene.world,
         "constraints": scene.constraints,
+        "arrangements": scene.arrangements,
         "frame": frame,
         "bounds": bounds,
         "objects": objects,

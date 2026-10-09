@@ -300,7 +300,7 @@ pub struct Snapshot {
 }
 
 pub fn snapshot(scene: &Scene) -> Snapshot {
-    if scene.constraints.is_empty() {
+    if scene.constraints.is_empty() && scene.arrangements.is_empty() {
         return Snapshot::default();
     }
     Snapshot {
@@ -339,7 +339,7 @@ enum Lead {
 
 /// Make every constraint true again after a batch.
 pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
-    if scene.constraints.is_empty() {
+    if scene.constraints.is_empty() && scene.arrangements.is_empty() {
         return Ok(());
     }
     // Objects the batch changed; solving marks what it moves, so changes
@@ -372,7 +372,7 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
             }
         }
         let spatial = |c: &Constraint| matches!(c.rule, Rule::Distance { .. } | Rule::Align { .. });
-        let has_spatial = constraints.iter().any(spatial);
+        let has_spatial = constraints.iter().any(spatial) || !scene.arrangements.is_empty();
         for pass in 0..if has_spatial { 32 } else { 3 } {
             for c in &constraints {
                 let fresh = !before.constraints.contains(&c.id);
@@ -401,6 +401,14 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
                 };
                 for i in members(scene, written) {
                     dirty.insert(scene.objects[i].id);
+                }
+            }
+            for arrangement in scene.arrangements.clone() {
+                crate::layout::apply(scene, &arrangement)?;
+                for item in &arrangement.items {
+                    for i in members(scene, item) {
+                        dirty.insert(scene.objects[i].id);
+                    }
                 }
             }
             if has_spatial && pass >= 2 && violations(scene, &constraints).is_empty() {
@@ -607,6 +615,7 @@ pub fn violations(scene: &Scene, constraints: &[Constraint]) -> Vec<serde_json::
                     error.map(|e| format!(": {e}")).unwrap_or_default())}));
         }
     }
+    issues.extend(crate::layout::violations(scene));
     issues
 }
 

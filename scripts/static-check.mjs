@@ -118,6 +118,17 @@ try {
   })
   check(JSON.stringify(aligned.moved.objects[0].transform.translation) === '[0,6,0]' && JSON.stringify(aligned.moved.objects[1].transform.translation) === '[5,6,7]', 'WebAssembly alignment preserves free axes and follows either endpoint')
   check(JSON.stringify(aligned.undone.objects[0].transform.translation) === '[0,1,0]' && JSON.stringify(aligned.undone.objects[1].transform.translation) === '[3,1,4]', 'WebAssembly alignment edits are one Undo')
+  const layout = await page.evaluate(async () => {
+    const post = (path, commands) => fetch(`/api/${path}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands})}).then((r) => r.json())
+    await post('commands', [{op: 'clear'}, {op: 'add', name: 'Anchor', primitive: {kind: 'cube'}}, {op: 'add', name: 'A', primitive: {kind: 'cube'}, translation: [-3,0,0]}, {op: 'add', name: 'B', primitive: {kind: 'cube'}, translation: [3,0,0]}, {op: 'arrange', ids: ['A','B'], layout: 'row', around: 'Anchor', spacing: 2, keep: true}])
+    await post('commands', [{op: 'move', id: 'Anchor', offset: [2,0,3]}])
+    const moved = await (await fetch('/api/scene')).json()
+    await post('undo', [])
+    const undone = await (await fetch('/api/scene')).json()
+    return {moved, undone}
+  })
+  check(JSON.stringify(layout.moved.objects[1].transform.translation) === '[0.5,0.5,3]' && JSON.stringify(layout.moved.objects[2].transform.translation) === '[3.5,0.5,3]', 'maintained layouts follow their reference in WebAssembly')
+  check(JSON.stringify(layout.undone.objects[1].transform.translation) === '[-1.5,0.5,0]' && layout.undone.arrangements.length === 1, 'WebAssembly keeps layout intent through Undo')
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

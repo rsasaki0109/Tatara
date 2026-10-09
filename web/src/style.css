@@ -2105,7 +2105,13 @@ input[type='range'] {
 .c-distance { color: #67b8ff; }
 .c-align { color: #e4bd69; }
 
-#c-distance, #c-align {
+.arrangement-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12px; padding: 2px 0; }
+.arrangement-create summary { cursor: pointer; font-size: 12px; color: #87d39f; padding: 4px 0; }
+.arrangement-items { max-height: 140px; overflow: auto; margin: 6px 0; }
+.arrangement-items label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.arrangement-create input[type=number] { width: 80px; }
+
+#c-distance, #c-align, .arrangement-create input[type=number] {
   width: 80px;
   padding: 5px 7px;
   border: 1px solid var(--line-2);
