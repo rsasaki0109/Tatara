@@ -723,12 +723,18 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
         ("POST", "/history/revise") => {
             let r: Revision = parse(body)?;
             let revision = ed.revise(r.step, r.commands)?;
-            Ok(Response::json(200, json!({ "revision": revision, "history": history(ed) })).changed(revision))
+            Ok(
+                Response::json(200, json!({ "revision": revision, "history": history(ed) }))
+                    .changed(revision),
+            )
         }
         ("POST", "/history/preview") => {
             let r: Revision = parse(body)?;
             let preview = ed.revise_preview(r.step, r.commands)?;
-            Ok(Response::json(200, json!({ "scene": state(&preview, false)["scene"] })))
+            Ok(Response::json(
+                200,
+                json!({ "scene": state(&preview, false)["scene"] }),
+            ))
         }
         ("GET", "/proposals") => Ok(Response::json(200, proposals(ed))),
         ("POST", "/proposals") => {
@@ -1025,16 +1031,39 @@ mod tests {
     #[test]
     fn the_history_is_listed_previewed_and_revised_over_http() {
         let mut ed = Editor::new();
-        call(&mut ed, "POST", "/commands", json!({"source": "UI", "commands": [{"op": "add", "name": "Post", "primitive": {"kind": "cylinder", "height": 1}}]}));
-        call(&mut ed, "POST", "/commands", json!({"commands": [{"op": "add_image", "name": "Logo", "data": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, crate::image::tests::tiny_png())}]}));
-        call(&mut ed, "POST", "/commands", json!({"source": "agent", "commands": [{"op": "add", "name": "Cap", "primitive": {"kind": "sphere", "radius": 0.2}}, {"op": "place", "id": "Cap", "on": "Post"}]}));
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"source": "UI", "commands": [{"op": "add", "name": "Post", "primitive": {"kind": "cylinder", "height": 1}}]}),
+        );
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands": [{"op": "add_image", "name": "Logo", "data": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, crate::image::tests::tiny_png())}]}),
+        );
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"source": "agent", "commands": [{"op": "add", "name": "Cap", "primitive": {"kind": "sphere", "radius": 0.2}}, {"op": "place", "id": "Cap", "on": "Post"}]}),
+        );
         let (s, h) = call(&mut ed, "GET", "/history", Value::Null);
         assert_eq!(s, 200);
-        assert_eq!((h["total"].as_u64(), h["from_loaded_scene"].as_bool()), (Some(3), Some(false)));
+        assert_eq!(
+            (h["total"].as_u64(), h["from_loaded_scene"].as_bool()),
+            (Some(3), Some(false))
+        );
         assert_eq!(h["steps"][0]["source"], "UI");
         assert_eq!(h["steps"][1]["source"], "API");
         assert_eq!(h["steps"][1]["editable"], false);
-        assert!(h["steps"][1]["commands"][0]["data"].as_str().unwrap().contains("image data"));
+        assert!(
+            h["steps"][1]["commands"][0]["data"]
+                .as_str()
+                .unwrap()
+                .contains("image data")
+        );
         assert_eq!(h["steps"][2]["step"], 3);
         let (_, last) = call(&mut ed, "GET", "/history?limit=1", Value::Null);
         assert_eq!(last["steps"].as_array().unwrap().len(), 1);
@@ -1044,11 +1073,25 @@ mod tests {
         let before = cap_y(&ed);
         let (s, p) = call(&mut ed, "POST", "/history/preview", taller.clone());
         assert_eq!(s, 200);
-        assert!(p["scene"]["objects"][1]["transform"]["translation"][1].as_f64().unwrap() > before + 0.4);
+        assert!(
+            p["scene"]["objects"][1]["transform"]["translation"][1]
+                .as_f64()
+                .unwrap()
+                > before + 0.4
+        );
         assert_eq!(cap_y(&ed), before, "a preview changes nothing");
-        let r = handle(&mut ed, "POST", "/history/revise", &serde_json::to_vec(&taller).unwrap(), false);
+        let r = handle(
+            &mut ed,
+            "POST",
+            "/history/revise",
+            &serde_json::to_vec(&taller).unwrap(),
+            false,
+        );
         assert_eq!((r.status, r.changed), (200, Some(ed.scene().revision)));
-        assert!(cap_y(&ed) > before + 0.4, "the cap is placed on the taller post again");
+        assert!(
+            cap_y(&ed) > before + 0.4,
+            "the cap is placed on the taller post again"
+        );
         let bad = json!({"step": 1, "commands": [{"op": "add", "name": "Pole", "primitive": {"kind": "cylinder"}}]});
         let (s, e) = call(&mut ed, "POST", "/history/revise", bad);
         assert_eq!(s, 422);

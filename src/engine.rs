@@ -1167,7 +1167,11 @@ impl Editor {
 
     /// The scene with step `step` (1-based) replaced by `commands` and every
     /// later step replayed on top, and the history that makes it.
-    fn revised(&self, step: usize, commands: Vec<Command>) -> Result<(Scene, Timeline), EngineError> {
+    fn revised(
+        &self,
+        step: usize,
+        commands: Vec<Command>,
+    ) -> Result<(Scene, Timeline), EngineError> {
         if commands.is_empty() {
             return err("a step needs at least one command");
         }
@@ -1198,7 +1202,11 @@ impl Editor {
     }
 
     /// What `revise` would make, without changing anything.
-    pub fn revise_preview(&self, step: usize, commands: Vec<Command>) -> Result<Editor, EngineError> {
+    pub fn revise_preview(
+        &self,
+        step: usize,
+        commands: Vec<Command>,
+    ) -> Result<Editor, EngineError> {
         let (scene, _) = self.revised(step, commands)?;
         let mut ed = Editor {
             scene,
@@ -4008,9 +4016,21 @@ mod history_tests {
 
     fn dining() -> Editor {
         let mut ed = Editor::new();
-        apply(&mut ed, "UI", json!([{"op": "build", "template": "table", "name": "Table"}]));
-        apply(&mut ed, "agent", json!([{"op": "add", "name": "Lamp", "primitive": {"kind": "sphere", "radius": 0.15}, "translation": [3, 2, 0]}]));
-        apply(&mut ed, "agent", json!([{"op": "place", "id": "Lamp", "on": "Table"}]));
+        apply(
+            &mut ed,
+            "UI",
+            json!([{"op": "build", "template": "table", "name": "Table"}]),
+        );
+        apply(
+            &mut ed,
+            "agent",
+            json!([{"op": "add", "name": "Lamp", "primitive": {"kind": "sphere", "radius": 0.15}, "translation": [3, 2, 0]}]),
+        );
+        apply(
+            &mut ed,
+            "agent",
+            json!([{"op": "place", "id": "Lamp", "on": "Table"}]),
+        );
         ed
     }
 
@@ -4024,7 +4044,12 @@ mod history_tests {
         // Rebuild the table bigger: the lamp, placed on it two steps later,
         // ends up on the new top.
         let revision = ed
-            .revise(1, commands(json!([{"op": "build", "template": "table", "name": "Table", "scale": 1.4}])))
+            .revise(
+                1,
+                commands(
+                    json!([{"op": "build", "template": "table", "name": "Table", "scale": 1.4}]),
+                ),
+            )
             .unwrap();
         assert_eq!(revision, ed.scene().revision);
         let higher = object(&ed, "Lamp").transform.translation[1];
@@ -4036,20 +4061,37 @@ mod history_tests {
         // One undo step brings the old table and lamp back, history too.
         ed.undo();
         assert!((object(&ed, "Lamp").transform.translation[1] - lamp_y).abs() < 1e-12);
-        assert!(matches!(ed.history().0[0].commands[0], Command::Build { scale: None, .. }));
+        assert!(matches!(
+            ed.history().0[0].commands[0],
+            Command::Build { scale: None, .. }
+        ));
     }
 
     #[test]
     fn replaying_the_history_unchanged_gives_the_same_scene() {
         let mut ed = dining();
-        apply(&mut ed, "UI", json!([{"op": "add", "name": "Box", "primitive": {"kind": "cube"}}]));
-        apply(&mut ed, "UI", json!([{"op": "extrude", "id": "Box", "face": 0, "distance": 0.4}]));
-        apply(&mut ed, "UI", json!([{"op": "material", "id": "Box", "preset": "gold"}]));
+        apply(
+            &mut ed,
+            "UI",
+            json!([{"op": "add", "name": "Box", "primitive": {"kind": "cube"}}]),
+        );
+        apply(
+            &mut ed,
+            "UI",
+            json!([{"op": "extrude", "id": "Box", "face": 0, "distance": 0.4}]),
+        );
+        apply(
+            &mut ed,
+            "UI",
+            json!([{"op": "material", "id": "Box", "preset": "gold"}]),
+        );
         let same = ed.history().0[3].commands.clone();
         let preview = ed.revise_preview(4, same).unwrap();
         assert_eq!(json!(preview.scene().objects), objects(&ed));
         // A preview changes nothing.
-        let wider = commands(json!([{"op": "add", "name": "Box", "primitive": {"kind": "cube", "size": 2}}]));
+        let wider = commands(
+            json!([{"op": "add", "name": "Box", "primitive": {"kind": "cube", "size": 2}}]),
+        );
         let preview = ed.revise_preview(4, wider).unwrap();
         assert_ne!(json!(preview.scene().objects), objects(&ed));
         assert_eq!(ed.history().0.len(), 6);
@@ -4061,9 +4103,16 @@ mod history_tests {
         let before = objects(&ed);
         // Renaming the table leaves "place on Table" with nothing to find.
         let e = ed
-            .revise(1, commands(json!([{"op": "build", "template": "table", "name": "Desk"}])))
+            .revise(
+                1,
+                commands(json!([{"op": "build", "template": "table", "name": "Desk"}])),
+            )
             .unwrap_err();
-        assert!(e.message.starts_with("step 3 no longer applies"), "{}", e.message);
+        assert!(
+            e.message.starts_with("step 3 no longer applies"),
+            "{}",
+            e.message
+        );
         assert_eq!(objects(&ed), before);
         assert!(ed.revise(9, commands(json!([{"op": "clear"}]))).is_err());
         assert!(ed.revise(1, Vec::new()).is_err());
@@ -4076,9 +4125,21 @@ mod history_tests {
         let mut other = Editor::new();
         other.load(scene).unwrap();
         assert_eq!(other.history(), (&[][..], true));
-        apply(&mut other, "UI", json!([{"op": "transform", "id": "Lamp", "translation": [0, 3, 0]}]));
-        other.revise(1, commands(json!([{"op": "transform", "id": "Lamp", "translation": [0, 4, 0]}]))).unwrap();
-        assert_eq!(object(&other, "Lamp").transform.translation, [0.0, 4.0, 0.0]);
+        apply(
+            &mut other,
+            "UI",
+            json!([{"op": "transform", "id": "Lamp", "translation": [0, 3, 0]}]),
+        );
+        other
+            .revise(
+                1,
+                commands(json!([{"op": "transform", "id": "Lamp", "translation": [0, 4, 0]}])),
+            )
+            .unwrap();
+        assert_eq!(
+            object(&other, "Lamp").transform.translation,
+            [0.0, 4.0, 0.0]
+        );
         // Undoing the load brings back the editor's own (empty) history.
         other.undo();
         other.undo();
@@ -4087,7 +4148,11 @@ mod history_tests {
 
         // Past the limit, the oldest steps fold into the starting scene.
         for i in 0..MAX_STEPS + 3 {
-            apply(&mut ed, "UI", json!([{"op": "transform", "id": "Lamp", "translation": [i as f64 * 0.001, 3, 0]}]));
+            apply(
+                &mut ed,
+                "UI",
+                json!([{"op": "transform", "id": "Lamp", "translation": [i as f64 * 0.001, 3, 0]}]),
+            );
         }
         let (steps, loaded) = ed.history();
         assert_eq!((steps.len(), loaded), (MAX_STEPS, true));
