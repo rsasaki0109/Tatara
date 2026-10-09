@@ -129,6 +129,18 @@ try {
   })
   check(JSON.stringify(layout.moved.objects[1].transform.translation) === '[0.5,0.5,3]' && JSON.stringify(layout.moved.objects[2].transform.translation) === '[3.5,0.5,3]', 'maintained layouts follow their reference in WebAssembly')
   check(JSON.stringify(layout.undone.objects[1].transform.translation) === '[-1.5,0.5,0]' && layout.undone.arrangements.length === 1, 'WebAssembly keeps layout intent through Undo')
+  const rebased = await page.evaluate(async () => {
+    const post = (path, body = {}) => fetch(`/api/${path}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then((r) => r.json())
+    const setup = await post('commands', {commands: [{op: 'clear'}, {op: 'add', name: 'A', primitive: {kind: 'cube'}}, {op: 'add', name: 'B', primitive: {kind: 'cube'}, translation: [3,0,0]}]})
+    await post('commands', {commands: [{op: 'transform', id: 'A', translation: [1,0,0]}], expected_revision: setup.revision})
+    const result = await post('commands', {commands: [{op: 'material', id: 'B', color: '#ff0000'}], expected_revision: setup.revision, rebase: true})
+    const moved = await (await fetch('/api/scene')).json()
+    await post('undo')
+    const undone = await (await fetch('/api/scene')).json()
+    return {context: setup.revision, result, moved, undone}
+  })
+  check(rebased.result.rebased_from === rebased.context && rebased.moved.objects[0].transform.translation[0] === 1 && rebased.moved.objects[1].material.color === '#ff0000', 'WebAssembly rebases independent edits from the same context')
+  check(rebased.undone.objects[0].transform.translation[0] === 1 && rebased.undone.objects[1].material.color !== '#ff0000', 'Undo preserves the earlier edit after a WebAssembly rebase')
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

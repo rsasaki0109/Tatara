@@ -518,6 +518,7 @@ async function run(commands, source = 'UI') {
       if (collaboration?.interacting) collaboration.revision = r.revision
       await refresh(true)
       log(source, summarize(commands), r.revision)
+      if (r.rebased_from != null) toast('Applied your change alongside a newer edit.')
       return r
     } catch (e) {
       toast(e.message, 'error')

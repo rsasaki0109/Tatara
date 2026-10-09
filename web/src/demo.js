@@ -18,6 +18,7 @@ export class DemoRunner {
     this.running = false
     this.pos = { x: 0, y: 0 }
     this.captionN = 0
+    this.batchRevision = undefined
   }
 
   get clock() {
@@ -83,6 +84,20 @@ export class DemoRunner {
     const vp = app.viewport
     if (s.caption !== undefined) return this.caption(s.caption, s.hint)
     if (s.wait) return this.sleep(s.wait)
+    if (s.rememberRevision) {
+      this.batchRevision = (await app.api.scene()).revision
+      return s.after ? this.sleep(s.after) : undefined
+    }
+    if (s.submitBatch) {
+      if (s.contextRevision && this.batchRevision === undefined) throw new Error('demo: no remembered revision')
+      const body = {...s.submitBatch, ...(s.contextRevision ? {expected_revision: this.batchRevision} : {})}
+      const response = await fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error)
+      if (s.expectRebase && result.rebased_from !== this.batchRevision) throw new Error('demo: stale edit was not rebased')
+      await app.refresh(true)
+      return s.after ? this.sleep(s.after) : undefined
+    }
     if (s.run) {
       const r = await app.run(s.run, s.source || 'UI')
       if (s.select === 'created') app.select(r.created[0])

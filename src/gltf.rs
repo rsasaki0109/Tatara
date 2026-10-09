@@ -1346,6 +1346,7 @@ mod tests {
             actor: None,
             commands,
             expected_revision: None,
+            rebase: false,
             source: None,
         })
         .unwrap();
