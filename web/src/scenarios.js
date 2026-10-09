@@ -1326,4 +1326,22 @@ export const collaborate = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate }
+export const chatReview = {
+  title: 'Chat, then review', width: 800, gizmo: false,
+  setup: [{ op: 'add', name: 'Cup', primitive: { kind: 'vessel', profile: [[0.3, 0], [0.4, 0.65]], segments: 32 }, color: '#769c8b' }],
+  camera: { azimuth: 25, elevation: 25, distance: 3.5, target: [0, 0.3, 0] },
+  steps: [
+    { caption: 'Ask for a change, keep the original', hint: 'Chat · review before applying · fixed reply replay' },
+    { chat: 'Make the cup copper red.', review: true, commands: [{ op: 'material', id: 1, color: '#be6651' }], after: 900 },
+    { caption: 'Preview the AI change before committing', hint: 'original scene and Undo stay unchanged' },
+    { hover: '#proposals .proposal-card', after: 1600 },
+    { caption: 'Accept when it is right', hint: 'one proposal · one Undo' },
+    { click: '#proposals [data-pc=accept]', after: 1200 },
+    { click: '[data-action=undo]', after: 1000 },
+    { caption: 'Undo restores the original cup', hint: 'typed commands · reviewable AI' },
+    { cursor: false },
+    { wait: 1000 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview }
