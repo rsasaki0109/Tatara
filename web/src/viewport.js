@@ -1677,6 +1677,21 @@ export class Viewport {
 
   // -- camera ---------------------------------------------------------------
 
+  viewPeerCamera({ eye, target, fov }) {
+    this.anim.items.get('camera')?.finish(false)
+    this.spinRate = 0
+    // Flush any residual orbit damping before installing the peer pose.
+    const damping = this.controls.enableDamping
+    this.controls.enableDamping = false
+    this.controls.update()
+    this.camera.position.fromArray(eye)
+    this.controls.target.fromArray(target)
+    this.camera.fov = fov
+    this.camera.updateProjectionMatrix()
+    this.controls.update()
+    this.controls.enableDamping = damping
+  }
+
   getOrbit() {
     const t = this.controls.target
     const off = this.camera.position.clone().sub(t)

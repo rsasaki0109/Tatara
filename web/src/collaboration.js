@@ -119,33 +119,38 @@ export class Collaboration {
     this.version = data.version
     this.peers = data.peers.filter((p) => p.actor.id !== this.actor.id)
     const list = document.getElementById('session-peers')
-    list.replaceChildren()
+    // Preserve controls across cursor/camera heartbeats, including between a
+    // pointer-down and pointer-up. Replacing the row can otherwise lose clicks.
+    const rows = new Map([...list.children].map((row) => [row.dataset.peer, row]))
     this.overlay.replaceChildren()
     for (const p of this.peers) {
       const color = peerColor(p.actor.id)
-      const row = document.createElement('div')
+      let row = rows.get(p.actor.id)
+      if (!row) {
+        row = document.createElement('div')
+        row.append(document.createElement('span'))
+        list.append(row)
+      }
+      rows.delete(p.actor.id)
       row.className = 'session-peer'
       row.dataset.peer = p.actor.id
       row.style.setProperty('--peer-color', color)
-      const label = document.createElement('span')
+      const label = row.querySelector('span')
       const objects = p.selection.map((id) => this.scene().objects.find((o) => o.id === id)?.name).filter(Boolean)
       label.textContent = `${p.actor.name}${p.editing.length ? ' · editing' : objects.length ? ` · ${objects.join(', ')}` : ''}`
-      row.append(label)
-      if (p.camera) {
+      if (p.camera && !row.querySelector('button')) {
         const follow = document.createElement('button')
         follow.className = 'small-btn'
         follow.textContent = 'View camera'
         follow.addEventListener('click', () => {
-          this.viewport.camera.position.fromArray(p.camera.eye)
-          this.viewport.controls.target.fromArray(p.camera.target)
-          this.viewport.camera.fov = p.camera.fov
-          this.viewport.camera.updateProjectionMatrix()
-          this.viewport.controls.update()
+          const camera = this.peers.find((peer) => peer.actor.id === p.actor.id)?.camera
+          if (!camera) return
+          this.viewport.viewPeerCamera(camera)
           this.send(true)
         })
         row.append(follow)
       }
-      list.append(row)
+      if (!p.camera) row.querySelector('button')?.remove()
       if (p.cursor) {
         const cursor = document.createElement('div')
         cursor.className = 'peer-cursor'
@@ -155,6 +160,7 @@ export class Collaboration {
         this.overlay.append(cursor)
       }
     }
+    for (const row of rows.values()) row.remove()
     document.getElementById('session-status').textContent = `${this.peers.length + 1} in session`
     this.viewport.setPresence(this.peers.map((p) => ({ ...p, color: peerColor(p.actor.id) })))
     this.markOutliner()

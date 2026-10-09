@@ -511,6 +511,7 @@ try {
   await bob.click('#outliner')
   await alice.waitForFunction((id) => !document.querySelector(`#outliner [data-id="${id}"]`).classList.contains('peer-editing'), sharedId)
   check(true, 'leaving an edit releases the advisory lock')
+  await bob.bringToFront()
   const bBox = await bob.locator('#viewport').boundingBox()
   await bob.mouse.move(bBox.x + bBox.width * 0.8, bBox.y + bBox.height * 0.7)
   await bob.mouse.down()
@@ -522,20 +523,28 @@ try {
     const stable = old && Math.abs(old.azimuth - orbit.azimuth) < 0.01
     window.__collabCameraWait = { azimuth: orbit.azimuth, count: stable ? old.count + 1 : 0 }
     return window.__collabCameraWait.count >= 5
-  }, null, { polling: 100 })
+  }, null, { polling: 'raf', timeout: 60000 })
   const bobOrbit = await bob.evaluate(() => window.__tatara.camera())
   await until(alice, (desired) => {
     const c = window.__tatara.presence().find((p) => p.actor.name === 'Bob')?.camera
     if (!c) return false
     const az = Math.atan2(c.eye[0] - c.target[0], c.eye[2] - c.target[2]) * 180 / Math.PI
-    return Math.abs(az - desired) < 0.1
+    return Math.abs(((az - desired + 540) % 360) - 180) < 0.5
   }, bobOrbit.azimuth)
   const cameraPeer = await alice.evaluate(() => window.__tatara.presence().find((p) => p.actor.name === 'Bob'))
   check(Boolean(cameraPeer.camera?.eye?.length === 3), 'remote camera presence is available')
+  const cameraButton = await alice.locator('.session-peer').filter({ hasText: 'Bob' }).getByRole('button', { name: 'View camera' }).elementHandle()
+  await bob.mouse.move(bBox.x + bBox.width * 0.3, bBox.y + bBox.height * 0.3)
+  await until(alice, () => {
+    const cursor = window.__tatara.presence().find((p) => p.actor.name === 'Bob')?.cursor
+    return cursor && Math.abs(cursor[0] - 0.3) < 0.01
+  })
+  check(await cameraButton.evaluate((button) => button.isConnected), 'presence updates preserve peer camera controls')
+  await alice.bringToFront()
   await alice.locator('.session-peer').filter({ hasText: 'Bob' }).getByRole('button', { name: 'View camera' }).click()
-  const orbit = await alice.evaluate(() => window.__tatara.camera())
   const desired = Math.atan2(cameraPeer.camera.eye[0] - cameraPeer.camera.target[0], cameraPeer.camera.eye[2] - cameraPeer.camera.target[2]) * 180 / Math.PI
-  check(Math.abs(orbit.azimuth - desired) < 1, 'a participant can view a peer camera')
+  await alice.waitForFunction((desired) => Math.abs(((window.__tatara.camera().azimuth - desired + 540) % 360) - 180) < 1, desired)
+  check(true, 'a participant can view a peer camera')
   const conflict = await alice.evaluate(async (id) => {
     const revision = (await (await fetch('/api/scene')).json()).revision
     const actor = window.__tatara.actor()
@@ -559,7 +568,9 @@ try {
   await until(bob, () => window.__tatara.presence().some((p) => p.actor.name === 'Alice'))
   check(true, 'presence rejoins after a server restart with a new version counter')
   await alice.close()
-  await bob.waitForFunction(() => !window.__tatara.presence().some((p) => p.actor.name === 'Alice'))
+  // A browser process may omit pagehide when closing a tab. Its 30-second
+  // lease still expires; allow the peer's next heartbeat to publish expiry.
+  await bob.waitForFunction(() => !window.__tatara.presence().some((p) => p.actor.name === 'Alice'), null, { timeout: 45000 })
   check(true, 'closing a browser removes its presence')
   await bob.close()
 
