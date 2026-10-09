@@ -108,11 +108,11 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
   </tr>
   <tr>
     <td width="50%"><img src="docs/media/history.gif" alt="An agent builds a table, four chairs arranged in a circle around it, a lamp and a mug placed on the table, one step each; in the History tab the first step, build table, is opened, a scale value is added and dragged up to 1.35, and the scene replays live: the table grows, the chairs circle it again and the lamp and mug stay on the new top; Apply commits it, then the agent reads the history and revises the arrange step for more room and the table step for a dark walnut colour"></td>
-    <td width="50%"></td>
+    <td width="50%"><img src="docs/media/constraints.gif" alt="A blue vase is kept on a table from the Constraints card, a dashed line tying it to the table; the right speaker is made the mirror of the left and snaps into place; an agent keeps three cups on the table and makes two of them match the first; the table is moved and the vase and cups ride along on top, the left speaker is moved and turned and the right one mirrors it, and glazing the middle cup jade turns all three jade"></td>
   </tr>
   <tr>
     <td><b>History</b> — change any earlier step; everything after it replays.</td>
-    <td></td>
+    <td><b>Constraints</b> — keep on, mirror and match: say it once, it holds through every edit.</td>
   </tr>
 </table>
 
