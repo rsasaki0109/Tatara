@@ -69,6 +69,7 @@ export class PathPreview {
     const r = (v) => v.toFixed(5)
     const eye = cam.position
     const target = this.viewport.controls.target
+    if (this.viewport.sceneCameraId != null) return { w: String(w), h: String(h), camera: String(this.viewport.sceneCameraId), frame: String(this.viewport.currentFrame ?? 1) }
     return {
       w: String(w),
       h: String(h),

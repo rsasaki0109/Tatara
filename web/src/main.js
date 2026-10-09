@@ -169,7 +169,7 @@ app.preview = preview
 
 // The Render panel: a finished image of this view.
 const finalRender = new FinalRender($('final-render'), {
-  camera: () => ({ eye: viewport.camera.position.toArray(), target: viewport.controls.target.toArray(), fov: viewport.camera.fov }),
+  camera: () => ({ camera: viewport.sceneCameraId, eye: viewport.camera.position.toArray(), target: viewport.controls.target.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov }),
   focusPoint: () => {
     const node = viewport.nodes.get(app.selected)
     if (!node) return null
@@ -288,7 +288,8 @@ async function decideProposal(id, accept) {
 function syncRenderLabel() {
   const label = document.querySelector('.view-label')
   const shading = !preview.active ? 'Studio' : preview.samples ? `Rendered · ${preview.samples} samples` : 'Rendered · tracing…'
-  label.innerHTML = `<span class="dot"></span>Perspective · ${shading}`
+  const shot = objectById(viewport.sceneCameraId)
+  label.innerHTML = `<span class="dot"></span>${shot?.camera ? `Camera · ${escapeHtml(shot.name)} · Esc to orbit` : 'Perspective'} · ${shading}`
   $('shading-btn').classList.toggle('on', preview.active)
 }
 
@@ -390,6 +391,7 @@ function clearComponents() {
 }
 
 function setMode(mode) {
+  if (mode !== 'object' && objectById(app.selected)?.camera) return toast('Cameras use object mode')
   if (mode !== 'object' && app.selected == null) return toast(`Select an object to ${mode} it`)
   app.mode = mode
   clearComponents()
@@ -543,8 +545,9 @@ async function history(kind) {
 function select(id, face = null) {
   if (id !== app.selected) clearComponents()
   app.selected = id
+  if (objectById(id)?.camera) face = null
   app.face = id == null ? null : face
-  if (id == null) app.mode = 'object'
+  if (id == null || objectById(id)?.camera) app.mode = 'object'
   if (face != null) {
     app.selectMode = 'face'
     app.sel = { verts: [], edges: [], faces: [face] }
@@ -560,6 +563,12 @@ function freeSpot(half) {
 }
 
 const actions = {
+  async addCamera() {
+    const c = viewport.camera
+    const r = await run([{ op: 'add_camera', translation: c.position.toArray(), rotation: [c.rotation.x, c.rotation.y, c.rotation.z], lens: { fov: c.fov, aperture: 0, focus: c.position.distanceTo(viewport.controls.target) } }])
+    select(r.created[0])
+    return r
+  },
   async add(kind) {
     const p = PRIMITIVES[kind]
     const r = await run([{ op: 'add', primitive: p.primitive, translation: [freeSpot(p.half), p.y, 0] }])
@@ -655,7 +664,7 @@ const actions = {
     viewport.setWireframe(on)
     render()
   },
-  frame: () => viewport.frameAll(),
+  frame: () => { viewport.lookThrough(null); viewport.frameAll(); render() },
 }
 app.actions = actions
 app.run = run
@@ -770,7 +779,7 @@ $('add-group').innerHTML =
   `<span class="group-label">Add</span>` +
   Object.keys(PRIMITIVES)
     .map((k) => `<button data-add="${k}" title="Add ${k}">${icon(k)}<span>${k[0].toUpperCase() + k.slice(1)}</span></button>`)
-    .join('')
+    .join('') + button('addCamera', 'Camera', 'Add a scene camera from the current view')
 $('edit-group').innerHTML =
   button('extrude', 'Extrude', 'Extrude selected face (E)') +
   button('inset', 'Inset', 'Inset selected face (I)') +
@@ -787,6 +796,9 @@ $('shading-btn').innerHTML = icon('render')
 $('final-btn').innerHTML = icon('camera')
 
 document.addEventListener('click', (e) => {
+  const look = e.target.closest('[data-look-camera]')
+  if (look) { viewport.lookThrough(Number(look.dataset.lookCamera)); renderedKey = ''; return render() }
+  if (e.target.closest('[data-exit-camera]')) { viewport.lookThrough(null); renderedKey = ''; return render() }
   const add = e.target.closest('[data-add]')
   if (add) return actions.add(add.dataset.add).catch(() => {})
   const act = e.target.closest('[data-action]')
@@ -816,7 +828,7 @@ function showTab(name) {
 }
 app.showTab = showTab
 
-const KIND_ICON = { quadsphere: 'sphere', cube: 'cube', sphere: 'sphere', cylinder: 'cylinder', torus: 'torus', vessel: 'vessel', plane: 'plane' }
+const KIND_ICON = { camera: 'camera', quadsphere: 'sphere', cube: 'cube', sphere: 'sphere', cylinder: 'cylinder', torus: 'torus', vessel: 'vessel', plane: 'plane' }
 
 const SELECT_MODES = [
   ['vertex', 'Vertex (1)'],
@@ -849,6 +861,8 @@ function renderModeBar() {
 }
 
 function render() {
+  const label = document.querySelector('.view-label')
+  if (!label.querySelector('.proposal') && (viewport.sceneCameraId != null || label.textContent.startsWith('Camera'))) syncRenderLabel()
   renderModeBar()
   renderTimeline()
   const { objects } = app.scene
@@ -881,7 +895,7 @@ function render() {
   for (const b of document.querySelectorAll('[data-action=undo]')) b.disabled = !app.history.can_undo
   for (const b of document.querySelectorAll('[data-action=redo]')) b.disabled = !app.history.can_redo
   const sel = objectById(app.selected)
-  for (const a of ['duplicate', 'delete', 'subdivide']) document.querySelector(`[data-action=${a}]`).disabled = !sel
+  for (const a of ['duplicate', 'delete', 'subdivide']) document.querySelector(`[data-action=${a}]`).disabled = !sel || (a === 'subdivide' && Boolean(sel.camera))
   const noFaces = !sel || targetFaces().length === 0
   document.querySelector('[data-action=extrude]').disabled = noFaces
   document.querySelector('[data-action=inset]').disabled = noFaces
@@ -988,7 +1002,7 @@ let renderedKey = ''
 function renderProperties(o) {
   const el = $('properties')
   const key = o
-    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, app.ik, app.scene.constraints, app.scene.arrangements, app.constraintKind, o.group, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
+    ? JSON.stringify([o.id, o.name, o.camera, viewport.sceneCameraId, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, app.ik, app.scene.constraints, app.scene.arrangements, app.constraintKind, o.group, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
     : `none:${JSON.stringify([app.scene.world, Object.keys(app.scene.images || {})])}`
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -1008,6 +1022,18 @@ function renderProperties(o) {
     values
       .map((v, i) => `<label class="axis axis-${'xyz'[i]}"><i>${'XYZ'[i]}</i><input type="number" step="${step}" data-field="${field}" data-i="${i}" value="${fmt(conv(v), 3)}"></label>`)
       .join('')
+  if (o.camera) {
+    el.innerHTML = `<div class="card"><div class="card-title">Camera <span class="muted small">#${o.id}</span></div>
+      <input class="name-input" id="p-name" value="${escapeHtml(o.name)}" spellcheck="false">
+      <div class="row"><button class="small-btn" data-look-camera="${o.id}">Look through</button><button class="small-btn" data-exit-camera>Return to orbit</button></div></div>
+      <div class="card"><div class="card-title">Transform</div>
+      <div class="vec-row"><span>Location${keyed('translation')}</span>${vec('translation', t.translation, .1)}</div>
+      <div class="vec-row"><span>Rotation°${keyed('rotation')}</span>${vec('rotation', t.rotation, 5, r => r * 180 / Math.PI)}</div></div>
+      <div class="card"><div class="card-title">Perspective lens</div>
+      ${[['fov','Vertical FOV°',1,170,.1],['aperture','Lens radius m',0,1,.01],['focus','Focus m',.001,10000,.1]].map(([f,label,min,max,step]) => `<label class="vec-row"><span>${label}</span><input type="number" id="camera-${f}" data-camera-lens="${f}" min="${min}" max="${max}" step="${step}" value="${o.camera[f]}"></label>`).join('')}
+      <p class="muted small">Looks along local −Z. Lens and animation are used by Render while looking through this camera.</p></div>`
+    return
+  }
   const glazes = GLAZES.map(
     ([name, color, rough, metal = 0]) =>
       `<button class="glaze ${shown.material.color === color ? 'on' : ''}" data-glaze="${color},${rough},${metal}" title="${name}" style="--c:${color}"></button>`,
@@ -1017,7 +1043,7 @@ function renderProperties(o) {
     ([id, name, swatch]) => `<button class="chip preset" data-preset="${id}" title="${name} preset"><i style="--c:${swatch}"></i>${name}</button>`,
   ).join('')
   const b = app.brush
-  const others = app.scene.objects.filter((x) => x.id !== o.id)
+  const others = app.scene.objects.filter((x) => x.id !== o.id && !x.camera)
   if (!others.some((x) => x.id === app.boolWith)) app.boolWith = others.at(-1)?.id ?? null
   const brushCard =
     app.mode === 'sculpt'
@@ -1226,7 +1252,7 @@ function constraintLinks(o) {
 /** The selected object leads a maintained row, grid or circle of other items. */
 function arrangementCard(o) {
   const self = subjectOf(o)
-  const targets = [...new Set(app.scene.objects.map(subjectOf))].filter((w) => w !== self)
+  const targets = [...new Set(app.scene.objects.filter(x => !x.camera).map(subjectOf))].filter((w) => w !== self)
   const chosen = app.layoutItems ?? targets
   const rows = (app.scene.arrangements || []).filter((a) => involves(o, a.around) || a.items.some((w) => involves(o, w)))
     .map((a) => `<div class="arrangement-row"><span>${escapeHtml(a.layout)} · ${a.items.length} items · ${a.around != null ? `around ${escapeHtml(whoName(a.around))}` : 'fixed centre'}</span><button class="chip" data-unarrange="${a.id}" title="Stop maintaining this layout">✕</button></div>`).join('')
@@ -1258,7 +1284,7 @@ function constraintCard(o) {
   const targets = []
   for (const x of app.scene.objects) {
     const who = x.group ?? x.id
-    if (who === self || seen.has(who)) continue
+    if (x.camera || who === self || seen.has(who)) continue
     seen.add(who)
     targets.push(who)
   }
@@ -1340,6 +1366,7 @@ $('properties').addEventListener('change', (e) => {
   const o = objectById(app.selected)
   if (!o) return
   if (/^p-bone-\d$/.test(target.id)) return run(poseCommands(o, currentBone(o).name, boneSliders())).catch(() => {})
+  if (target.dataset.cameraLens) return run([{ op: 'camera_settings', id: o.id, lens: { ...o.camera, [target.dataset.cameraLens]: Number(target.value) } }]).catch(() => {})
   if (target.id === 'p-name') return run([{ op: 'rename', id: o.id, name: target.value }]).catch(() => {})
   if (target.id === 'p-dist') {
     app.extrudeDistance = Number(target.value) || 0.3
@@ -1703,6 +1730,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'd' && e.shiftKey) actions.duplicate()?.catch?.(() => {})
   else if ((k === 'delete' || k === 'backspace' || k === 'x') && app.mode === 'object') actions.delete()?.catch?.(() => {})
   else if (k === 'escape') {
+    if (viewport.sceneCameraId != null) { viewport.lookThrough(null); renderedKey = ''; return render() }
     if (app.mode !== 'object') setMode('object')
     else select(null)
   }
@@ -1930,7 +1958,7 @@ window.__tatara = {
         status.done = true
       })
   },
-  debug: () => ({ pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
+  debug: () => ({ sceneCamera: viewport.sceneCameraId ?? null, renderCamera: { eye: viewport.camera.position.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov }, pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
     pathSamples: preview.active ? preview.samples : null,
     finalSamples: finalRender.open ? finalRender.samples : null,

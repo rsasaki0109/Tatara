@@ -276,6 +276,7 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     let mut views = Vec::new();
     let mut accessors = Vec::new();
     let mut meshes = Vec::new();
+    let mut cameras = Vec::new();
     let mut materials = Vec::new();
     let mut nodes = Vec::new();
     let mut channels = Vec::new();
@@ -303,274 +304,290 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         views.len() - 1
     };
     for o in &ed.scene().objects {
-        let tex = o.material.texture.as_ref();
-        let mesh = ed.evaluated(o);
-        let projection = tex.map(|t| BoxProjection::new(&mesh.vertices, o.transform.scale, t.fit));
-        let shaded = shade(mesh, o.smooth, projection.as_ref());
-        if shaded.indices.is_empty() {
-            continue;
-        }
-        let pos_bytes: Vec<u8> = shaded
-            .positions
-            .iter()
-            .flatten()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        let nrm_bytes: Vec<u8> = shaded
-            .normals
-            .iter()
-            .flatten()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        let idx_bytes: Vec<u8> = shaded
-            .indices
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-        for p in &shaded.positions {
-            for k in 0..3 {
-                min[k] = min[k].min(p[k]);
-                max[k] = max[k].max(p[k]);
-            }
-        }
-        let pv = push_view(&mut bin, &pos_bytes, 34962);
-        let nv = push_view(&mut bin, &nrm_bytes, 34962);
-        let iv = push_view(&mut bin, &idx_bytes, 34963);
-        let a = accessors.len();
-        accessors.push(json!({ "bufferView": pv, "componentType": 5126, "count": shaded.positions.len(), "type": "VEC3", "min": min, "max": max }));
-        accessors.push(json!({ "bufferView": nv, "componentType": 5126, "count": shaded.normals.len(), "type": "VEC3" }));
-        accessors.push(json!({ "bufferView": iv, "componentType": 5125, "count": shaded.indices.len(), "type": "SCALAR" }));
-        let mut attributes = json!({ "POSITION": a, "NORMAL": a + 1 });
-        if !o.bones.is_empty() {
-            // Weights depend only on where a vertex is, so the split
-            // vertices get the same ones as the mesh.
-            let at = Mesh {
-                vertices: shaded.positions.iter().map(|p| p.map(f64::from)).collect(),
-                faces: Vec::new(),
-                uvs: Vec::new(),
-                seams: Vec::new(),
-            };
-            let weights = rig::weights(&at, &o.bones);
-            let joint_bytes: Vec<u8> = weights
-                .iter()
-                .flatten()
-                .flat_map(|(j, w)| if *w > 0.0 { *j } else { 0 }.to_le_bytes())
-                .collect();
-            let weight_bytes: Vec<u8> = weights
-                .iter()
-                .flatten()
-                .flat_map(|(_, w)| w.to_le_bytes())
-                .collect();
-            let jv = push_view(&mut bin, &joint_bytes, 34962);
-            let wv = push_view(&mut bin, &weight_bytes, 34962);
-            attributes["JOINTS_0"] = json!(accessors.len());
-            accessors.push(json!({ "bufferView": jv, "componentType": 5123, "count": weights.len(), "type": "VEC4" }));
-            attributes["WEIGHTS_0"] = json!(accessors.len());
-            accessors.push(json!({ "bufferView": wv, "componentType": 5126, "count": weights.len(), "type": "VEC4" }));
-        }
-        let mut extras = Value::Null;
-        let (mut color_map, mut normal_map, mut orm_map) = (None, None, None);
-        if let Some(t) = tex {
-            // A node graph is baked once for this material.
-            let graph = nodes::bake_material(&o.material, scene_images, 256);
-            let graph_key = serde_json::to_string(&(
-                &o.material.color,
-                o.material.roughness,
-                o.material.metalness,
-                &t.graph,
-            ))
-            .expect("json serializes");
-            // Box projection: one tile of the pattern spans `scale` metres.
-            // glTF's V runs down the image while ours runs up.
-            let s = if shaded.tiled { 1.0 } else { t.scale as f32 };
-            let uv_bytes: Vec<u8> = shaded
-                .uvs
-                .iter()
-                .flat_map(|[u, v]| [u / s, 1.0 - v / s])
-                .flat_map(|v| v.to_le_bytes())
-                .collect();
-            let uvv = push_view(&mut bin, &uv_bytes, 34962);
-            attributes["TEXCOORD_0"] = json!(accessors.len());
-            accessors.push(json!({ "bufferView": uvv, "componentType": 5126, "count": shaded.uvs.len(), "type": "VEC2" }));
-            if !shaded.own_uvs {
-                extras = json!({ "tatara_box_uv": true });
-            }
-            let color = &o.material.color;
-            let mut texture_of =
-                |key: String, bytes: &dyn Fn() -> (Vec<u8>, &'static str, String)| {
-                    *baked.entry(key).or_insert_with(|| {
-                        let (data, mime, name) = bytes();
-                        let view = push_view(&mut bin, &data, 0);
-                        images.push(json!({ "bufferView": view, "mimeType": mime, "name": name }));
-                        textures.push(json!({ "sampler": 0, "source": images.len() - 1 }));
-                        textures.len() - 1
-                    })
-                };
-            let stored = |name: &str| -> (Vec<u8>, &'static str, String) {
-                let img = &scene_images[name];
-                // HDR images go out as PNGs (glTF viewers read no HDR).
-                let (mime, data) = img.portable().unwrap_or(("image/png", img.data.to_vec()));
-                (data, mime, name.to_string())
-            };
-            color_map = match (t.pattern, &t.image) {
-                (Pattern::None, _) => None,
-                (Pattern::Nodes, _) => graph.as_ref().map(|b| {
-                    texture_of(format!("nodes:{graph_key}"), &|| {
-                        (
-                            texture::pixels_png(&b.color),
-                            "image/png",
-                            format!("{} nodes", o.name),
-                        )
-                    })
-                }),
-                (Pattern::Image, Some(name)) => {
-                    Some(texture_of(format!("image:{name}"), &|| stored(name)))
-                }
-                _ => {
-                    let key = serde_json::to_string(&(color, t.pattern, &t.color2))
-                        .expect("json serializes");
-                    Some(texture_of(format!("pattern:{key}"), &|| {
-                        (
-                            texture::bake_png(color, t, 256),
-                            "image/png",
-                            format!("{} pattern", o.name),
-                        )
-                    }))
-                }
-            };
-            normal_map = if let Some(name) = &t.normal_map {
-                Some(texture_of(format!("image:{name}"), &|| stored(name)))
-            } else if t.relief > 0.0 {
-                if let Some(name) = &t.image {
-                    decoded
-                        .entry(name.clone())
-                        .or_insert_with(|| scene_images[name].decode().ok());
-                }
-                let look = Look {
-                    base: color,
-                    texture: t,
-                    image: t.image.as_ref().and_then(|n| decoded[n].as_ref()),
-                    normal_map: None,
-                    baked: graph.as_ref(),
-                };
-                let key = serde_json::to_string(&(t.pattern, &t.image, t.relief, &graph_key))
-                    .expect("json serializes");
-                let index = texture_of(format!("relief:{key}"), &|| {
-                    (
-                        texture::bake_normal_png(&look, 256),
-                        "image/png",
-                        format!("{} relief", o.name),
-                    )
-                });
-                Some(index)
-            } else {
-                None
-            };
-            orm_map = graph.as_ref().and_then(|b| b.orm.as_ref()).map(|orm| {
-                texture_of(format!("orm:{graph_key}"), &|| {
-                    (
-                        texture::pixels_png(orm),
-                        "image/png",
-                        format!("{} roughness", o.name),
-                    )
-                })
-            });
-        }
-        if normal_map.is_some() {
-            let tangent_bytes: Vec<u8> = tangents(&shaded)
-                .iter()
-                .flatten()
-                .flat_map(|v| v.to_le_bytes())
-                .collect();
-            let tv = push_view(&mut bin, &tangent_bytes, 34962);
-            attributes["TANGENT"] = json!(accessors.len());
-            accessors.push(json!({ "bufferView": tv, "componentType": 5126, "count": shaded.positions.len(), "type": "VEC4" }));
-        }
-        materials.push(material_json(
-            &o.name,
-            &o.material,
-            color_map,
-            normal_map,
-            orm_map,
-            &mut extensions,
-        ));
-        let mut primitive = json!({ "attributes": attributes, "indices": a + 2, "material": materials.len() - 1, "mode": 4 });
-        if !extras.is_null() {
-            primitive["extras"] = extras;
-        }
-        meshes.push(json!({
-            "name": o.name,
-            "primitives": [primitive],
-        }));
-        let t = &o.transform;
-        let [rx, ry, rz] = t.rotation;
-        let q = DQuat::from_euler(EulerRot::XYZ, rx, ry, rz);
-        let placed = json!({
-            "translation": t.translation,
-            "rotation": [q.x, q.y, q.z, q.w],
-            "scale": t.scale,
-        });
-        // The node that carries the object's transform (and its animation).
         let node;
         let mut joints: Vec<usize> = Vec::new();
-        if o.bones.is_empty() {
+        if let Some(lens) = &o.camera {
+            let [x, y, z] = o.transform.rotation;
+            let q = DQuat::from_euler(EulerRot::XYZ, x, y, z);
+            cameras.push(json!({ "name":o.name, "type":"perspective",
+                "perspective": {"yfov":lens.fov.to_radians(),"znear":0.01},
+                "extras":{"tataraLens":lens} }));
             node = nodes.len();
-            let mut n = placed;
-            n["name"] = json!(o.name);
-            n["mesh"] = json!(meshes.len() - 1);
-            nodes.push(n);
+            nodes.push(json!({"name":o.name,"camera":cameras.len()-1,
+                "translation":o.transform.translation,"rotation":[q.x,q.y,q.z,q.w],
+                "scale":o.transform.scale}));
             roots.push(node);
         } else {
-            // A skinned mesh ignores its own node's transform, so the
-            // object's transform sits on a rig node above the bones, each
-            // bone a joint node placed at its head relative to its parent.
-            node = nodes.len();
-            let mut rig_node = placed;
-            rig_node["name"] = json!(format!("{} rig", o.name));
-            nodes.push(rig_node);
-            roots.push(node);
-            for b in &o.bones {
-                let parent = b
-                    .parent
-                    .as_ref()
-                    .and_then(|p| o.bones.iter().position(|x| &x.name == p));
-                let origin = parent.map_or(DVec3::ZERO, |k| DVec3::from(o.bones[k].head));
-                let [x, y, z] = b.rotation;
-                let r = DQuat::from_euler(EulerRot::XYZ, x, y, z);
-                joints.push(nodes.len());
-                nodes.push(json!({
-                    "name": b.name,
-                    "translation": (DVec3::from(b.head) - origin).to_array(),
-                    "rotation": [r.x, r.y, r.z, r.w],
-                }));
-                let holder = parent.map_or(node, |k| joints[k]);
-                let children = nodes[holder]
-                    .as_object_mut()
-                    .expect("node is an object")
-                    .entry("children")
-                    .or_insert_with(|| json!([]));
-                let joint = *joints.last().expect("just pushed");
-                children
-                    .as_array_mut()
-                    .expect("children")
-                    .push(json!(joint));
+            let tex = o.material.texture.as_ref();
+            let mesh = ed.evaluated(o);
+            let projection =
+                tex.map(|t| BoxProjection::new(&mesh.vertices, o.transform.scale, t.fit));
+            let shaded = shade(mesh, o.smooth, projection.as_ref());
+            if shaded.indices.is_empty() {
+                continue;
             }
-            // Bind pose: each joint stood at its head with no turn.
-            let ibm: Vec<u8> = o
-                .bones
+            let pos_bytes: Vec<u8> = shaded
+                .positions
                 .iter()
-                .flat_map(|b| DMat4::from_translation(-DVec3::from(b.head)).to_cols_array())
-                .flat_map(|v| (v as f32).to_le_bytes())
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
                 .collect();
-            let iv = push_view(&mut bin, &ibm, 0);
-            accessors.push(json!({ "bufferView": iv, "componentType": 5126, "count": o.bones.len(), "type": "MAT4" }));
-            skins.push(json!({ "name": o.name, "inverseBindMatrices": accessors.len() - 1, "joints": joints, "skeleton": node }));
-            roots.push(nodes.len());
-            nodes
-                .push(json!({ "name": o.name, "mesh": meshes.len() - 1, "skin": skins.len() - 1 }));
+            let nrm_bytes: Vec<u8> = shaded
+                .normals
+                .iter()
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            let idx_bytes: Vec<u8> = shaded
+                .indices
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+            for p in &shaded.positions {
+                for k in 0..3 {
+                    min[k] = min[k].min(p[k]);
+                    max[k] = max[k].max(p[k]);
+                }
+            }
+            let pv = push_view(&mut bin, &pos_bytes, 34962);
+            let nv = push_view(&mut bin, &nrm_bytes, 34962);
+            let iv = push_view(&mut bin, &idx_bytes, 34963);
+            let a = accessors.len();
+            accessors.push(json!({ "bufferView": pv, "componentType": 5126, "count": shaded.positions.len(), "type": "VEC3", "min": min, "max": max }));
+            accessors.push(json!({ "bufferView": nv, "componentType": 5126, "count": shaded.normals.len(), "type": "VEC3" }));
+            accessors.push(json!({ "bufferView": iv, "componentType": 5125, "count": shaded.indices.len(), "type": "SCALAR" }));
+            let mut attributes = json!({ "POSITION": a, "NORMAL": a + 1 });
+            if !o.bones.is_empty() {
+                // Weights depend only on where a vertex is, so the split
+                // vertices get the same ones as the mesh.
+                let at = Mesh {
+                    vertices: shaded.positions.iter().map(|p| p.map(f64::from)).collect(),
+                    faces: Vec::new(),
+                    uvs: Vec::new(),
+                    seams: Vec::new(),
+                };
+                let weights = rig::weights(&at, &o.bones);
+                let joint_bytes: Vec<u8> = weights
+                    .iter()
+                    .flatten()
+                    .flat_map(|(j, w)| if *w > 0.0 { *j } else { 0 }.to_le_bytes())
+                    .collect();
+                let weight_bytes: Vec<u8> = weights
+                    .iter()
+                    .flatten()
+                    .flat_map(|(_, w)| w.to_le_bytes())
+                    .collect();
+                let jv = push_view(&mut bin, &joint_bytes, 34962);
+                let wv = push_view(&mut bin, &weight_bytes, 34962);
+                attributes["JOINTS_0"] = json!(accessors.len());
+                accessors.push(json!({ "bufferView": jv, "componentType": 5123, "count": weights.len(), "type": "VEC4" }));
+                attributes["WEIGHTS_0"] = json!(accessors.len());
+                accessors.push(json!({ "bufferView": wv, "componentType": 5126, "count": weights.len(), "type": "VEC4" }));
+            }
+            let mut extras = Value::Null;
+            let (mut color_map, mut normal_map, mut orm_map) = (None, None, None);
+            if let Some(t) = tex {
+                // A node graph is baked once for this material.
+                let graph = nodes::bake_material(&o.material, scene_images, 256);
+                let graph_key = serde_json::to_string(&(
+                    &o.material.color,
+                    o.material.roughness,
+                    o.material.metalness,
+                    &t.graph,
+                ))
+                .expect("json serializes");
+                // Box projection: one tile of the pattern spans `scale` metres.
+                // glTF's V runs down the image while ours runs up.
+                let s = if shaded.tiled { 1.0 } else { t.scale as f32 };
+                let uv_bytes: Vec<u8> = shaded
+                    .uvs
+                    .iter()
+                    .flat_map(|[u, v]| [u / s, 1.0 - v / s])
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect();
+                let uvv = push_view(&mut bin, &uv_bytes, 34962);
+                attributes["TEXCOORD_0"] = json!(accessors.len());
+                accessors.push(json!({ "bufferView": uvv, "componentType": 5126, "count": shaded.uvs.len(), "type": "VEC2" }));
+                if !shaded.own_uvs {
+                    extras = json!({ "tatara_box_uv": true });
+                }
+                let color = &o.material.color;
+                let mut texture_of =
+                    |key: String, bytes: &dyn Fn() -> (Vec<u8>, &'static str, String)| {
+                        *baked.entry(key).or_insert_with(|| {
+                            let (data, mime, name) = bytes();
+                            let view = push_view(&mut bin, &data, 0);
+                            images.push(
+                                json!({ "bufferView": view, "mimeType": mime, "name": name }),
+                            );
+                            textures.push(json!({ "sampler": 0, "source": images.len() - 1 }));
+                            textures.len() - 1
+                        })
+                    };
+                let stored = |name: &str| -> (Vec<u8>, &'static str, String) {
+                    let img = &scene_images[name];
+                    // HDR images go out as PNGs (glTF viewers read no HDR).
+                    let (mime, data) = img.portable().unwrap_or(("image/png", img.data.to_vec()));
+                    (data, mime, name.to_string())
+                };
+                color_map = match (t.pattern, &t.image) {
+                    (Pattern::None, _) => None,
+                    (Pattern::Nodes, _) => graph.as_ref().map(|b| {
+                        texture_of(format!("nodes:{graph_key}"), &|| {
+                            (
+                                texture::pixels_png(&b.color),
+                                "image/png",
+                                format!("{} nodes", o.name),
+                            )
+                        })
+                    }),
+                    (Pattern::Image, Some(name)) => {
+                        Some(texture_of(format!("image:{name}"), &|| stored(name)))
+                    }
+                    _ => {
+                        let key = serde_json::to_string(&(color, t.pattern, &t.color2))
+                            .expect("json serializes");
+                        Some(texture_of(format!("pattern:{key}"), &|| {
+                            (
+                                texture::bake_png(color, t, 256),
+                                "image/png",
+                                format!("{} pattern", o.name),
+                            )
+                        }))
+                    }
+                };
+                normal_map = if let Some(name) = &t.normal_map {
+                    Some(texture_of(format!("image:{name}"), &|| stored(name)))
+                } else if t.relief > 0.0 {
+                    if let Some(name) = &t.image {
+                        decoded
+                            .entry(name.clone())
+                            .or_insert_with(|| scene_images[name].decode().ok());
+                    }
+                    let look = Look {
+                        base: color,
+                        texture: t,
+                        image: t.image.as_ref().and_then(|n| decoded[n].as_ref()),
+                        normal_map: None,
+                        baked: graph.as_ref(),
+                    };
+                    let key = serde_json::to_string(&(t.pattern, &t.image, t.relief, &graph_key))
+                        .expect("json serializes");
+                    let index = texture_of(format!("relief:{key}"), &|| {
+                        (
+                            texture::bake_normal_png(&look, 256),
+                            "image/png",
+                            format!("{} relief", o.name),
+                        )
+                    });
+                    Some(index)
+                } else {
+                    None
+                };
+                orm_map = graph.as_ref().and_then(|b| b.orm.as_ref()).map(|orm| {
+                    texture_of(format!("orm:{graph_key}"), &|| {
+                        (
+                            texture::pixels_png(orm),
+                            "image/png",
+                            format!("{} roughness", o.name),
+                        )
+                    })
+                });
+            }
+            if normal_map.is_some() {
+                let tangent_bytes: Vec<u8> = tangents(&shaded)
+                    .iter()
+                    .flatten()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect();
+                let tv = push_view(&mut bin, &tangent_bytes, 34962);
+                attributes["TANGENT"] = json!(accessors.len());
+                accessors.push(json!({ "bufferView": tv, "componentType": 5126, "count": shaded.positions.len(), "type": "VEC4" }));
+            }
+            materials.push(material_json(
+                &o.name,
+                &o.material,
+                color_map,
+                normal_map,
+                orm_map,
+                &mut extensions,
+            ));
+            let mut primitive = json!({ "attributes": attributes, "indices": a + 2, "material": materials.len() - 1, "mode": 4 });
+            if !extras.is_null() {
+                primitive["extras"] = extras;
+            }
+            meshes.push(json!({
+                "name": o.name,
+                "primitives": [primitive],
+            }));
+            let t = &o.transform;
+            let [rx, ry, rz] = t.rotation;
+            let q = DQuat::from_euler(EulerRot::XYZ, rx, ry, rz);
+            let placed = json!({
+                "translation": t.translation,
+                "rotation": [q.x, q.y, q.z, q.w],
+                "scale": t.scale,
+            });
+            // The node that carries the object's transform (and its animation).
+            if o.bones.is_empty() {
+                node = nodes.len();
+                let mut n = placed;
+                n["name"] = json!(o.name);
+                n["mesh"] = json!(meshes.len() - 1);
+                nodes.push(n);
+                roots.push(node);
+            } else {
+                // A skinned mesh ignores its own node's transform, so the
+                // object's transform sits on a rig node above the bones, each
+                // bone a joint node placed at its head relative to its parent.
+                node = nodes.len();
+                let mut rig_node = placed;
+                rig_node["name"] = json!(format!("{} rig", o.name));
+                nodes.push(rig_node);
+                roots.push(node);
+                for b in &o.bones {
+                    let parent = b
+                        .parent
+                        .as_ref()
+                        .and_then(|p| o.bones.iter().position(|x| &x.name == p));
+                    let origin = parent.map_or(DVec3::ZERO, |k| DVec3::from(o.bones[k].head));
+                    let [x, y, z] = b.rotation;
+                    let r = DQuat::from_euler(EulerRot::XYZ, x, y, z);
+                    joints.push(nodes.len());
+                    nodes.push(json!({
+                        "name": b.name,
+                        "translation": (DVec3::from(b.head) - origin).to_array(),
+                        "rotation": [r.x, r.y, r.z, r.w],
+                    }));
+                    let holder = parent.map_or(node, |k| joints[k]);
+                    let children = nodes[holder]
+                        .as_object_mut()
+                        .expect("node is an object")
+                        .entry("children")
+                        .or_insert_with(|| json!([]));
+                    let joint = *joints.last().expect("just pushed");
+                    children
+                        .as_array_mut()
+                        .expect("children")
+                        .push(json!(joint));
+                }
+                // Bind pose: each joint stood at its head with no turn.
+                let ibm: Vec<u8> = o
+                    .bones
+                    .iter()
+                    .flat_map(|b| DMat4::from_translation(-DVec3::from(b.head)).to_cols_array())
+                    .flat_map(|v| (v as f32).to_le_bytes())
+                    .collect();
+                let iv = push_view(&mut bin, &ibm, 0);
+                accessors.push(json!({ "bufferView": iv, "componentType": 5126, "count": o.bones.len(), "type": "MAT4" }));
+                skins.push(json!({ "name": o.name, "inverseBindMatrices": accessors.len() - 1, "joints": joints, "skeleton": node }));
+                roots.push(nodes.len());
+                nodes.push(
+                    json!({ "name": o.name, "mesh": meshes.len() - 1, "skin": skins.len() - 1 }),
+                );
+            }
         }
-
         // Transform and bone tracks become glTF animation channels, baked
         // once per frame (and at every key) so eased and stepped keys look
         // the same.
@@ -638,6 +655,14 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         "accessors": accessors,
         "bufferViews": views,
     });
+    if !cameras.is_empty() {
+        doc["cameras"] = json!(cameras);
+    }
+    for field in ["meshes", "materials", "accessors", "bufferViews", "nodes"] {
+        if doc[field].as_array().is_some_and(|a| a.is_empty()) {
+            doc.as_object_mut().unwrap().remove(field);
+        }
+    }
     if !bin.is_empty() {
         doc["buffers"] = json!([{ "byteLength": bin.len() }]);
     }
@@ -1190,6 +1215,42 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
                 stack.push((c as usize, world, depth + 1));
             }
         }
+        if let Some(ci) = node["camera"].as_u64() {
+            let camera = &doc["cameras"][ci as usize];
+            if camera["type"].as_str() != Some("perspective") {
+                return err("only perspective scene cameras are supported");
+            }
+            let fov = camera["perspective"]["yfov"]
+                .as_f64()
+                .ok_or_else(|| EngineError::new("camera yfov is missing"))?
+                .to_degrees();
+            let mut lens: crate::camera::Lens = camera["extras"]
+                .get("tataraLens")
+                .map(|v| serde_json::from_value(v.clone()))
+                .transpose()
+                .map_err(|_| EngineError::new("invalid Tatara camera lens"))?
+                .unwrap_or_default();
+            lens.fov = fov;
+            lens.validate()?;
+            let (scale, q, t) = world.to_scale_rotation_translation();
+            if !DMat4::from_scale_rotation_translation(scale, q, t).abs_diff_eq(world, 1e-6) {
+                return err("camera transform must be a clean TRS without shear");
+            }
+            let (x, y, z) = q.to_euler(EulerRot::XYZ);
+            let base = clean_name(node["name"].as_str().or(camera["name"].as_str()), "Camera");
+            let n = names.entry(base.clone()).or_insert(0);
+            *n += 1;
+            let name = if *n > 1 { format!("{base} {n}") } else { base };
+            commands.push(Command::AddCamera {
+                name: Some(name),
+                translation: Some(t.to_array()),
+                rotation: Some([x, y, z]),
+                lens,
+            });
+            if commands.len() > MAX_OBJECTS {
+                return err("scene object limit reached");
+            }
+        }
         let Some(mi) = node["mesh"].as_u64() else {
             continue;
         };
@@ -1319,7 +1380,7 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
         }
     }
     if commands.is_empty() {
-        return err("the file contains no triangle meshes");
+        return err("the file contains no triangle meshes or perspective cameras");
     }
     // Images first: the meshes' textures refer to them.
     let mut all = std::mem::take(&mut images.commands);

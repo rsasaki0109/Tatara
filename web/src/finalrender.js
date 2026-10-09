@@ -135,6 +135,10 @@ export class FinalRender {
       fov: c.fov.toFixed(3),
       frame: String(this.frame()),
     }
+    if (c.camera != null) {
+      delete q.eye; delete q.target; delete q.fov
+      q.camera = String(c.camera)
+    } else if (c.up) q.up = c.up.map(r).join(',')
     if (this.dof) {
       const p = this.focusPoint()
       const d = p ? Math.hypot(p[0] - c.eye[0], p[1] - c.eye[1], p[2] - c.eye[2]) : 0

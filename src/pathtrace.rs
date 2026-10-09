@@ -30,6 +30,7 @@ use crate::world::{EnvMap, World, env_map, turn};
 pub struct Camera {
     pub eye: DVec3,
     pub target: DVec3,
+    pub up: DVec3,
     pub fov: f64,
     pub width: usize,
     pub height: usize,
@@ -43,6 +44,7 @@ impl Camera {
         Self {
             eye,
             target,
+            up: DVec3::Y,
             fov,
             width,
             height,
@@ -1124,7 +1126,7 @@ struct Frame {
 impl Frame {
     fn new(c: &Camera) -> Self {
         let forward = (c.target - c.eye).normalize_or(DVec3::NEG_Z);
-        let right = forward.cross(DVec3::Y).normalize_or(DVec3::X);
+        let right = forward.cross(c.up).normalize_or(DVec3::X);
         let up = right.cross(forward);
         let half_h = (c.fov.to_radians() / 2.0).tan();
         let aspect = c.width as f64 / c.height.max(1) as f64;

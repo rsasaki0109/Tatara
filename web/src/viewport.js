@@ -565,8 +565,8 @@ export class Viewport {
     const material = new THREE.MeshPhysicalMaterial({ clearcoatRoughness: 0.18 })
     installTriplanar(material)
     const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material)
-    mesh.castShadow = true
-    mesh.receiveShadow = true
+    mesh.castShadow = !o.camera
+    mesh.receiveShadow = !o.camera
     mesh.userData.id = o.id
     material.userData.objectId = o.id
     const lineMat = new THREE.LineBasicMaterial({ color: 0x15171a, transparent: true, opacity: 0.55 })
@@ -1515,6 +1515,8 @@ export class Viewport {
 
   /** What an object shows at the current frame: its displayed mesh, posed by its bones. */
   shownMesh(o) {
+    // Viewport-only camera body and viewing pyramid; not part of scene geometry.
+    if (o.camera) return { vertices: [[-.14,-.1,0],[.14,-.1,0],[.14,.1,0],[-.14,.1,0],[-.3,-.2,-.45],[.3,-.2,-.45],[.3,.2,-.45],[-.3,.2,-.45]], faces: [[0,3,2,1],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]] }
     return posedMesh(o, displayMesh(o), this.currentFrame)
   }
 
@@ -1692,6 +1694,44 @@ export class Viewport {
     this.controls.enableDamping = damping
   }
 
+  /** Return to the saved orbit, or look through an animated scene camera. */
+  lookThrough(id) {
+    if (id == null) {
+      this.sceneCameraId = null
+      this.camera.up.set(0, 1, 0)
+      this.camera.fov = this.savedCameraFov ?? 36
+      this.controls.enabled = true
+      if (this.savedCameraOrbit) this.setOrbit(this.savedCameraOrbit)
+      this.camera.updateProjectionMatrix()
+      for (const n of this.nodes.values()) n.group.visible = true
+      return
+    }
+    if (this.sceneCameraId == null) {
+      this.savedCameraOrbit = this.getOrbit()
+      this.savedCameraFov = this.camera.fov
+    }
+    this.sceneCameraId = id
+    this.gizmo.detach()
+    this.applySceneCamera()
+  }
+
+  applySceneCamera() {
+    if (this.sceneCameraId == null) return
+    const node = this.nodes.get(this.sceneCameraId)
+    if (!node?.data.camera) return this.lookThrough(null)
+    const t = pose(node.data, this.currentFrame).transform
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(...t.rotation, 'XYZ'))
+    this.camera.position.fromArray(t.translation)
+    this.camera.up.copy(new THREE.Vector3(0, 1, 0).applyQuaternion(q))
+    this.camera.quaternion.copy(q)
+    this.controls.target.copy(this.camera.position).add(new THREE.Vector3(0, 0, -node.data.camera.focus).applyQuaternion(q))
+    this.camera.fov = node.data.camera.fov
+    this.camera.updateProjectionMatrix()
+    this.controls.enabled = false
+    this.gizmo.detach()
+    for (const n of this.nodes.values()) n.group.visible = n.id !== this.sceneCameraId
+  }
+
   getOrbit() {
     const t = this.controls.target
     const off = this.camera.position.clone().sub(t)
@@ -1840,11 +1880,12 @@ export class Viewport {
     const now = this.clock.now()
     const dt = Math.min(100, now - this.lastFrame)
     this.lastFrame = now
-    if (this.spinRate && !this.anim.has('camera')) {
+    if (this.sceneCameraId == null && this.spinRate && !this.anim.has('camera')) {
       const o = this.getOrbit()
       this.setOrbit({ ...o, azimuth: o.azimuth + (this.spinRate * dt) / 1000 })
     }
-    this.controls.update()
+    if (this.sceneCameraId != null) this.applySceneCamera()
+    else this.controls.update()
     this.flushStroke()
     this.placeLinks()
     if (this.glowing()) {

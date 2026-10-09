@@ -73,6 +73,7 @@ pub fn scene_solids(scene: &Scene) -> Result<Vec<Solid>, EngineError> {
     scene
         .objects
         .iter()
+        .filter(|o| o.camera.is_none())
         .map(|o| {
             let mesh = if o.modifiers.is_empty() {
                 o.mesh.clone()
