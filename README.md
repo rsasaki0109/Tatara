@@ -106,6 +106,14 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>World</b> — light with daylight, sunset, overcast or night skies, or your own HDRI.</td>
     <td><b>Proposals</b> — agents offer changes and options; preview each in place, accept one.</td>
   </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/history.gif" alt="An agent builds a table, four chairs arranged in a circle around it, a lamp and a mug placed on the table, one step each; in the History tab the first step, build table, is opened, a scale value is added and dragged up to 1.35, and the scene replays live: the table grows, the chairs circle it again and the lamp and mug stay on the new top; Apply commits it, then the agent reads the history and revises the arrange step for more room and the table step for a dark walnut colour"></td>
+    <td width="50%"></td>
+  </tr>
+  <tr>
+    <td><b>History</b> — change any earlier step; everything after it replays.</td>
+    <td></td>
+  </tr>
 </table>
 
 Every GIF above is a deterministic recording of the real editor: real toolbar clicks and face picks, real Rust mesh operations and a real `tatara --mcp` process. The chat clip replays a fixed command batch, so it needs no API key. In the *See* clip the agent's decisions are scripted, but every tool call, including the images it gets back, comes from a real `tatara --mcp` process. Regenerate them all with `node scripts/record-demo.mjs`.
