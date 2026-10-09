@@ -947,6 +947,46 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn light_proposals_rendering_and_scene_loading_share_validation() {
+        let mut ed = Editor::new();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"add_light","name":"Key","translation":[0,2,3]},{"op":"add","primitive":{"kind":"cube"}}]})).0,200);
+        let (_, p) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Warm key","commands":[{"op":"light_settings","id":"Key","lamp":{"color":"#ff6633","intensity":25}}]}),
+        );
+        let id = p["ids"][0].as_u64().unwrap();
+        assert_eq!(
+            ed.scene().objects[0].light.as_ref().unwrap().color,
+            "#ffffff"
+        );
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                &format!("/proposal/accept?id={id}"),
+                json!({})
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            ed.scene().objects[0].light.as_ref().unwrap().color,
+            "#ff6633"
+        );
+        let rendered = handle(&mut ed, "GET", "/render?views=front&size=64", &[], false);
+        assert_eq!(rendered.status, 200);
+        assert!(rendered.body.starts_with(b"\x89PNG"));
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        let (_, ctx) = call(&mut ed, "GET", "/context", Value::Null);
+        assert_eq!(ctx["objects"][0]["light"]["intensity"], 10.);
+        let mut loaded = serde_json::to_value(ed.scene()).unwrap();
+        loaded["objects"][0]["light"]["intensity"] = json!(-1);
+        assert_eq!(call(&mut ed, "PUT", "/scene", loaded).0, 422);
+    }
+
+    #[test]
     fn scene_camera_render_proposals_and_history_share_the_lens() {
         let mut ed = Editor::new();
         assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"add_camera","name":"Shot","translation":[0,1,4]},{"op":"add","primitive":{"kind":"cube"}}]})).0,200);
