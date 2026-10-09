@@ -634,7 +634,10 @@ fn query_camera(
     } else {
         glam::DVec3::Y
     };
-    if up.length() < 1e-9 || (target - eye).normalize().cross(up.normalize()).length() < 1e-6 {
+    if up.length() < 1e-9
+        || query_param(query, "up").is_some()
+            && (target - eye).normalize().cross(up.normalize()).length() < 1e-6
+    {
         return Err(Response::error(
             400,
             "up must be nonzero and not parallel to the view",
@@ -962,6 +965,12 @@ mod tests {
         assert!(path_job(&ed, "camera=2&w=8&h=8").is_err());
         assert!(path_job(&ed, "w=8&h=8&camera=Shot&eye=0,0,4&target=0,0,0").is_err());
         assert!(path_job(&ed, "w=8&h=8&eye=0,0,4&target=0,0,0&up=0,0,0").is_err());
+        // Legacy free-view top/bottom requests rely on Frame's stable basis
+        // fallback. Only an explicitly parallel up vector is invalid.
+        for eye in ["0,4,0", "0,-4,0"] {
+            assert!(path_job(&ed, &format!("w=8&h=8&eye={eye}&target=0,0,0")).is_ok());
+            assert!(path_job(&ed, &format!("w=8&h=8&eye={eye}&target=0,0,0&up=0,1,0")).is_err());
+        }
         let (_, p) = call(
             &mut ed,
             "POST",
