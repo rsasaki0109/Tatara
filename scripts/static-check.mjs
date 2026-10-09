@@ -141,6 +141,20 @@ try {
   })
   check(rebased.result.rebased_from === rebased.context && rebased.moved.objects[0].transform.translation[0] === 1 && rebased.moved.objects[1].material.color === '#ff0000', 'WebAssembly rebases independent edits from the same context')
   check(rebased.undone.objects[0].transform.translation[0] === 1 && rebased.undone.objects[1].material.color !== '#ff0000', 'Undo preserves the earlier edit after a WebAssembly rebase')
+
+  const sceneCamera = await page.evaluate(async () => {
+    const post = commands => fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands})}).then(r=>r.json())
+    await post([{op:'clear'},{op:'add_camera',name:'Static shot',translation:[0,1,4],lens:{fov:50,focus:4}}])
+    const before=await (await fetch('/api/scene')).json()
+    const image=await fetch('/api/render/image?camera=Static%20shot&w=8&h=8&samples=1')
+    const bytes=Array.from(new Uint8Array(await image.arrayBuffer()).slice(0,4))
+    await post([{op:'camera_settings',id:'Static shot',lens:{fov:60}}])
+    await fetch('/api/undo',{method:'POST'})
+    const after=await (await fetch('/api/scene')).json()
+    return {before,after,status:image.status,bytes}
+  })
+  check(sceneCamera.status === 200 && sceneCamera.bytes.join(',') === '137,80,78,71', 'WebAssembly renders from a named scene camera without a server')
+  check(sceneCamera.before.objects[0].camera.fov === 50 && sceneCamera.after.objects[0].camera.fov === 50, 'scene camera lenses survive one Undo in WebAssembly')
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

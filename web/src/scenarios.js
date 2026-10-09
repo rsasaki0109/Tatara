@@ -1436,4 +1436,26 @@ export const rebase = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase }
+
+export const sceneCamera = {
+  title: 'Keep the shot inside the scene', width: 800, gizmo: false,
+  setup: [
+    {op:'add',name:'Subject',primitive:{kind:'torus'},translation:[0,.7,0],rotation:[1.5707963267948966,0,0],color:'#bd7962'},
+    {op:'add',name:'Plinth',primitive:{kind:'cube'},translation:[0,.12,0],scale:[1,.24,1],color:'#769c8b'},
+  ],
+  camera:{azimuth:25,elevation:18,distance:4,target:[0,.6,0]},
+  steps:[
+    {caption:'Save a shot as part of the scene',hint:'a typed camera object · proposals · history · Undo'},
+    {click:'[data-action=addCamera]',after:800},
+    {click:'[data-look-camera]',after:800},
+    {caption:'Look through, then change the lens',hint:'the same shot in the viewport and Rust renderer'},
+    {type:'52',into:'#camera-fov',cps:12,after:1000},
+    {caption:'Widen the view without moving the scene',hint:'vertical FOV · lens radius · focus distance'},
+    {click:'[data-action=undo]',after:1000},
+    {caption:'One Undo restores the shot',hint:'perspective cameras export to glTF'},
+    {click:'[data-exit-camera]',after:700},
+    {cursor:false},{wait:800},
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, sceneCamera }

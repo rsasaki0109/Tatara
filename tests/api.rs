@@ -578,6 +578,14 @@ async fn mcp_bridge_edits_the_shared_scene() {
     );
     let r = call(json!({"jsonrpc":"2.0","id":66,"method":"tools/call","params":{"name":"apply_commands","arguments":{"expected_revision":context,"rebase":true,"commands":[{"op":"transform","id":"Rebase A","translation":[62,0,0]}]}}})).await;
     assert_eq!(r["result"]["isError"], true, "{r}");
+
+    let r = call(json!({"jsonrpc":"2.0","id":67,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"add_camera","name":"MCP Shot","translation":[0,1,4]},{"op":"camera_settings","id":"MCP Shot","lens":{"fov":50,"focus":4}}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let output = std::env::temp_dir().join(format!("tatara-camera-{}.png", std::process::id()));
+    let r = call(json!({"jsonrpc":"2.0","id":68,"method":"tools/call","params":{"name":"render_image","arguments":{"camera":"MCP Shot","size":[8,8],"samples":1,"path":output}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\x89PNG"));
+    std::fs::remove_file(output).unwrap();
     child.kill().await.unwrap();
 }
 

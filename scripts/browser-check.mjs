@@ -752,6 +752,46 @@ try {
   check(true, 'closing a browser removes its presence')
   await bob.close()
 
+
+  // A real UI scene camera shares commands, lens edits, animation and export.
+  const shot = await browser.newPage({viewport:{width:1280,height:720},acceptDownloads:true})
+  await shot.goto(url)
+  await shot.evaluate(() => window.__tatara.ready)
+  await shot.click('[data-action=addCamera]')
+  await until(shot, () => document.querySelector('#camera-fov'))
+  const cameraScene = await shot.evaluate(() => fetch('/api/scene').then(r => r.json()))
+  const cameraId = cameraScene.objects.find(o => o.camera).id
+  check(cameraScene.objects.find(o => o.camera).mesh.faces.length === 0, 'the Camera button creates a non-rendering scene camera from the current view')
+  await shot.fill('#camera-fov', '52')
+  await shot.locator('#camera-fov').blur()
+  await until(shot, () => document.querySelector('#camera-fov')?.value === '52')
+  await shot.click('[data-look-camera]')
+  await until(shot, id => window.__tatara.debug().sceneCamera === id && window.__tatara.debug().renderCamera.fov === 52, cameraId)
+  check(true, 'Look through uses the stored lens and disables orbit changes')
+  const cameraRender = await shot.evaluate(async id => {
+    const r = await fetch(`/api/render/image?camera=${id}&w=8&h=8&samples=1`)
+    return {status:r.status,bytes:Array.from(new Uint8Array(await r.arrayBuffer()).slice(0,4))}
+  }, cameraId)
+  check(cameraRender.status === 200 && cameraRender.bytes.join(',') === '137,80,78,71', 'the scene camera renders a PNG through the shared Rust core')
+  await shot.click('[data-action=undo]')
+  await until(shot, () => window.__tatara.debug().renderCamera.fov === 36)
+  check(true, 'Undo restores the camera lens while looking through it')
+  await shot.click('[data-exit-camera]')
+  await until(shot, () => window.__tatara.debug().sceneCamera == null)
+  await shot.click('[data-look-camera]')
+  await shot.keyboard.press('Escape')
+  await until(shot, () => window.__tatara.debug().sceneCamera == null)
+  check(true, 'Escape returns from the scene camera to the saved orbit')
+  const [shotGlb] = await Promise.all([shot.waitForEvent('download'),shot.click('[data-action=exportGlb]')])
+  const shotBytes=fs.readFileSync(await shotGlb.path())
+  const docLen=shotBytes.readUInt32LE(12)
+  const shotDoc=JSON.parse(shotBytes.subarray(20,20+docLen).toString())
+  check(shotDoc.cameras?.length === 1 && shotDoc.nodes.some(n => n.camera === 0), 'a camera-only scene exports a valid camera node in GLB')
+  await shot.click('[data-action=delete]')
+  await until(shot, () => document.querySelectorAll('#outliner li').length === 0)
+  check(true, 'the camera can be removed with the ordinary Delete command')
+  await shot.close()
+
   // Every scenario must finish without errors (the MCP one falls back to HTTP).
   const cap = await browser.newPage({ viewport: { width: 1280, height: 720 } })
   await cap.goto(`${url}/?capture=1`)

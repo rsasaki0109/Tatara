@@ -100,11 +100,12 @@ pub fn tools() -> Value {
         },
         {
             "name": "render_image",
-            "description": "Render a finished, path-traced image of the shared scene to a local PNG: realistic light, glass, reflections, soft shadows and glow, denoised, over the studio backdrop or transparent. Frame it with a `view` (like render_view; default iso) or an explicit `eye` and `target`; give the lens an `aperture` (radius in metres, e.g. 0.05) for depth of field, focused at `focus` metres (default: the target's distance). With `frames` [start, end] it writes an animated PNG of that range. Slow at high sizes and samples.",
+            "description": "Render a finished, path-traced image of the shared scene to a local PNG: realistic light, glass, reflections, soft shadows and glow, denoised, over the studio backdrop or transparent. Frame it with a scene `camera` (ID or exact name, using its stored lens and animated transform), a `view` (like render_view; default iso) or an explicit `eye` and `target`; give the lens an `aperture` (radius in metres, e.g. 0.05) for depth of field, focused at `focus` metres (default: the target's distance). With `frames` [start, end] it writes an animated PNG of that range. Slow at high sizes and samples.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Destination path ending in .png" },
+                    "camera": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "string" }], "description": "Scene camera ID or exact name; samples its transform per frame and uses its lens" },
                     "view": { "type": "string", "description": "front, back, left, right, top, bottom, iso or \"azimuth:elevation\"; ignored with eye/target" },
                     "eye": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Camera position (world, metres)" },
                     "target": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Point the camera looks at" },
@@ -365,10 +366,21 @@ async fn image_tool(http: &reqwest::Client, base: &str, args: &Value) -> Value {
             args["samples"].as_u64().unwrap_or(128).to_string(),
         ),
     ];
+    if args.get("camera").is_some() && (args.get("eye").is_some() || args.get("target").is_some()) {
+        return tool_result("give a scene camera or eye/target, not both".into(), true);
+    }
     match (triple(&args["eye"]), triple(&args["target"])) {
         (Some(eye), Some(target)) => {
             query.push(("eye", eye));
             query.push(("target", target));
+        }
+        (None, None) if args.get("camera").is_some() => {
+            let id = match &args["camera"] {
+                Value::String(n) => n.clone(),
+                v if v.as_u64().is_some() => v.as_u64().unwrap().to_string(),
+                _ => return tool_result("camera must be an ID or exact name".into(), true),
+            };
+            query.push(("camera", id));
         }
         (None, None) => {
             query.push(("view", args["view"].as_str().unwrap_or("iso").to_string()));

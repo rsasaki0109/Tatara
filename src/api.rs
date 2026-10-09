@@ -595,13 +595,53 @@ fn lens(query: &str, max: f64) -> Result<(usize, usize, f64, f64, f64), Response
 }
 
 /// A camera at `eye` looking at `target`, from the query.
-fn camera(query: &str, max: f64) -> Result<crate::pathtrace::Camera, Response> {
+fn query_camera(
+    ed: &Editor,
+    query: &str,
+    max: f64,
+    frame: Option<f64>,
+) -> Result<crate::pathtrace::Camera, Response> {
     let (w, h, fov, aperture, focus) = lens(query, max)?;
+    if let Some(id) = query_param(query, "camera") {
+        if query_param(query, "eye").is_some() || query_param(query, "target").is_some() {
+            return Err(Response::error(
+                400,
+                "give a scene camera or eye/target, not both",
+            ));
+        }
+        let id = id
+            .parse::<u64>()
+            .map(engine::ObjRef::Id)
+            .unwrap_or(engine::ObjRef::Name(id));
+        let mut c = crate::camera::resolve(ed, &id, frame, w, h)?;
+        if query_param(query, "fov").is_some() {
+            c.fov = fov;
+        }
+        if query_param(query, "aperture").is_some() {
+            c.aperture = aperture;
+        }
+        if query_param(query, "focus").is_some() {
+            c.focus = focus;
+        }
+        return Ok(c);
+    }
     let (eye, target) = (point(query, "eye")?, point(query, "target")?);
     if eye.distance(target) < 1e-9 {
         return Err(Response::error(400, "eye and target must differ"));
     }
+    let up = if query_param(query, "up").is_some() {
+        point(query, "up")?
+    } else {
+        glam::DVec3::Y
+    };
+    if up.length() < 1e-9 || (target - eye).normalize().cross(up.normalize()).length() < 1e-6 {
+        return Err(Response::error(
+            400,
+            "up must be nonzero and not parallel to the view",
+        ));
+    }
     Ok(crate::pathtrace::Camera {
+        up,
         aperture,
         focus,
         ..crate::pathtrace::Camera::new(eye, target, fov, w, h)
@@ -612,7 +652,7 @@ fn camera(query: &str, max: f64) -> Result<crate::pathtrace::Camera, Response> {
 /// optional `fov`, `aperture`, `focus`), `samples` and `frame`. Requests for
 /// the same camera and scene keep refining one image.
 pub fn path_job(ed: &Editor, query: &str) -> Result<PathJob, Response> {
-    let camera = camera(query, 2048.0)?;
+    let camera = query_camera(ed, query, 2048.0, frame_param(query)?)?;
     let samples = number(query, "samples", Some(1.0))?;
     if !(1.0..=64.0).contains(&samples) {
         return Err(Response::error(400, "samples must be between 1 and 64"));
@@ -628,7 +668,7 @@ pub fn path_job(ed: &Editor, query: &str) -> Result<PathJob, Response> {
 /// samples and background.
 pub struct ImageJob {
     scenes: Vec<std::sync::Arc<crate::pathtrace::Traced>>,
-    camera: crate::pathtrace::Camera,
+    cameras: Vec<crate::pathtrace::Camera>,
     samples: u32,
     transparent: bool,
     fps: f64,
@@ -676,8 +716,8 @@ pub fn image_job(ed: &Editor, query: &str) -> Result<ImageJob, Response> {
         .iter()
         .map(|f| crate::pathtrace::traced_uncached(ed, *f))
         .collect::<Result<Vec<_>, _>>()?;
-    let camera = if query_param(query, "eye").is_some() {
-        camera(query, 4096.0)?
+    let camera = if query_param(query, "eye").is_some() || query_param(query, "camera").is_some() {
+        query_camera(ed, query, 4096.0, frames[0])?
     } else {
         let (w, h, fov, aperture, focus) = lens(query, 4096.0)?;
         let view = crate::render::parse_views(
@@ -700,9 +740,19 @@ pub fn image_job(ed: &Editor, query: &str) -> Result<ImageJob, Response> {
             "too much work: lower the size, samples or frames (w x h x samples x frames at most 4e9)",
         ));
     }
+    let cameras = frames
+        .iter()
+        .map(|f| {
+            if query_param(query, "camera").is_some() {
+                query_camera(ed, query, 4096.0, *f)
+            } else {
+                Ok(camera.clone())
+            }
+        })
+        .collect::<Result<Vec<_>, Response>>()?;
     Ok(ImageJob {
         scenes,
-        camera,
+        cameras,
         samples: samples as u32,
         transparent,
         fps: ed.scene().animation.fps,
@@ -715,12 +765,13 @@ impl ImageJob {
         let frames: Vec<Vec<u8>> = self
             .scenes
             .iter()
-            .map(|t| t.still(&self.camera, self.samples, self.transparent))
+            .zip(&self.cameras)
+            .map(|(t, c)| t.still(c, self.samples, self.transparent))
             .collect();
         match crate::pathtrace::png(
             &frames,
-            self.camera.width,
-            self.camera.height,
+            self.cameras[0].width,
+            self.cameras[0].height,
             self.transparent,
             self.fps,
         ) {
@@ -892,6 +943,62 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scene_camera_render_proposals_and_history_share_the_lens() {
+        let mut ed = Editor::new();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"add_camera","name":"Shot","translation":[0,1,4]},{"op":"add","primitive":{"kind":"cube"}}]})).0,200);
+        let camera = path_job(&ed, "camera=Shot&w=8&h=8")
+            .unwrap_or_else(|r| panic!("unexpected response: {}", r.status))
+            .camera;
+        assert_eq!(camera.eye, glam::DVec3::new(0., 1., 4.));
+        assert_eq!(camera.fov, 36.);
+        assert_eq!(
+            image_job(&ed, "camera=1&w=8&h=8&samples=1&frames=1-2")
+                .unwrap_or_else(|r| panic!("unexpected response: {}", r.status))
+                .run()
+                .status,
+            200
+        );
+        assert!(path_job(&ed, "camera=2&w=8&h=8").is_err());
+        assert!(path_job(&ed, "w=8&h=8&camera=Shot&eye=0,0,4&target=0,0,0").is_err());
+        assert!(path_job(&ed, "w=8&h=8&eye=0,0,4&target=0,0,0&up=0,0,0").is_err());
+        let (_, p) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Wide shot","commands":[{"op":"camera_settings","id":"Shot","lens":{"fov":60,"focus":4}}]}),
+        );
+        let id = p["ids"][0].as_u64().unwrap();
+        assert_eq!(ed.scene().objects[0].camera.as_ref().unwrap().fov, 36.);
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                &format!("/proposal/accept?id={id}"),
+                json!({})
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            path_job(&ed, "camera=Shot&w=8&h=8")
+                .unwrap_or_else(|r| panic!("unexpected response: {}", r.status))
+                .camera
+                .fov,
+            60.
+        );
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        assert_eq!(
+            path_job(&ed, "camera=Shot&w=8&h=8")
+                .unwrap_or_else(|r| panic!("unexpected response: {}", r.status))
+                .camera
+                .fov,
+            36.
+        );
+        let (_, context) = call(&mut ed, "GET", "/context", Value::Null);
+        assert_eq!(context["objects"][0]["camera"]["focus"], 10.);
+    }
+
     use super::*;
 
     #[test]

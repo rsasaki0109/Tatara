@@ -10,7 +10,8 @@ use crate::proposal;
 
 fn target(command: &Command) -> Result<&ObjRef, EngineError> {
     match command {
-        Command::Transform { id, .. }
+        Command::CameraSettings { id, .. }
+        | Command::Transform { id, .. }
         | Command::Material { id, .. }
         | Command::Rename { id, .. }
         | Command::Move { id, .. }
