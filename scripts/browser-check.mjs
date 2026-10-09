@@ -37,7 +37,8 @@ const port = await new Promise((resolve) => {
 })
 const url = `http://127.0.0.1:${port}`
 const bin = path.join(root, 'target/release', process.platform === 'win32' ? 'tatara.exe' : 'tatara')
-const server = spawn(bin, [], { env: { ...process.env, TATARA_PORT: String(port), TATARA_WEB_DIR: path.join(root, 'web/dist') }, stdio: 'inherit' })
+const startEditor = () => spawn(bin, [], { env: { ...process.env, TATARA_PORT: String(port), TATARA_WEB_DIR: path.join(root, 'web/dist') }, stdio: 'inherit' })
+let server = startEditor()
 for (let i = 0; i < 100; i++) {
   try {
     if ((await fetch(`${url}/api/state`)).ok) break
@@ -466,6 +467,91 @@ try {
   check(!overflow, 'phone layout has no horizontal scroll')
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
   await page.close()
+
+  // Two independent browsers share authoritative edits and advisory presence.
+  const alice = await browser.newPage({ viewport: { width: 1280, height: 720 } })
+  const bob = await browser.newPage({ viewport: { width: 1280, height: 720 } })
+  await Promise.all([alice.goto(url), bob.goto(url)])
+  await Promise.all([alice.evaluate(() => window.__tatara.ready), bob.evaluate(() => window.__tatara.ready)])
+  await alice.fill('#session-name', 'Alice')
+  await alice.press('#session-name', 'Tab')
+  await bob.fill('#session-name', 'Bob')
+  await bob.press('#session-name', 'Tab')
+  await until(alice, () => window.__tatara.presence().some((p) => p.actor.name === 'Bob'))
+  await until(bob, () => window.__tatara.presence().some((p) => p.actor.name === 'Alice'))
+  check(true, 'two browser sessions see each other')
+  const aBox = await alice.locator('#viewport').boundingBox()
+  await alice.mouse.move(aBox.x + aBox.width * 0.55, aBox.y + aBox.height * 0.4)
+  await bob.waitForFunction(() => [...document.querySelectorAll('.peer-cursor')].some((e) => e.textContent.includes('Alice')))
+  check(true, 'a remote cursor is visible')
+  await alice.click('[data-add=cube]')
+  await alice.waitForFunction(() => window.__tatara.selection().id != null)
+  const sharedId = await alice.evaluate(() => window.__tatara.selection().id)
+  await until(bob, (id) => Boolean(document.querySelector(`#outliner [data-id="${id}"]`)), sharedId)
+  await bob.click(`#outliner [data-id="${sharedId}"]`)
+  await alice.waitForFunction((id) => document.querySelector(`#outliner [data-id="${id}"]`).classList.contains('peer-selected'), sharedId)
+  check(true, 'remote selections are marked in the outliner and viewport')
+  await bob.locator('#p-name').focus()
+  await alice.waitForFunction((id) => document.querySelector(`#outliner [data-id="${id}"]`).classList.contains('peer-editing'), sharedId)
+  check(true, 'focused properties announce an advisory editing lock')
+  await bob.fill('#p-name', 'Bob cube')
+  await bob.locator('#p-name').press('Tab')
+  await until(alice, (id) => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects.find((o) => o.id === id)?.name === 'Bob cube'), sharedId)
+  check(true, 'edits from the second browser appear in the first')
+  await bob.click('#outliner')
+  await alice.waitForFunction((id) => !document.querySelector(`#outliner [data-id="${id}"]`).classList.contains('peer-editing'), sharedId)
+  check(true, 'leaving an edit releases the advisory lock')
+  const bBox = await bob.locator('#viewport').boundingBox()
+  await bob.mouse.move(bBox.x + bBox.width * 0.8, bBox.y + bBox.height * 0.7)
+  await bob.mouse.down()
+  await bob.mouse.move(bBox.x + bBox.width * 0.7, bBox.y + bBox.height * 0.7, { steps: 5 })
+  await bob.mouse.up()
+  await bob.waitForFunction(() => {
+    const orbit = window.__tatara.camera()
+    const old = window.__collabCameraWait
+    const stable = old && Math.abs(old.azimuth - orbit.azimuth) < 0.01
+    window.__collabCameraWait = { azimuth: orbit.azimuth, count: stable ? old.count + 1 : 0 }
+    return window.__collabCameraWait.count >= 5
+  }, null, { polling: 100 })
+  const bobOrbit = await bob.evaluate(() => window.__tatara.camera())
+  await until(alice, (desired) => {
+    const c = window.__tatara.presence().find((p) => p.actor.name === 'Bob')?.camera
+    if (!c) return false
+    const az = Math.atan2(c.eye[0] - c.target[0], c.eye[2] - c.target[2]) * 180 / Math.PI
+    return Math.abs(az - desired) < 0.1
+  }, bobOrbit.azimuth)
+  const cameraPeer = await alice.evaluate(() => window.__tatara.presence().find((p) => p.actor.name === 'Bob'))
+  check(Boolean(cameraPeer.camera?.eye?.length === 3), 'remote camera presence is available')
+  await alice.locator('.session-peer').filter({ hasText: 'Bob' }).getByRole('button', { name: 'View camera' }).click()
+  const orbit = await alice.evaluate(() => window.__tatara.camera())
+  const desired = Math.atan2(cameraPeer.camera.eye[0] - cameraPeer.camera.target[0], cameraPeer.camera.eye[2] - cameraPeer.camera.target[2]) * 180 / Math.PI
+  check(Math.abs(orbit.azimuth - desired) < 1, 'a participant can view a peer camera')
+  const conflict = await alice.evaluate(async (id) => {
+    const revision = (await (await fetch('/api/scene')).json()).revision
+    const actor = window.__tatara.actor()
+    const responses = await Promise.all(['Alice edit', 'Concurrent edit'].map((name) => fetch('/api/commands', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: revision, actor, commands: [{ op: 'rename', id, name }] }) })))
+    return Promise.all(responses.map(async (r) => ({ status: r.status, data: await r.json() })))
+  }, sharedId)
+  check(conflict.map((r) => r.status).sort().join(',') === '200,409' && conflict.find((r) => r.status === 409).data.error.includes('refresh the scene'), 'simultaneous stale edits are rejected with a recovery reason')
+  await until(bob, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision === Number(document.querySelector('#status-rev').textContent.replace('Revision ', ''))))
+  const attribution = await alice.evaluate(() => fetch('/api/history').then((r) => r.json()).then((h) => h.steps.at(-1).actor.name))
+  check(attribution === 'Alice', 'shared edits retain their author in history')
+  // A new server starts at revision/presence version zero. Open tabs must
+  // recover from that, not confuse it with an old response from this session.
+  const exited = new Promise((resolve) => server.once('exit', resolve))
+  server.kill()
+  await exited
+  server = startEditor()
+  await until(alice, () => document.querySelector('#status-rev').textContent === 'Revision 0')
+  await until(bob, () => document.querySelector('#status-rev').textContent === 'Revision 0')
+  check((await alice.locator('#outliner li').count()) === 0 && (await bob.locator('#outliner li').count()) === 0, 'open browsers recover the empty scene after a server restart')
+  await until(alice, () => window.__tatara.presence().some((p) => p.actor.name === 'Bob'))
+  await until(bob, () => window.__tatara.presence().some((p) => p.actor.name === 'Alice'))
+  check(true, 'presence rejoins after a server restart with a new version counter')
+  await alice.close()
+  await bob.waitForFunction(() => !window.__tatara.presence().some((p) => p.actor.name === 'Alice'))
+  check(true, 'closing a browser removes its presence')
+  await bob.close()
 
   // Every scenario must finish without errors (the MCP one falls back to HTTP).
   const cap = await browser.newPage({ viewport: { width: 1280, height: 720 } })

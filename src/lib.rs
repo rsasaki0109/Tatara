@@ -1,6 +1,7 @@
 pub mod anim;
 pub mod api;
 pub mod assembly;
+pub mod collaboration;
 pub mod constraint;
 pub mod csg;
 pub mod edit;

@@ -44,7 +44,13 @@ pub fn tools() -> Value {
         obj.remove("$schema");
         obj.remove("title");
     }
+    let presence_schema =
+        serde_json::to_value(schemars::schema_for!(crate::collaboration::Presence))
+            .expect("schema serializes");
     json!([
+        { "name": "get_presence", "description": "Read participants in this local shared session: their selections, cursors, camera and advisory editing locks. Presence expires after 30 seconds without a heartbeat.", "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false } },
+        { "name": "update_presence", "description": "Join or heartbeat a shared session with actor {id,name}, optional selection, cursor (0..1), camera {eye,target,fov} and editing object IDs. Heartbeat every 5-10 seconds; editing is advisory, not an exclusive lock. Pass the same actor to apply_commands to attribute edits, and expected_revision to prevent lost updates.", "inputSchema": presence_schema },
+        { "name": "leave_presence", "description": "Leave the session and release your advisory editing locks.", "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"], "additionalProperties": false } },
         {
             "name": "get_scene",
             "description": "Read the shared Tatara scene: object IDs, names, transforms, materials, world bounds, counts and revision. Set include_mesh to also get vertices and polygon indices.",
@@ -156,6 +162,7 @@ pub fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "step": { "type": "integer", "minimum": 1 },
+                    "expected_revision": { "type": "integer", "minimum": 0, "description": "Reject when the scene changed since reading history" },
                     "commands": { "type": "array", "items": { "type": "object" }, "description": "The step's new commands (same format as apply_commands)" }
                 },
                 "required": ["step", "commands"],
@@ -272,6 +279,9 @@ async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) 
         return file_tool(http, base, name, &args).await;
     }
     let request = match name {
+        "get_presence" => http.get(format!("{base}/api/presence")),
+        "update_presence" => http.post(format!("{base}/api/presence")).json(&args),
+        "leave_presence" => http.delete(format!("{base}/api/presence")).json(&args),
         "get_scene" if args["include_mesh"].as_bool() == Some(true) => {
             http.get(format!("{base}/api/scene"))
         }

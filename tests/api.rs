@@ -188,8 +188,16 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let init = call(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "tatara");
     let tools = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 13);
-    let r = call(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "apply_commands", "arguments": {"commands": [{"op": "add", "primitive": {"kind": "torus"}}]}}})).await;
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 16);
+    let r = call(json!({"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"update_presence","arguments":{"actor":{"id":"agent-1","name":"Agent One"},"selection":[1],"editing":[1]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"get_presence","arguments":{}}})).await;
+    let presence: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(presence["peers"][0]["actor"]["name"], "Agent One");
+    let r = call(json!({"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"leave_presence","arguments":{"id":"agent-1"}}})).await;
+    assert_eq!(r["result"]["isError"], false);
+    let r = call(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "apply_commands", "arguments": {"actor":{"id":"agent-1","name":"Agent One"},"commands": [{"op": "add", "primitive": {"kind": "torus"}}]}}})).await;
     assert_eq!(r["result"]["isError"], false, "{r}");
     let r = call(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "get_scene", "arguments": {}}})).await;
     assert!(
@@ -239,6 +247,7 @@ async fn mcp_bridge_edits_the_shared_scene() {
         serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     let first = &history["steps"][0];
     assert_eq!(first["source"], "agent", "{history}");
+    assert_eq!(first["actor"]["name"], "Agent One");
     let step = first["step"].clone();
     let commands = first["commands"].clone();
     let r = call(json!({"jsonrpc": "2.0", "id": 36, "method": "tools/call", "params": {"name": "revise_step", "arguments": {"step": step, "commands": commands}}})).await;
@@ -291,4 +300,100 @@ async fn mcp_bridge_edits_the_shared_scene() {
     );
     assert!(report["summary"].is_string());
     child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn collaboration_presence_and_concurrent_edits() {
+    let base = editor(None).await;
+    let c = reqwest::Client::new();
+    let alice = json!({"id":"alice", "name":"Alice"});
+    let bob = json!({"id":"bob", "name":"Bob"});
+    // Subscribe before joining: presence notifications do not change revision.
+    let mut events = c.get(format!("{base}/api/events")).send().await.unwrap();
+    let p = json!({"actor":alice, "cursor":[0.25,0.4], "selection":[1], "editing":[1], "camera":{"eye":[2,2,4],"target":[0,0,0],"fov":36}});
+    let r = c
+        .post(format!("{base}/api/presence"))
+        .json(&p)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let data: Value = r.json().await.unwrap();
+    assert_eq!(data["peers"][0]["editing"], json!([1]));
+    let stream = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut text = String::new();
+        while !text.contains("event: presence\ndata: 1") {
+            text.push_str(&String::from_utf8_lossy(
+                &events.chunk().await.unwrap().unwrap(),
+            ));
+        }
+        text
+    })
+    .await
+    .unwrap();
+    assert!(stream.contains("event: presence"));
+    let command = |actor: Value| json!({"actor":actor, "source":"UI", "expected_revision":0, "commands":[{"op":"add", "primitive":{"kind":"cube"}}]});
+    let (a, b) = tokio::join!(
+        c.post(format!("{base}/api/commands"))
+            .json(&command(alice))
+            .send(),
+        c.post(format!("{base}/api/commands"))
+            .json(&command(bob))
+            .send()
+    );
+    let a = a.unwrap();
+    let b = b.unwrap();
+    let (winner, loser) = if a.status() == 200 { (a, b) } else { (b, a) };
+    assert_eq!(winner.status(), 200);
+    assert_eq!(loser.status(), 409);
+    let error: Value = loser.json().await.unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("refresh the scene")
+    );
+    let state: Value = c
+        .get(format!("{base}/api/state"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(state["scene"]["revision"], 1);
+    assert_eq!(state["scene"]["objects"].as_array().unwrap().len(), 1);
+    let history: Value = c
+        .get(format!("{base}/api/history"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(matches!(
+        history["steps"][0]["actor"]["name"].as_str(),
+        Some("Alice" | "Bob")
+    ));
+    let mut bad = p.clone();
+    bad["cursor"] = json!([1.1, 0]);
+    assert_eq!(
+        c.post(format!("{base}/api/presence"))
+            .json(&bad)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        422
+    );
+    let left: Value = c
+        .delete(format!("{base}/api/presence"))
+        .json(&json!({"id":"alice"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(left["peers"], json!([]));
 }

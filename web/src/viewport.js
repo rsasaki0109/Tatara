@@ -1742,6 +1742,42 @@ export class Viewport {
     return this.orbitTo({ target: sphere.center.toArray(), distance, elevation, azimuth }, ms)
   }
 
+  /** Advisory peer outlines and camera frusta, outside the model root. */
+  setPresence(peers) {
+    if (this.peerRoot) {
+      this.scene.remove(this.peerRoot)
+      this.peerRoot.traverse((o) => { o.geometry?.dispose(); o.material?.dispose() })
+    }
+    this.peerRoot = new THREE.Group()
+    this.scene.add(this.peerRoot)
+    for (const p of peers) {
+      for (const id of p.selection) {
+        const node = this.nodes.get(id)
+        if (!node) continue
+        node.group.updateWorldMatrix(true, true)
+        const box = new THREE.Box3().setFromObject(node.group)
+        const helper = new THREE.Box3Helper(box, new THREE.Color(p.color))
+        helper.material.depthTest = false
+        helper.renderOrder = 9
+        this.peerRoot.add(helper)
+      }
+      if (p.camera) {
+        const cam = new THREE.PerspectiveCamera(p.camera.fov, 1.6, 0.08, 0.45)
+        cam.position.fromArray(p.camera.eye)
+        cam.lookAt(new THREE.Vector3(...p.camera.target))
+        cam.updateMatrixWorld()
+        const helper = new THREE.CameraHelper(cam)
+        const colors = helper.geometry.getAttribute('color')
+        const c = new THREE.Color(p.color)
+        for (let i = 0; i < colors.count; i++) colors.setXYZ(i, c.r, c.g, c.b)
+        colors.needsUpdate = true
+        helper.material.depthTest = false
+        helper.renderOrder = 9
+        this.peerRoot.add(helper)
+      }
+    }
+  }
+
   /** Page (client) coordinates of a world point given as [x, y, z]. */
   clientOf(p) {
     const rect = this.renderer.domElement.getBoundingClientRect()

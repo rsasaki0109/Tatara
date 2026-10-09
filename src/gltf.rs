@@ -1343,6 +1343,7 @@ mod tests {
         let commands = import(bytes).unwrap();
         let mut ed = Editor::new();
         ed.apply(&CommandBatch {
+            actor: None,
             commands,
             expected_revision: None,
             source: None,

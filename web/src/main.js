@@ -8,6 +8,7 @@ import { UvEditor } from './uveditor.js'
 import { PathPreview } from './pathpreview.js'
 import { FinalRender } from './finalrender.js'
 import { ProposalTray } from './proposals.js'
+import { Collaboration } from './collaboration.js'
 import { HistoryPanel } from './history.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
@@ -324,9 +325,21 @@ function objectById(id) {
   return app.scene.objects.find((o) => o.id === id)
 }
 
+let collaboration = null
+let remoteRevision = 0
+let connectionEpoch = 0
+let allowRevisionReset = false
+async function catchUp() {
+  if (remoteRevision > app.scene.revision && !app.inflight && !collaboration?.interacting) await refresh(true)
+}
 async function refresh(animate = true) {
+  const epoch = connectionEpoch
   const st = await api.state()
+  if (epoch !== connectionEpoch) return
+  if (st.scene.revision < app.scene.revision && !allowRevisionReset) return
+  allowRevisionReset = false
   app.scene = st.scene
+  if (remoteRevision === Infinity) remoteRevision = st.scene.revision
   app.history = st.history
   app.ai = st.ai
   if (app.selected != null && !objectById(app.selected)) {
@@ -353,6 +366,7 @@ async function refresh(animate = true) {
     $('checks-out').querySelector('.checks-summary')?.classList.add('stale')
   }
   syncEdit()
+  collaboration?.set({ version: collaboration.version, peers: collaboration.peers })
 }
 
 /** Push edit-mode state to the viewport and redraw panels. */
@@ -490,6 +504,7 @@ async function track(fn) {
     return await fn()
   } finally {
     app.inflight--
+    catchUp().catch(() => {})
   }
 }
 
@@ -497,7 +512,8 @@ async function track(fn) {
 async function run(commands, source = 'UI') {
   return track(async () => {
     try {
-      const r = await api.commands(commands, app.scene.revision, source)
+      const r = await api.commands(commands, collaboration?.revision ?? app.scene.revision, source)
+      if (collaboration?.interacting) collaboration.revision = r.revision
       await refresh(true)
       log(source, summarize(commands), r.revision)
       return r
@@ -531,6 +547,7 @@ function select(id, face = null) {
     app.sel = { verts: [], edges: [], faces: [face] }
   }
   syncEdit()
+  collaboration?.send(true)
 }
 
 function freeSpot(half) {
@@ -1796,17 +1813,33 @@ const ready = (async () => {
   if (app.scene.objects.length) viewport.frameAll(0)
   stepFrame()
   if (!capture) requestAnimationFrame(loop)
+  if (!browserOnly) {
+    collaboration = new Collaboration({ api, viewport, scene: () => app.scene, selected: () => app.selected, onIdle: () => catchUp().catch(() => {}), capture })
+    app.collaboration = collaboration
+    api.setActor(collaboration.actor)
+    if (!capture) await collaboration.send(true)
+  }
   if (!capture && !browserOnly) {
     const events = new EventSource('/api/events')
+    events.addEventListener('open', () => {
+      connectionEpoch++
+      allowRevisionReset = true
+      remoteRevision = Infinity
+      collaboration.reset()
+      catchUp().catch(() => {})
+      collaboration.send(true)
+      collaboration.load()
+    })
+    events.addEventListener('presence', () => collaboration.load())
+    events.addEventListener('resync', () => { remoteRevision = Infinity; catchUp().catch(() => {}); collaboration.load() })
     events.addEventListener('proposals', (e) => {
       if (Number(e.data) === proposalTray.version) return
       api.proposals().then((p) => proposalTray.set(p, app.scene.revision)).catch(() => {})
     })
     events.addEventListener('revision', (e) => {
       const rev = Number(e.data)
-      if (rev !== app.scene.revision && app.inflight === 0) {
-        refresh(true).then(() => log('External', 'scene updated (MCP/API)', rev))
-      }
+      remoteRevision = Math.max(remoteRevision === Infinity ? 0 : remoteRevision, rev)
+      catchUp().catch(() => {})
     })
   }
 })()
@@ -1814,6 +1847,8 @@ const ready = (async () => {
 window.__tatara = {
   ready,
   scenarios: Object.keys(SCENARIOS),
+  presence: () => collaboration?.peers ?? [],
+  actor: () => collaboration?.actor ?? null,
   selection: () => ({ id: app.selected, face: app.face }),
   frame: () => app.frame,
   position: (id) => viewport.nodes.get(id)?.group.position.toArray(),

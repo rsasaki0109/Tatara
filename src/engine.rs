@@ -925,6 +925,9 @@ pub enum Command {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CommandBatch {
+    /// Optional participant identity shown alongside the command source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<crate::collaboration::Actor>,
     pub commands: Vec<Command>,
     /// Reject the batch unless the scene is at this revision.
     #[serde(default)]
@@ -937,6 +940,8 @@ pub struct CommandBatch {
 /// One applied batch in the scene's history.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Step {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<crate::collaboration::Actor>,
     pub commands: Vec<Command>,
     /// Where it came from: "UI", "agent", "chat", "proposal", ...
     pub source: String,
@@ -1155,18 +1160,26 @@ impl Editor {
         !self.redo.is_empty()
     }
 
-    pub fn apply(&mut self, batch: &CommandBatch) -> Result<ApplyResult, EngineError> {
-        if let Some(expected) = batch.expected_revision
+    pub fn ensure_revision(&self, expected_revision: Option<u64>) -> Result<(), EngineError> {
+        if let Some(expected) = expected_revision
             && expected != self.scene.revision
         {
             return Err(EngineError {
                 message: format!(
-                    "stale revision: expected {expected}, scene is at {}",
+                    "stale revision: expected {expected}, scene is at {}; refresh the scene and retry the edit",
                     self.scene.revision
                 ),
                 command_index: None,
                 stale: true,
             });
+        }
+        Ok(())
+    }
+
+    pub fn apply(&mut self, batch: &CommandBatch) -> Result<ApplyResult, EngineError> {
+        self.ensure_revision(batch.expected_revision)?;
+        if let Some(actor) = &batch.actor {
+            actor.validate()?;
         }
         if batch.commands.is_empty() {
             return err("batch has no commands");
@@ -1175,6 +1188,7 @@ impl Editor {
         let evaluated = self.evaluate_all(&next)?;
         let mut timeline = self.timeline.clone();
         timeline.push(Step {
+            actor: batch.actor.clone(),
             commands: batch.commands.clone(),
             source: batch.source.clone().unwrap_or_else(|| "API".into()),
         });
@@ -1216,6 +1230,7 @@ impl Editor {
         };
         let mut timeline = self.timeline.clone();
         timeline.steps[step - 1] = Arc::new(Step {
+            actor: old.actor.clone(),
             commands,
             source: old.source.clone(),
         });
@@ -1348,6 +1363,7 @@ impl Editor {
         }
         let p = self.proposals.remove(i);
         let batch = CommandBatch {
+            actor: None,
             commands: p.commands.clone(),
             expected_revision: None,
             source: Some(format!("proposal · {}", p.author)),
@@ -3331,6 +3347,7 @@ mod tests {
 
         let stale = ed
             .apply(&CommandBatch {
+                actor: None,
                 commands: vec![Command::Clear {}],
                 expected_revision: Some(0),
                 source: None,
