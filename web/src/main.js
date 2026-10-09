@@ -8,6 +8,7 @@ import { UvEditor } from './uveditor.js'
 import { PathPreview } from './pathpreview.js'
 import { FinalRender } from './finalrender.js'
 import { ProposalTray } from './proposals.js'
+import { HistoryPanel } from './history.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
@@ -233,6 +234,40 @@ async function showProposal(id) {
   label.innerHTML = `<span class="dot proposal"></span>Proposal · ${escapeHtml(p.title)}`
 }
 
+// History: the recipe of steps; a revised step previews the replayed scene,
+// with what it changes outlined.
+const historyPanel = new HistoryPanel($('history'), {
+  api,
+  summarize: (commands) => summarize(commands),
+  onPreview: (scene, step) => {
+    if (!scene) {
+      viewport.setHighlights(null)
+      viewport.sync(app.scene, true)
+      syncRenderLabel()
+      return
+    }
+    if (app.selected != null) select(null)
+    const before = new Map(app.scene.objects.map((o) => [o.id, JSON.stringify([o.transform, o.material, o.mesh.vertices.length, o.modifiers])]))
+    const marks = new Map()
+    for (const o of scene.objects) {
+      const was = before.get(o.id)
+      if (was == null) marks.set(o.id, MARK.added)
+      else if (was !== JSON.stringify([o.transform, o.material, o.mesh.vertices.length, o.modifiers])) marks.set(o.id, MARK.changed)
+    }
+    viewport.sync(scene, false)
+    viewport.setHighlights(marks)
+    document.querySelector('.view-label').innerHTML = `<span class="dot proposal"></span>History · step ${step} replayed`
+  },
+  onApplied: async (step) => {
+    viewport.setHighlights(null)
+    syncRenderLabel()
+    await refresh(true)
+    log('History', `revised step ${step}`)
+  },
+  onError: (message) => toast(message, 'error'),
+})
+app.historyPanel = historyPanel
+
 async function decideProposal(id, accept) {
   const p = proposalTray.pending.find((x) => x.id === id)
   await track(async () => {
@@ -308,6 +343,7 @@ async function refresh(animate = true) {
     app.sel.faces = app.sel.faces.filter((f) => f < sel.mesh.faces.length)
   }
   proposalTray.set(st.proposals, app.scene.revision)
+  if (app.tab === 'history' && historyPanel.open == null) historyPanel.load()
   if (app.previewing != null) showProposal(app.previewing)
   else viewport.sync(app.scene, animate)
   preview.setRevision(app.scene.revision)
@@ -460,7 +496,7 @@ async function track(fn) {
 async function run(commands, source = 'UI') {
   return track(async () => {
     try {
-      const r = await api.commands(commands, app.scene.revision)
+      const r = await api.commands(commands, app.scene.revision, source)
       await refresh(true)
       log(source, summarize(commands), r.revision)
       return r
@@ -753,6 +789,9 @@ for (const tab of document.querySelectorAll('.tabs button')) tab.addEventListene
 function showTab(name) {
   for (const t of document.querySelectorAll('.tabs button')) t.classList.toggle('active', t.dataset.tab === name)
   for (const p of document.querySelectorAll('.tab-panel')) p.classList.toggle('active', p.dataset.panel === name)
+  app.tab = name
+  if (name === 'history') return historyPanel.load()
+  historyPanel.close()
 }
 app.showTab = showTab
 

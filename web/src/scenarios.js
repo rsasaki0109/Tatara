@@ -1187,4 +1187,47 @@ export const proposals = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals }
+// History: a dining set built step by step (by the agent and the UI); the
+// first step is changed afterwards and everything after it replays: the
+// chairs circle the bigger table again and the lamp and mug stay on top.
+const CHAIRS = ['Chair 1', 'Chair 2', 'Chair 3', 'Chair 4']
+export const history = {
+  title: 'History',
+  width: 800,
+  gizmo: false,
+  external: true,
+  camera: { azimuth: 30, elevation: 24, distance: 6.4, target: [0, 0.55, 0] },
+  steps: [
+    { wait: 200 },
+    { caption: 'Every edit is a step', hint: 'build · arrange · place' },
+    {
+      mcp: [
+        { tool: 'apply_commands', arguments: { commands: [{ op: 'build', template: 'table', name: 'Table' }] }, after: 250 },
+        { tool: 'apply_commands', arguments: { commands: CHAIRS.map((name, i) => ({ op: 'build', template: 'chair', name, translation: [3 + i, 0, 2] })) }, after: 250 },
+        { tool: 'apply_commands', arguments: { commands: [{ op: 'arrange', ids: CHAIRS, layout: 'circle', around: 'Table' }] }, after: 250 },
+        { tool: 'apply_commands', arguments: { commands: [{ op: 'build', template: 'lamp', name: 'Lamp' }, { op: 'place', id: 'Lamp', on: 'Table', at: [0.3, 0.5] }] }, after: 250 },
+        { tool: 'apply_commands', arguments: { commands: [{ op: 'build', template: 'mug', name: 'Mug' }, { op: 'place', id: 'Mug', on: 'Table', at: [0.72, 0.4] }] }, after: 500 },
+      ],
+    },
+    { terminal: false },
+    { caption: 'Change the first step later…', hint: 'History · step 1' },
+    { tab: 'history' },
+    { click: '[data-hs-open="1"]', after: 300 },
+    { click: '[data-hs-add*="scale"]', after: 200 },
+    { caption: '…and everything after it replays', hint: 'chairs re-circle · lamp and mug stay on top' },
+    { drag: '.hs-key[data-scrub*="scale"]', to: 1.35, ms: 1600, after: 500 },
+    { click: '[data-hs=apply]', after: 900 },
+    { caption: 'Agents revise steps too, not just add more', hint: 'get_history · revise_step' },
+    {
+      mcp: [
+        { tool: 'get_history', arguments: {}, after: 300 },
+        { tool: 'revise_step', arguments: { step: 3, commands: [{ op: 'arrange', ids: CHAIRS, layout: 'circle', around: 'Table', spacing: 0.45 }] }, after: 500 },
+        { tool: 'revise_step', arguments: { step: 1, commands: [{ op: 'build', template: 'table', name: 'Table', scale: 1.35, color: '#3a2a22' }] }, after: 1600 },
+      ],
+    },
+    { cursor: false },
+    { wait: 500 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history }

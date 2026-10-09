@@ -141,6 +141,28 @@ pub fn tools() -> Value {
             "inputSchema": propose_schema
         },
         {
+            "name": "get_history",
+            "description": "Read how the scene was made: the batches applied so far, oldest first, each numbered (`step`) with its source (UI, agent, chat, proposal, ...) and commands. Use it to find the step that set a value you want to change, then revise_step it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Only the last this many steps (default 100)" } },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "revise_step",
+            "description": "Change an earlier step and replay everything after it, like editing a parametric history: e.g. rebuild the table taller and anything later placed on it ends up on the new top. Give the step number from get_history and its new `commands` (the whole batch). One undo step; refused, with the step that breaks, if a later step no longer applies.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "step": { "type": "integer", "minimum": 1 },
+                    "commands": { "type": "array", "items": { "type": "object" }, "description": "The step's new commands (same format as apply_commands)" }
+                },
+                "required": ["step", "commands"],
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "list_proposals",
             "description": "List proposals waiting for review (with what each would change, and a conflict if the scene moved on so it no longer applies) and recent decisions: accepted, rejected, or superseded by another variant.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
@@ -259,7 +281,20 @@ async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) 
                 .query(&[("frame", f.to_string())]),
             None => http.get(format!("{base}/api/context")),
         },
-        "apply_commands" => http.post(format!("{base}/api/commands")).json(&args),
+        "apply_commands" => {
+            let mut args = args;
+            if args.get("source").is_none() {
+                args["source"] = json!("agent");
+            }
+            http.post(format!("{base}/api/commands")).json(&args)
+        }
+        "get_history" => match args["limit"].as_u64() {
+            Some(n) => http
+                .get(format!("{base}/api/history"))
+                .query(&[("limit", n.to_string())]),
+            None => http.get(format!("{base}/api/history")),
+        },
+        "revise_step" => http.post(format!("{base}/api/history/revise")).json(&args),
         "propose_changes" => {
             let mut args = args;
             if args.get("author").is_none() {

@@ -1913,3 +1913,164 @@ input[type='range'] {
   background: #ffb02e;
   box-shadow: 0 0 8px #ffb02e;
 }
+
+/* History: the recipe of steps. */
+.hs-intro {
+  padding: 2px 2px 8px;
+}
+
+.hs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hs-step {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.hs-step.open {
+  border-color: var(--accent);
+}
+
+.hs-head {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.hs-head:hover {
+  background: var(--panel-2);
+  border-radius: 8px;
+}
+
+.hs-n {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-align: right;
+}
+
+.hs-what {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hs-src {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  background: #2c2f36;
+  padding: 0 5px;
+  border-radius: 4px;
+}
+
+.hs-body {
+  padding: 4px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hs-cmd {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hs-op {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent-2);
+}
+
+.hs-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+}
+
+.hs-group > .hs-key {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.hs-field {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.hs-field .hs-key {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hs-key[data-scrub] {
+  cursor: ew-resize;
+  text-decoration: underline dotted;
+}
+
+.hs-field input[type='number'],
+.hs-field input[type='text'],
+.hs-field textarea {
+  width: 100%;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  color: var(--text);
+  font: 11px var(--mono);
+  padding: 3px 5px;
+}
+
+.hs-vec {
+  display: flex;
+  gap: 4px;
+}
+
+.hs-field input[type='checkbox'] {
+  justify-self: start;
+}
+
+.hs-error {
+  color: var(--bad);
+  font-size: 11px;
+}
+
+.hs-error:empty {
+  display: none;
+}
+
+.hs-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.hs-unset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hs-unset .chip {
+  font-size: 10px;
+  opacity: 0.75;
+}
