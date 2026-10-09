@@ -8,6 +8,8 @@ import { UvEditor } from './uveditor.js'
 import { PathPreview } from './pathpreview.js'
 import { FinalRender } from './finalrender.js'
 import { ProposalTray } from './proposals.js'
+
+let chatBusy = false
 import { Collaboration } from './collaboration.js'
 import { HistoryPanel } from './history.js'
 import { DemoRunner } from './demo.js'
@@ -886,7 +888,8 @@ function render() {
   $('ai-badge').textContent = app.replaying ? 'replay' : app.ai ? 'on' : 'off'
   $('ai-badge').classList.toggle('on', app.ai || Boolean(app.replaying))
   $('chat-input').disabled = !app.ai && !app.replaying
-  $('chat-send').disabled = !app.ai
+  $('chat-send').disabled = !app.ai || chatBusy
+  $('chat-review').disabled = chatBusy
   $('chat-status').textContent = app.ai || app.replaying ? $('chat-status').textContent : 'Set TATARA_AI_* on the server to enable'
   renderProperties(sel)
   syncNodeEditor()
@@ -1556,23 +1559,27 @@ $('chat-input').addEventListener('keydown', (e) => {
 })
 async function sendChat() {
   const prompt = $('chat-input').value.trim()
-  if (!prompt || !app.ai) return
+  if (!prompt || !app.ai || chatBusy) return
+  chatBusy = true
+  $('chat-review').disabled = true
   $('chat-status').textContent = 'Thinking…'
   $('chat-send').disabled = true
   try {
     const r = await track(async () => {
-      const res = await api.chat(prompt)
+      const res = await api.chat(prompt, $('chat-review').checked ? 'proposal' : 'apply')
       await refresh(true)
       return res
     })
-    log('Chat', summarize(r.commands), r.revision)
+    log('Chat', `${r.mode === 'proposal' ? 'proposed · ' : ''}${summarize(r.commands)}`, r.revision)
     $('batch-input').value = JSON.stringify({ commands: r.commands }, null, 2)
-    $('chat-status').textContent = `Applied ${r.commands.length} command${r.commands.length === 1 ? '' : 's'}`
+    $('chat-status').textContent = r.mode === 'proposal' ? `Ready to review · ${r.commands.length} command${r.commands.length === 1 ? '' : 's'}` : `Applied ${r.commands.length} command${r.commands.length === 1 ? '' : 's'}`
     $('chat-input').value = ''
   } catch (e) {
     $('chat-status').textContent = ''
     toast(e.message, 'error')
   } finally {
+    chatBusy = false
+    $('chat-review').disabled = false
     $('chat-send').disabled = !app.ai
   }
 }

@@ -34,7 +34,7 @@ export function createApi(clock) {
     redo: () => request('POST', '/redo'),
     reset: () => request('POST', '/reset'),
     inspect: () => request('GET', '/inspect'),
-    chat: (prompt) => request('POST', '/chat', { prompt }),
+    chat: (prompt, mode = 'proposal') => request('POST', '/chat', { prompt, mode }),
     history: () => request('GET', '/history?limit=200'),
     schema: () => request('GET', '/schema'),
     previewRevision: (step, commands) => request('POST', '/history/preview', { step, commands }),

@@ -156,6 +156,103 @@ async fn chat_uses_mock_provider() {
         .unwrap();
     assert_eq!(ctx["objects"][0]["material"]["color"], "#3f7f5f");
 
+    let review: Value = c
+        .post(format!("{base}/api/chat"))
+        .json(&json!({"prompt":"another vase for review","mode":"proposal"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(review["mode"], "proposal");
+    assert_eq!(review["revision"], r["revision"]);
+    assert_eq!(review["created"], json!([]));
+    let scene: Value = c
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(scene["objects"].as_array().unwrap().len(), 1);
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tatara"))
+        .arg("--mcp")
+        .env("TATARA_URL", &base)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap()).lines();
+    for (id, method, params) in [
+        (1, "tools/list", json!({})),
+        (
+            2,
+            "tools/call",
+            json!({"name":"list_proposals","arguments":{}}),
+        ),
+    ] {
+        stdin
+            .write_all(
+                format!(
+                    "{}\n",
+                    json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let response: Value =
+            serde_json::from_str(&out.next_line().await.unwrap().unwrap()).unwrap();
+        if id == 1 {
+            assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 16);
+        } else {
+            let proposals: Value =
+                serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(proposals["pending"][0]["id"], review["proposal_id"]);
+            assert_eq!(proposals["pending"][0]["author"], "chat");
+        }
+    }
+    drop(stdin);
+    child.wait().await.unwrap();
+    let id = review["proposal_id"].as_u64().unwrap();
+    let accepted = c
+        .post(format!("{base}/api/proposal/accept?id={id}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), 200);
+    c.post(format!("{base}/api/undo"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let restored: Value = c
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        restored["objects"].as_array().unwrap().len(),
+        1,
+        "acceptance is one undo step"
+    );
+    let invalid = c
+        .post(format!("{base}/api/chat"))
+        .json(&json!({"prompt":"vase","mode":"unknown"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), 400);
+
     let off = editor(None).await;
     let r = c
         .post(format!("{off}/api/chat"))
@@ -164,6 +261,90 @@ async fn chat_uses_mock_provider() {
         .await
         .unwrap();
     assert_eq!(r.status(), 503);
+}
+
+#[tokio::test]
+async fn chat_review_refuses_stale_and_invalid_provider_changes() {
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let provider = Router::new().route("/v1/chat/completions", post({
+        let started = started.clone();
+        let release = release.clone();
+        move |Json(body): Json<Value>| {
+            let started = started.clone();
+            let release = release.clone();
+            async move {
+                let prompt = body["messages"][1]["content"].as_str().unwrap();
+                let commands = if prompt == "delayed" {
+                    started.notify_one();
+                    release.notified().await;
+                    json!([{"op":"add","primitive":{"kind":"cube"}}])
+                } else {
+                    json!([{"op":"delete","id":999999}])
+                };
+                Json(json!({"choices":[{"message":{"content":json!({"commands":commands}).to_string()}}]}))
+            }
+        }
+    }));
+    let provider_url = spawn(provider).await;
+    let base = editor(Some(server::AiConfig {
+        base_url: format!("{provider_url}/v1"),
+        model: "mock".into(),
+        api_key: None,
+    }))
+    .await;
+    let c = reqwest::Client::new();
+    let pending = tokio::spawn({
+        let c = c.clone();
+        let base = base.clone();
+        async move {
+            c.post(format!("{base}/api/chat"))
+                .json(&json!({"prompt":"delayed","mode":"proposal"}))
+                .send()
+                .await
+                .unwrap()
+        }
+    });
+    started.notified().await;
+    c.post(format!("{base}/api/commands"))
+        .json(&json!({"commands":[{"op":"add","primitive":{"kind":"sphere"}}]}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    release.notify_one();
+    assert_eq!(pending.await.unwrap().status(), 409);
+    assert_eq!(
+        c.post(format!("{base}/api/chat"))
+            .json(&json!({"prompt":"invalid","mode":"proposal"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        422
+    );
+    let proposals: Value = c
+        .get(format!("{base}/api/proposals"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(proposals["pending"].as_array().unwrap().is_empty());
+    let scene: Value = c
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(scene["revision"], 1);
+    assert_eq!(scene["objects"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]

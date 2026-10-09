@@ -6,6 +6,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
+import { createServer } from 'node:http'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 
@@ -36,8 +37,20 @@ const port = await new Promise((resolve) => {
   })
 })
 const url = `http://127.0.0.1:${port}`
+// A real HTTP provider fixture exercises /api/chat without hosted models or keys.
+const provider = createServer(async (req, res) => {
+  let text = ''
+  for await (const chunk of req) text += chunk
+  const body = JSON.parse(text)
+  const prompt = body.messages.at(-1).content
+  const commands = prompt.includes('invalid') ? [{ op: 'delete', id: 999999 }] : [{ op: 'add', name: 'Chat cube', primitive: { kind: 'cube' }, color: '#c98268' }]
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ commands }) } }] }))
+})
+await new Promise((resolve) => provider.listen(0, '127.0.0.1', resolve))
+const providerUrl = `http://127.0.0.1:${provider.address().port}/v1`
 const bin = path.join(root, 'target/release', process.platform === 'win32' ? 'tatara.exe' : 'tatara')
-const startEditor = () => spawn(bin, [], { env: { ...process.env, TATARA_PORT: String(port), TATARA_WEB_DIR: path.join(root, 'web/dist') }, stdio: 'inherit' })
+const startEditor = () => spawn(bin, [], { env: { ...process.env, TATARA_PORT: String(port), TATARA_WEB_DIR: path.join(root, 'web/dist'), TATARA_AI_BASE_URL: providerUrl, TATARA_AI_MODEL: 'browser-mock', TATARA_AI_API_KEY: '' }, stdio: 'inherit' })
 let server = startEditor()
 for (let i = 0; i < 100; i++) {
   try {
@@ -472,6 +485,37 @@ try {
   const played = await page.evaluate(() => window.__tatara.frame())
   check(played > 1, `playback advances frames (stopped at ${played})`)
 
+  await page.click('.tabs [data-tab=agent]')
+  check(await page.isChecked('#chat-review'), 'chat defaults to review before applying')
+  const chatBefore = await page.evaluate(() => fetch('/api/scene').then((r) => r.json()))
+  await page.fill('#chat-input', 'Add a cube for review')
+  await page.click('#chat-send')
+  await until(page, () => fetch('/api/proposals').then((r) => r.json()).then((p) => p.pending.some((x) => x.author === 'chat')))
+  const chatAfter = await page.evaluate(() => fetch('/api/scene').then((r) => r.json()))
+  check(chatAfter.revision === chatBefore.revision && JSON.stringify(chatAfter.objects) === JSON.stringify(chatBefore.objects), 'chat proposal leaves the authoritative scene unchanged')
+  await page.waitForFunction(() => document.querySelector('#chat-status').textContent.startsWith('Ready to review'))
+  check(await page.locator('#proposals .proposal-card').count() === 1, 'chat changes appear in the review tray')
+  await page.hover('#proposals .proposal-card')
+  await page.waitForFunction(() => window.__tatara.debug().previewing != null)
+  check(true, 'chat proposal previews without applying')
+  await page.click('#proposals [data-pc=accept]')
+  await until(page, (n) => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects.length === n + 1), chatBefore.objects.length)
+  check(true, 'accepting a chat proposal applies its batch')
+  await page.click('[data-action=undo]')
+  await until(page, (n) => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects.length === n), chatBefore.objects.length)
+  check(true, 'a chat approval is one undo step')
+  await page.fill('#chat-input', 'Another cube to reject')
+  await page.click('#chat-send')
+  await until(page, () => fetch('/api/proposals').then((r) => r.json()).then((p) => p.pending.length === 1))
+  await page.click('#proposals [data-pc=reject]')
+  await until(page, () => fetch('/api/proposals').then((r) => r.json()).then((p) => p.pending.length === 0))
+  check((await count()) === chatBefore.objects.length, 'rejecting chat changes leaves the scene untouched')
+  await page.uncheck('#chat-review')
+  await page.fill('#chat-input', 'Add a cube directly')
+  await page.click('#chat-send')
+  await until(page, (n) => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects.length === n + 1), chatBefore.objects.length)
+  check(true, 'chat can explicitly apply changes immediately')
+
   await page.setViewportSize({ width: 390, height: 844 })
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
   check(!overflow, 'phone layout has no horizontal scroll')
@@ -596,5 +640,6 @@ try {
 } finally {
   await browser.close()
   server.kill()
+  provider.close()
 }
 process.exit(failed ? 1 : 0)

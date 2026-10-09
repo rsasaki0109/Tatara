@@ -511,6 +511,7 @@ export class DemoRunner {
     const { app } = this
     app.replaying = true
     app.showTab('agent')
+    $('chat-review').checked = Boolean(s.review)
     const status = $('chat-status')
     $('chat-input').disabled = false
     status.textContent = ''
@@ -536,8 +537,14 @@ export class DemoRunner {
     }
     status.textContent = 'Validating…'
     await this.sleep(150)
-    const res = await app.run(s.commands, 'Agent')
-    status.textContent = `Applied ${s.commands.length} commands as revision ${res.revision} · replay`
+    if (s.review) {
+      await app.api.propose({ title: [...s.chat].slice(0, 80).join(''), author: 'chat · replay', commands: s.commands })
+      await app.refresh(false)
+      status.textContent = `Ready to review · ${s.commands.length} commands · replay`
+    } else {
+      const res = await app.run(s.commands, 'Agent')
+      status.textContent = `Applied ${s.commands.length} commands as revision ${res.revision} · replay`
+    }
     $('chat-input').value = ''
     if (s.after) await this.sleep(s.after)
   }

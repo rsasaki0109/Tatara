@@ -7,6 +7,46 @@ use serde_json::{Value, json};
 use crate::engine::{self, CommandBatch, Editor, EngineError, Scene};
 use crate::texture::{self, Look, Pattern, Texture};
 
+/// Missing mode preserves legacy HTTP callers; the UI opts into review.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatMode {
+    #[default]
+    Apply,
+    Proposal,
+}
+
+/// A provider reply follows the same validation and proposal/command paths as
+/// other callers. Guard the context revision before either kind of mutation.
+pub fn complete_chat(
+    ed: &mut Editor,
+    prompt: &str,
+    batch: &CommandBatch,
+    mode: ChatMode,
+) -> Result<Value, EngineError> {
+    ed.ensure_revision(batch.expected_revision)?;
+    let mut out = match mode {
+        ChatMode::Apply => {
+            let result = ed.apply(batch)?;
+            json!({"revision": result.revision, "created": result.created})
+        }
+        ChatMode::Proposal => {
+            let ids = ed.propose(&crate::proposal::ProposalRequest {
+                title: prompt.chars().take(80).collect(),
+                note: Some(prompt.chars().take(500).collect()),
+                author: Some("chat".into()),
+                commands: batch.commands.clone(),
+                variants: Vec::new(),
+            })?;
+            json!({"revision": ed.scene().revision, "created": [], "proposal_id": ids[0]})
+        }
+    };
+    out["mode"] = json!(mode);
+    out["commands"] = json!(batch.commands);
+    out["history"] = history(ed);
+    Ok(out)
+}
+
 pub struct Response {
     pub status: u16,
     pub content_type: &'static str,
@@ -850,6 +890,41 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_review_validates_without_mutating_scene_or_undo() {
+        let mut ed = Editor::new();
+        let mut batch: CommandBatch = serde_json::from_value(json!({"expected_revision":0,"source":"chat","commands":[{"op":"add","primitive":{"kind":"cube"}}]})).unwrap();
+        let prompt = "提案".repeat(100);
+        let reply = complete_chat(&mut ed, &prompt, &batch, ChatMode::Proposal).unwrap();
+        assert_eq!(reply["mode"], "proposal");
+        assert_eq!(reply["revision"], 0);
+        assert_eq!(reply["created"], json!([]));
+        assert!(ed.scene().objects.is_empty());
+        assert!(!ed.can_undo());
+        assert_eq!(ed.proposals()[0].title.chars().count(), 80);
+        let id = reply["proposal_id"].as_u64().unwrap();
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            &format!("/proposal/accept?id={id}"),
+            json!({}),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(ed.scene().objects.len(), 1);
+        assert!(ed.can_undo());
+        let version = ed.proposals_version();
+        assert!(complete_chat(&mut ed, "stale", &batch, ChatMode::Proposal).is_err());
+        assert_eq!(ed.proposals_version(), version);
+        batch.expected_revision = Some(ed.scene().revision);
+        batch.commands = serde_json::from_value(json!([{"op":"delete","id":999}])).unwrap();
+        assert!(complete_chat(&mut ed, "invalid", &batch, ChatMode::Proposal).is_err());
+        assert_eq!(ed.proposals_version(), version);
+        assert_eq!(ed.scene().objects.len(), 1);
+        let (status, _) = call(&mut ed, "POST", "/undo", json!({}));
+        assert_eq!(status, 200);
+        assert!(ed.scene().objects.is_empty());
+    }
 
     fn call(ed: &mut Editor, method: &str, path: &str, body: Value) -> (u16, Value) {
         let body = if body.is_null() {

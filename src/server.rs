@@ -134,10 +134,6 @@ fn api_error(status: StatusCode, message: impl Into<String>) -> ApiError {
 
 type ApiResult = Result<Json<Value>, ApiError>;
 
-fn history(ed: &Editor) -> Value {
-    json!({ "can_undo": ed.can_undo(), "can_redo": ed.can_redo() })
-}
-
 fn changed(state: &AppState, revision: u64) {
     let _ = state.events.send(("revision", revision));
 }
@@ -295,8 +291,11 @@ async fn get_ai(State(s): State<Shared>) -> Json<Value> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ChatRequest {
     prompt: String,
+    #[serde(default)]
+    mode: crate::api::ChatMode,
 }
 
 async fn post_chat(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResult {
@@ -328,17 +327,15 @@ async fn post_chat(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResul
     batch.expected_revision = Some(revision);
     let mut ed = s.editor.lock().await;
     let before = ed.proposals_version();
-    let result = ed.apply(&batch)?;
-    changed(&s, result.revision);
+    let before_revision = ed.scene().revision;
+    let result = crate::api::complete_chat(&mut ed, prompt, &batch, req.mode)?;
+    if ed.scene().revision != before_revision {
+        changed(&s, ed.scene().revision);
+    }
     if ed.proposals_version() != before {
         proposals_changed(&s, ed.proposals_version());
     }
-    Ok(Json(json!({
-        "revision": result.revision,
-        "created": result.created,
-        "commands": batch.commands,
-        "history": history(&ed),
-    })))
+    Ok(Json(result))
 }
 
 pub fn system_prompt(context: &Value) -> String {
@@ -417,6 +414,22 @@ pub fn parse_batch(text: &str) -> Result<CommandBatch, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_mode_is_explicit_and_legacy_requests_still_apply() {
+        let legacy: ChatRequest = serde_json::from_value(json!({"prompt":"cube"})).unwrap();
+        assert_eq!(legacy.mode, crate::api::ChatMode::Apply);
+        let review: ChatRequest =
+            serde_json::from_value(json!({"prompt":"cube","mode":"proposal"})).unwrap();
+        assert_eq!(review.mode, crate::api::ChatMode::Proposal);
+        assert!(
+            serde_json::from_value::<ChatRequest>(json!({"prompt":"cube","mode":"unknown"}))
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ChatRequest>(json!({"prompt":"cube","apply":false})).is_err()
+        );
+    }
 
     #[test]
     fn parses_fenced_replies() {
