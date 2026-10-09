@@ -395,6 +395,31 @@ try {
   check(true, 'a step re-applied from the History tab replays as one undo step')
   await page.click('.tabs [data-tab=properties]')
 
+  // Constraints: keep one box on another from the Constraints card; moving
+  // the base carries the top along.
+  await page.evaluate(() =>
+    fetch('/api/commands', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commands: [
+        { op: 'add', name: 'Base', primitive: { kind: 'cube' }, translation: [6, 0.5, 0] },
+        { op: 'add', name: 'Top', primitive: { kind: 'cube', size: 0.4 }, translation: [6, 1.2, 0] },
+      ] }),
+    }),
+  )
+  await page.evaluate(() => window.__tatara.refresh(true))
+  await page.click('#outliner li:has-text("Top")')
+  await page.waitForSelector('.constraints [data-constrain]')
+  await page.selectOption('#c-target', { label: 'Base' })
+  await page.click('[data-constrain]')
+  await page.waitForSelector('.constraints .constraint-row')
+  await page.evaluate(() => fetch('/api/commands', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ commands: [{ op: 'transform', id: 'Base', translation: [7, 0.5, 1] }] }) }))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => Math.abs(s.objects.find((o) => o.name === 'Top').transform.translation[0] - 7) < 1e-6))
+  check(true, 'a constraint from the Constraints card keeps the top on its base as the base moves')
+  await page.evaluate(() => fetch('/api/commands', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ commands: [{ op: 'delete', id: 'Top' }, { op: 'delete', id: 'Base' }] }) }))
+  await page.evaluate(() => window.__tatara.refresh(true))
+  await page.keyboard.press('Escape')
+
   // Assemblies: build a chair from the empty panel; it lists as one group.
   await page.click('[data-build=chair]')
   await page.waitForSelector('#outliner li[data-group="Chair"]')
