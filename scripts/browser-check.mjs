@@ -727,6 +727,19 @@ try {
   await until(alice, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].name === 'A' && s.objects[1].name === 'B first'))
   await until(bob, () => document.querySelector('#outliner').textContent.includes('B first') && !document.querySelector('#outliner').textContent.includes('A combined'))
   check(true, 'Undo removes only the rebased edit and keeps the other browser change')
+  const creationContext = await alice.evaluate(() => fetch('/api/scene').then(r => r.json()).then(s => s.revision))
+  const createFrom = (page, name) => page.evaluate(async ({revision, name}) => {
+    const response = await fetch('/api/commands', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({expected_revision:revision, rebase:true, commands:[{op:'add', name, primitive:{kind:'cube'}, translation:[0,0,5]}]})})
+    return {status:response.status, data:await response.json()}
+  }, {revision:creationContext, name})
+  const creations = await Promise.all([createFrom(alice, 'Alice addition'), createFrom(bob, 'Bob addition')])
+  check(creations.every(r => r.status === 200) && creations.filter(r => r.data.rebased_from === creationContext).length === 1 && creations[0].data.created[0] !== creations[1].data.created[0], 'two browsers concurrently create objects with distinct actual IDs')
+  await until(bob, () => document.querySelector('#outliner').textContent.includes('Alice addition') && document.querySelector('#outliner').textContent.includes('Bob addition'))
+  const rejectedCreation = await createFrom(alice, 'Bob addition')
+  check(rejectedCreation.status === 409 && rejectedCreation.data.error.includes('name'), 'stale creation name collisions return a recovery reason')
+  await alice.evaluate(() => fetch('/api/undo', {method:'POST'}))
+  await until(bob, () => fetch('/api/scene').then(r => r.json()).then(s => s.objects.filter(o => o.name.endsWith('addition')).length === 1))
+  check(true, 'one Undo removes only the latest concurrent creation')
   const rebasedConflict = await alice.evaluate(async () => {
     const s = await (await fetch('/api/scene')).json()
     const responses = await Promise.all(['First', 'Second'].map((name) => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({expected_revision: s.revision, rebase: true, commands: [{op: 'rename', id: s.objects[0].id, name}]})})))

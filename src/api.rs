@@ -1051,6 +1051,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stale_creations_return_actual_ids_and_conflicts_are_409() {
+        let mut ed = Editor::new();
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"add","name":"Base","primitive":{"kind":"cube"}}]}),
+        );
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"add_camera","name":"Alice"}]}),
+        );
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"expected_revision":1,"rebase":true,"actor":{"id":"bob","name":"Bob"},"commands":[{"op":"add_light","name":"Bob"}]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        assert_eq!(out["created"], json!([3]));
+        assert_eq!(out["rebased_from"], 1);
+        let before = ed.scene().clone();
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"expected_revision":1,"rebase":true,"commands":[{"op":"add_camera","name":"Alice"}]}),
+        );
+        assert_eq!(status, 409, "{out}");
+        assert!(out["error"].as_str().unwrap().contains("name"));
+        assert_eq!(*ed.scene(), before);
+        call(&mut ed, "POST", "/undo", json!({}));
+        assert_eq!(ed.scene().objects.len(), 2);
+    }
+
+    #[test]
     fn rebased_commands_expose_context_and_history_but_keep_strict_conflicts() {
         let mut ed = Editor::new();
         assert_eq!(

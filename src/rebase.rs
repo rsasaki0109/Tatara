@@ -63,8 +63,16 @@ pub(crate) fn validate(
     if commands.is_empty() {
         return Err(EngineError::new("batch has no commands"));
     }
-    for command in commands {
-        target(command)?;
+    let creations = commands.iter().all(|command| {
+        matches!(
+            command,
+            Command::Add { .. } | Command::AddCamera { .. } | Command::AddLight { .. }
+        )
+    });
+    if !creations {
+        for command in commands {
+            target(command)?;
+        }
     }
     if base.world != current.world
         || base.images != current.images
@@ -82,6 +90,31 @@ pub(crate) fn validate(
         ));
     }
     // This is the same validated clone/reapply path used to preview proposals.
+    if creations {
+        // Validate the old intent as well as the actual replay. IDs and generated
+        // names belong to the current scene, never to the discarded candidate.
+        let (candidate, old_ids) = engine::run(base, commands)?;
+        let (replayed, new_ids) = engine::run(current, commands)?;
+        for (scene, existing, created) in
+            [(&candidate, base, &old_ids), (&replayed, current, &new_ids)]
+        {
+            let mut names = HashSet::new();
+            for object in scene.objects.iter().filter(|o| created.contains(&o.id)) {
+                if !names.insert(&object.name)
+                    || existing
+                        .objects
+                        .iter()
+                        .any(|o| o.name == object.name || o.group.as_ref() == Some(&object.name))
+                {
+                    return Err(EngineError::new(format!(
+                        "creation name {:?} conflicts with an object or group",
+                        object.name
+                    )));
+                }
+            }
+        }
+        return Ok(());
+    }
     let (candidate, _) = engine::run(base, commands)?;
     let mut dependencies = HashSet::new();
     for command in commands {
@@ -166,6 +199,99 @@ mod tests {
         )
         .unwrap();
         ed
+    }
+
+    #[test]
+    fn independent_creations_allocate_current_ids_and_keep_one_undo() {
+        let mut ed = pair();
+        let first = apply(
+            &mut ed,
+            json!([{"op":"add","primitive":{"kind":"cube"}}]),
+            Some(1),
+            false,
+        )
+        .unwrap();
+        let second = apply(
+            &mut ed,
+            json!([
+                {"op":"add","primitive":{"kind":"cube"}},
+                {"op":"add_camera","name":"Shot"},
+                {"op":"add_light","name":"Key"}
+            ]),
+            Some(1),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            second.created,
+            vec![
+                first.created[0] + 1,
+                first.created[0] + 2,
+                first.created[0] + 3
+            ]
+        );
+        assert_eq!(second.rebased_from, Some(1));
+        assert_eq!(
+            ed.history().0.last().unwrap().actor.as_ref().unwrap().name,
+            "Bob"
+        );
+        let final_scene = ed.scene().clone();
+        assert_eq!(final_scene.objects.len(), 6);
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().objects.len(), 3);
+        assert_eq!(ed.scene().objects.last().unwrap().id, first.created[0]);
+        ed.redo().unwrap();
+        assert_eq!(ed.scene().objects, final_scene.objects);
+    }
+
+    #[test]
+    fn creation_name_collisions_and_invalid_old_intent_leave_everything_unchanged() {
+        let mut ed = pair();
+        apply(
+            &mut ed,
+            json!([{ "op":"build","template":"table","name":"Table"}]),
+            None,
+            false,
+        )
+        .unwrap();
+        for commands in [
+            json!([{"op":"add_camera","name":"Table"}]),
+            json!([{"op":"add_light","name":"A"}]),
+            json!([{"op":"add_camera","name":"Same"},{"op":"add_light","name":"Same"}]),
+            json!([{"op":"add_camera"},{"op":"add_light","name":"Camera"}]),
+            json!([{"op":"add_camera","lens":{"fov":0}}]),
+        ] {
+            let before = ed.scene().clone();
+            let history = ed.history().0.len();
+            assert!(apply(&mut ed, commands, Some(1), true).unwrap_err().stale);
+            assert_eq!(*ed.scene(), before);
+            assert_eq!(ed.history().0.len(), history);
+        }
+    }
+
+    #[test]
+    fn current_light_capacity_rejects_stale_creation_atomically() {
+        let mut ed = pair();
+        for i in 0..16 {
+            apply(
+                &mut ed,
+                json!([{"op":"add_light","name":format!("Light {i}")}]),
+                None,
+                false,
+            )
+            .unwrap();
+        }
+        let before = ed.scene().clone();
+        let error = apply(
+            &mut ed,
+            json!([{"op":"add_camera"},{"op":"add_light","name":"Extra"}]),
+            Some(1),
+            true,
+        )
+        .unwrap_err();
+        assert!(error.stale);
+        assert_eq!(*ed.scene(), before);
+        assert_eq!(ed.history().0.len(), 17);
     }
 
     #[test]
@@ -349,7 +475,8 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_creation_global_changes_loaded_bases_and_unavailable_contexts_are_refused() {
+    fn unsupported_mixed_batches_global_changes_loaded_bases_and_unavailable_contexts_are_refused()
+    {
         let mut ed = pair();
         apply(
             &mut ed,
@@ -361,7 +488,7 @@ mod tests {
         assert!(
             apply(
                 &mut ed,
-                json!([{"op":"add","primitive":{"kind":"cube"}}]),
+                json!([{"op":"add","primitive":{"kind":"cube"}},{"op":"material","id":"B","color":"#ffffff"}]),
                 Some(1),
                 true
             )
