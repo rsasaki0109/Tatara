@@ -69,9 +69,19 @@ async function until(page, fn, arg) {
     ),
   )
 }
+// Keep failures readable through the Checks API when CI log downloads are
+// unavailable. Escape workflow-command data without changing the test outcome.
+const annotateFailure = (message) => {
+  if (process.env.GITHUB_ACTIONS !== 'true') return
+  const escaped = String(message).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')
+  console.log(`::error file=scripts/browser-check.mjs,title=Browser check failed::${escaped}`)
+}
 const check = (ok, what) => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`)
-  if (!ok) failed = true
+  if (!ok) {
+    failed = true
+    annotateFailure(what)
+  }
 }
 
 try {
@@ -569,6 +579,9 @@ try {
     }
     check(st.done && !st.error, `scenario ${id} completes${st.error ? `: ${st.error}` : ''}`)
   }
+} catch (error) {
+  annotateFailure(error.stack ?? error)
+  throw error
 } finally {
   await browser.close()
   server.kill()
