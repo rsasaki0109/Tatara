@@ -480,6 +480,34 @@ async fn mcp_bridge_edits_the_shared_scene() {
         "{report}"
     );
     assert!(report["summary"].is_string());
+    // Distance intent uses the existing typed command tool and inspection.
+    let r = call(json!({"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"add","name":"Distance A","primitive":{"kind":"cube"},"translation":[10,0.5,0]},
+        {"op":"add","name":"Distance B","primitive":{"kind":"cube"},"translation":[14,0.5,0]},
+        {"op":"constrain","id":"Distance B","distance":2,"from":"Distance A"},
+        {"op":"transform","id":"Distance A","translation":[11,0.5,0]}
+    ]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"get_scene","arguments":{}}})).await;
+    let scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let b = scene["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Distance B")
+        .unwrap();
+    assert_eq!(b["transform"]["translation"][0], 13.0);
+    let r = call(json!({"jsonrpc":"2.0","id":52,"method":"tools/call","params":{"name":"inspect_scene","arguments":{}}})).await;
+    let report: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(
+        !report["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["kind"] == "constraint_violation")
+    );
     child.kill().await.unwrap();
 }
 
@@ -577,4 +605,78 @@ async fn collaboration_presence_and_concurrent_edits() {
         .await
         .unwrap();
     assert_eq!(left["peers"], json!([]));
+}
+
+#[tokio::test]
+async fn distance_http_rejects_conflicts_and_inspects_imported_residuals() {
+    let base = editor(None).await;
+    let c = reqwest::Client::new();
+    let r = c
+        .post(format!("{base}/api/commands"))
+        .json(&json!({"commands":[
+            {"op":"add","name":"A","primitive":{"kind":"cube"}},
+            {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[3,0,0]},
+            {"op":"constrain","id":"B","distance":2,"from":"A"}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let scene: Value = c
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let r = c
+        .post(format!("{base}/api/commands"))
+        .json(&json!({"commands":[{"op":"constrain","id":"B","mirrors":"A"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 422);
+    let error: Value = r.json().await.unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("distance constraint")
+    );
+    let current: Value = c
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(current, scene);
+    let mut broken = scene;
+    broken["objects"][1]["transform"]["translation"] = json!([9, 0, 0]);
+    assert_eq!(
+        c.put(format!("{base}/api/scene"))
+            .json(&broken)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let report: Value = c
+        .get(format!("{base}/api/inspect"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        report["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["kind"] == "constraint_violation" && i["actual"] == 9.0)
+    );
 }

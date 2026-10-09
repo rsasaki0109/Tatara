@@ -858,7 +858,9 @@ pub enum Command {
     /// `mirrors` keeps it the mirror image of another across X = 0 (or
     /// `axis: "z"`): move either one and the other follows. `matches` keeps
     /// its material the same as another's, whichever is changed. A new rule
-    /// of the same kind replaces the old one.
+    /// of the same kind replaces the old one. `distance` with `from` keeps
+    /// evaluated world-bound centres that many metres apart; either edited
+    /// side leads, and `from` leads if both sides were edited.
     Constrain {
         id: ObjRef,
         #[serde(default)]
@@ -869,9 +871,15 @@ pub enum Command {
         axis: Option<Plane>,
         #[serde(default)]
         matches: Option<ObjRef>,
+        /// Distance in metres between evaluated world-bound centres.
+        #[serde(default)]
+        distance: Option<f64>,
+        /// The other object or group for a distance constraint.
+        #[serde(default)]
+        from: Option<ObjRef>,
     },
     /// Drop `id`'s constraints (only those of `kind`: on, mirrors or
-    /// matches, if given), including mirror and match rules that point at it.
+    /// matches or distance, if given), including symmetric rules that point at it.
     Unconstrain {
         id: ObjRef,
         #[serde(default)]
@@ -2205,14 +2213,23 @@ fn apply_command(
             mirrors,
             axis,
             matches,
+            distance,
+            from,
         } => {
-            let request = match (on, mirrors, matches) {
-                (Some(r), None, None) => constraint::Request::On(r.clone()),
-                (None, Some(r), None) => {
+            let request = match (on, mirrors, matches, distance, from) {
+                (Some(r), None, None, None, None) => constraint::Request::On(r.clone()),
+                (None, Some(r), None, None, None) => {
                     constraint::Request::Mirrors(r.clone(), axis.unwrap_or_default())
                 }
-                (None, None, Some(r)) => constraint::Request::Matches(r.clone()),
-                _ => return err("constrain needs exactly one of `on`, `mirrors` or `matches`"),
+                (None, None, Some(r), None, None) => constraint::Request::Matches(r.clone()),
+                (None, None, None, Some(d), Some(r)) => {
+                    constraint::Request::Distance(r.clone(), *d)
+                }
+                _ => {
+                    return err(
+                        "constrain needs exactly one of `on`, `mirrors`, `matches`, or `distance` with `from`",
+                    );
+                }
             };
             constraint::add(scene, id, request)?;
         }

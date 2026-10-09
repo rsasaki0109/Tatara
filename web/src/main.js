@@ -1206,9 +1206,9 @@ function currentBone(o) {
 const subjectOf = (o) => o.group ?? o.id
 const whoName = (who) => (typeof who === 'number' ? (objectById(who)?.name ?? `#${who}`) : who)
 const involves = (o, who) => who === o.id || (o.group != null && who === o.group)
-const RULES = { on: 'Keep on', mirrors: 'Mirror of', matches: 'Match look of' }
+const RULES = { on: 'Keep on', mirrors: 'Mirror of', matches: 'Match look of', distance: 'Keep distance' }
 
-const LINK = { on: 0x4fd1c5, mirrors: 0xa78bfa, matches: 0xffb02e }
+const LINK = { on: 0x4fd1c5, mirrors: 0xa78bfa, matches: 0xffb02e, distance: 0x67b8ff }
 const idsOf = (who) => app.scene.objects.filter((x) => x.id === who || (x.group != null && x.group === who)).map((x) => x.id)
 
 /** Dashed lines from the selection to what its constraints tie it to. */
@@ -1226,10 +1226,11 @@ function constraintCard(o) {
     const other = whoName(self ? (c.support ?? c.of) : c.subject)
     if (c.kind === 'on') return self ? `On ${other}` : `${other} rests on it`
     if (c.kind === 'mirrors') return `Mirrors ${other}${c.axis === 'z' ? ' (front/back)' : ''}`
+    if (c.kind === 'distance') return `${c.distance} m from ${other}`
     return `Matches ${other}`
   }
   const rows = mine
-    .map((c) => `<div class="constraint-row"><span class="c-kind c-${c.kind}">${c.kind === 'on' ? '⤓' : c.kind === 'mirrors' ? '⇋' : '≡'}</span><span>${escapeHtml(describe(c))}</span><button class="chip" data-unconstrain="${escapeHtml(JSON.stringify([c.subject, c.kind]))}" title="Stop keeping this">✕</button></div>`)
+    .map((c) => `<div class="constraint-row"><span class="c-kind c-${c.kind}">${c.kind === 'on' ? '⤓' : c.kind === 'mirrors' ? '⇋' : c.kind === 'distance' ? '↔' : '≡'}</span><span>${escapeHtml(describe(c))}</span><button class="chip" data-unconstrain="${escapeHtml(JSON.stringify([c.subject, c.kind]))}" title="Stop keeping this">✕</button></div>`)
     .join('')
   const self = subjectOf(o)
   const seen = new Set()
@@ -1244,7 +1245,7 @@ function constraintCard(o) {
   const add = targets.length
     ? `<div class="row constraint-add"><select id="c-kind">${Object.entries(RULES).map(([k, label]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${label}</option>`).join('')}</select><select id="c-target">${targets.map((w) => `<option value="${escapeHtml(JSON.stringify(w))}">${escapeHtml(whoName(w))}</option>`).join('')}</select><button class="small-btn" data-constrain>Keep</button></div>`
     : ''
-  return `<div class="card constraints"><div class="card-title">Constraints <span class="muted small">${o.group ? `the whole ${escapeHtml(o.group)} · ` : ''}kept through every edit</span></div>${rows}${add}</div>`
+  return `<div class="card constraints"><div class="card-title">Constraints <span class="muted small">${o.group ? `the whole ${escapeHtml(o.group)} · ` : ''}kept through every edit</span></div>${rows}${kind === 'distance' && targets.length ? `<label class="row small">Distance (m)<input id="c-distance" type="number" min="0" step="any" required value="${app.constraintDistance ?? 2}"></label>` : ''}${add}</div>`
 }
 
 function rigCard(o) {
@@ -1338,6 +1339,10 @@ $('properties').addEventListener('change', (e) => {
   }
   if (target.id === 'c-kind') {
     app.constraintKind = target.value
+    return render()
+  }
+  if (target.id === 'c-distance') {
+    app.constraintDistance = Number(target.value)
     return
   }
   if (target.id === 'bool-with') {
@@ -1410,7 +1415,9 @@ $('properties').addEventListener('click', (e) => {
   if (e.target.closest('[data-constrain]') && o0) {
     const kind = $('c-kind').value
     const target = JSON.parse($('c-target').value)
-    return run([{ op: 'constrain', id: subjectOf(o0), [kind]: target }]).catch(() => {})
+    if (kind === 'distance' && !$('c-distance').reportValidity()) return
+    const rule = kind === 'distance' ? { distance: Number($('c-distance').value), from: target } : { [kind]: target }
+    return run([{ op: 'constrain', id: subjectOf(o0), ...rule }]).catch(() => {})
   }
   const unconstrain = e.target.closest('[data-unconstrain]')
   if (unconstrain) {

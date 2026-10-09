@@ -516,6 +516,37 @@ try {
   await until(page, (n) => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects.length === n + 1), chatBefore.objects.length)
   check(true, 'chat can explicitly apply changes immediately')
 
+  // Distance intent is entered through the same Constraints card as other rules.
+  await page.evaluate(() => fetch('/api/commands', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({commands: [
+    {op: 'clear'}, {op: 'add', name: 'Anchor', primitive: {kind: 'cube'}, translation: [-1, 0.5, 0]},
+    {op: 'add', name: 'Tether', primitive: {kind: 'cube'}, translation: [1, 0.5, 0]},
+  ]}) }).then((r) => r.json()))
+  await until(page, () => document.querySelectorAll('#outliner li').length === 2)
+  await page.click('.tabs [data-tab=properties]')
+  await page.click('#outliner li:nth-child(2)')
+  await page.selectOption('#c-kind', 'distance')
+  await page.fill('#c-distance', '0.125')
+  await page.click('[data-constrain]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => (s.constraints || []).some((c) => c.kind === 'distance' && c.distance === 0.125)))
+  await page.waitForFunction(() => document.querySelector('.constraints').textContent.includes('0.125 m from Anchor'))
+  check(true, 'the distance UI accepts arbitrary fractional metres')
+  await page.fill('#c-distance', '2')
+  await page.click('[data-constrain]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => (s.constraints || []).some((c) => c.kind === 'distance' && c.distance === 2)))
+  check((await page.textContent('.constraints')).includes('2 m from Anchor'), 'the Constraints card creates and describes a distance rule')
+  await page.evaluate(() => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands: [{op: 'transform', id: 'Anchor', translation: [-2, 0.5, 0]}]})}))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[1].transform.translation[0] === 0))
+  check(true, 'moving the reference keeps the specified centre distance')
+  await page.evaluate(() => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands: [{op: 'transform', id: 'Tether', translation: [2, 0.5, 0]}]})}))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].transform.translation[0] === 0))
+  check(true, 'moving the constrained side leads its distance partner')
+  await page.click('[data-action=undo]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].transform.translation[0] === -2 && s.objects[1].transform.translation[0] === 0))
+  check(true, 'one Undo restores both distance endpoints')
+  await page.click('.constraints [data-unconstrain]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => (s.constraints || []).length === 0))
+  check(true, 'the distance rule can be removed from the Constraints card')
+
   await page.setViewportSize({ width: 390, height: 844 })
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
   check(!overflow, 'phone layout has no horizontal scroll')
