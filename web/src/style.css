@@ -1763,3 +1763,11 @@ input[type='range'] {
   cursor: pointer;
   touch-action: none;
 }
+
+.world-card .presets {
+  margin-bottom: 8px;
+}
+
+.world-card .world-bg {
+  margin-top: 6px;
+}

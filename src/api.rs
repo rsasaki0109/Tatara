@@ -325,14 +325,71 @@ fn image(ed: &Editor, query: &str) -> Result<Response, Response> {
         .images
         .get(&name)
         .ok_or_else(|| Response::error(404, format!("no image named {name:?}")))?;
+    let (content_type, body) = asset
+        .portable()
+        .map_err(|e| Response::error(422, e.message))?;
     Ok(Response {
         status: 200,
-        content_type: if asset.mime == "image/png" {
-            "image/png"
-        } else {
-            "image/jpeg"
+        content_type,
+        body,
+        changed: None,
+        disposition: None,
+    })
+}
+
+/// The world's environment for the viewport, at most `w` texels wide
+/// (default 512): little-endian u32 width and height, the sun's direction
+/// and the light it gives (three f32 each; zeros without a sun), then
+/// linear RGBA f32 texels, bottom row first. A sun is taken out of the
+/// map, for the viewport to cast its shadows with a light; strength and
+/// rotation are left to the viewport. The studio sends its dome.
+fn environment(ed: &Editor, query: &str) -> Result<Response, Response> {
+    let w = number(query, "w", Some(512.0))?;
+    if !(8.0..=2048.0).contains(&w) {
+        return Err(Response::error(400, "w must be 8-2048"));
+    }
+    let scene = ed.scene();
+    let map =
+        crate::world::env_map(&scene.world, scene).map_err(|e| Response::error(422, e.message))?;
+    let (map, sun) = match map {
+        Some(map) => match map.sun() {
+            Some((dir, power, rest)) => (
+                std::sync::Arc::new(crate::world::EnvMap::new(map.width, map.height, rest)),
+                Some((dir, power)),
+            ),
+            None => (map, None),
         },
-        body: asset.data.to_vec(),
+        None => (
+            std::sync::Arc::new(crate::world::studio_map(
+                1024,
+                crate::pathtrace::studio_dome,
+            )),
+            None,
+        ),
+    };
+    let map = if map.width > w as usize {
+        map.shrink(w as usize)
+    } else {
+        map
+    };
+    let mut body = Vec::with_capacity(32 + map.texels.len() * 16);
+    body.extend((map.width as u32).to_le_bytes());
+    body.extend((map.height as u32).to_le_bytes());
+    let (dir, power) = sun.unwrap_or_default();
+    for v in [dir.x, dir.y, dir.z, power.x, power.y, power.z] {
+        body.extend((v as f32).to_le_bytes());
+    }
+    for row in map.texels.chunks(map.width).rev() {
+        for c in row {
+            for v in [c[0], c[1], c[2], 1.0] {
+                body.extend(v.to_le_bytes());
+            }
+        }
+    }
+    Ok(Response {
+        status: 200,
+        content_type: "application/octet-stream",
+        body,
         changed: None,
         disposition: None,
     })
@@ -660,6 +717,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
         ("GET", "/render/image") => image_job(ed, query).map(ImageJob::run),
         ("GET", "/texture") => texture(ed, query),
         ("GET", "/image") => image(ed, query),
+        ("GET", "/environment") => environment(ed, query),
         ("GET", "/nodes") => node_tile(ed, query),
         _ => Err(Response::error(
             404,
@@ -853,6 +911,37 @@ mod tests {
         assert_eq!(
             handle(&mut ed, "GET", "/render?size=64&samples=999", &[], false).status,
             422
+        );
+    }
+
+    #[test]
+    fn the_environment_comes_with_its_sun_split_off() {
+        let mut ed = Editor::new();
+        let header = |r: &Response| -> Vec<f32> {
+            let n = |i: usize| u32::from_le_bytes(r.body[i * 4..i * 4 + 4].try_into().unwrap());
+            let f = |i: usize| f32::from_le_bytes(r.body[i * 4..i * 4 + 4].try_into().unwrap());
+            let (w, h) = (n(0), n(1));
+            assert_eq!(r.body.len(), 32 + (w * h * 16) as usize);
+            vec![w as f32, h as f32, f(2), f(3), f(4), f(5), f(6), f(7)]
+        };
+        // The studio sends its dome, without a sun.
+        let r = handle(&mut ed, "GET", "/environment?w=64", &[], false);
+        assert_eq!(r.status, 200);
+        let h = header(&r);
+        assert_eq!((h[0], h[1]), (64.0, 32.0));
+        assert!(h[5..].iter().all(|v| *v == 0.0));
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands": [{"op": "world", "sky": "daylight"}]}),
+        );
+        let h = header(&handle(&mut ed, "GET", "/environment?w=128", &[], false));
+        assert_eq!((h[0], h[1]), (128.0, 64.0));
+        assert!(h[3] > 0.5 && h[5] > 0.5, "the sun is high: {h:?}");
+        assert_eq!(
+            handle(&mut ed, "GET", "/environment?w=4", &[], false).status,
+            400
         );
     }
 

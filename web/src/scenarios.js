@@ -1098,4 +1098,43 @@ export const final = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final }
+// World lighting: the rendered preview under the built-in skies, turned
+// and shown behind the scene; then an agent picks the light.
+export const world = {
+  title: 'World lighting',
+  width: 800,
+  gizmo: false,
+  external: true,
+  setup: [
+    ...render.setup,
+    { op: 'add', name: 'Clay', primitive: { kind: 'sphere', radius: 0.3, segments: 48, rings: 24 }, translation: [0.2, 0.38, -0.4], color: '#d8d4cb', roughness: 0.65 },
+  ],
+  camera: { azimuth: 18, elevation: 12, distance: 4.6, target: [0, 0.55, 0] },
+  steps: [
+    { wait: 300 },
+    { caption: 'Light the scene with a sky', hint: 'World · rendered preview' },
+    { click: '#shading-btn', after: 100 },
+    { samples: 24, after: 500 },
+    { click: '[data-sky=daylight]', after: 100 },
+    { samples: 32, after: 900 },
+    { click: '[data-sky=sunset]', after: 100 },
+    { samples: 32, after: 900 },
+    { caption: 'Turn the world: the sun and its shadows follow', hint: 'rotation' },
+    { slide: '#w-rotation', to: 110, ms: 900, after: 100 },
+    { samples: 32, after: 700 },
+    { caption: 'Show it behind the scene', hint: 'background' },
+    { click: '#w-bg', after: 100 },
+    { samples: 32, after: 900 },
+    { click: '[data-sky=night]', after: 100 },
+    { samples: 32, after: 1100 },
+    { caption: 'Agents set the light too, or bring an HDRI', hint: 'world · sky · image (.hdr)' },
+    {
+      mcp: [{ tool: 'apply_commands', arguments: { commands: [{ op: 'world', sky: 'daylight', rotation: 200, strength: 1.1 }] }, after: 300 }],
+    },
+    { samples: 32, after: 1600 },
+    { cursor: false },
+    { wait: 600 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world }
