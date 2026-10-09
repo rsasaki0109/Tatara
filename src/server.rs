@@ -350,6 +350,7 @@ pub fn parse_batch(text: &str) -> Result<CommandBatch, String> {
     let batch: CommandBatch = serde_json::from_value(value).map_err(|e| e.to_string())?;
     Ok(CommandBatch {
         expected_revision: None,
+        source: Some("chat".into()),
         ..batch
     })
 }

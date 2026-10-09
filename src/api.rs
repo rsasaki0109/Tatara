@@ -395,6 +395,41 @@ fn environment(ed: &Editor, query: &str) -> Result<Response, Response> {
     })
 }
 
+/// The batches that made the scene (the last `limit`, default 100), each
+/// numbered from 1. Image data is left out: those steps can't be revised.
+pub fn history_steps(ed: &Editor, query: &str) -> Result<Value, Response> {
+    let limit = number(query, "limit", Some(100.0))?;
+    if !(1.0..=1000.0).contains(&limit) {
+        return Err(Response::error(400, "limit must be 1-1000"));
+    }
+    let (steps, loaded) = ed.history();
+    let skip = steps.len().saturating_sub(limit as usize);
+    let listed: Vec<Value> = steps
+        .iter()
+        .enumerate()
+        .skip(skip)
+        .map(|(i, step)| {
+            let mut commands = serde_json::to_value(&step.commands).expect("commands serialize");
+            let mut editable = true;
+            for c in commands.as_array_mut().into_iter().flatten() {
+                if c["op"] == "add_image" {
+                    let bytes = c["data"].as_str().map_or(0, str::len);
+                    c["data"] = json!(format!("({bytes} characters of image data)"));
+                    editable = false;
+                }
+            }
+            json!({ "step": i + 1, "source": step.source, "commands": commands, "editable": editable })
+        })
+        .collect();
+    Ok(json!({ "total": steps.len(), "from_loaded_scene": loaded, "steps": listed }))
+}
+
+#[derive(serde::Deserialize)]
+struct Revision {
+    step: usize,
+    commands: Vec<crate::engine::Command>,
+}
+
 /// Pending proposals (without their scenes) and recent decisions.
 pub fn proposals(ed: &Editor) -> Value {
     json!({
@@ -684,6 +719,23 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
             )
             .changed(r.revision))
         }
+        ("GET", "/history") => history_steps(ed, query).map(|v| Response::json(200, v)),
+        ("POST", "/history/revise") => {
+            let r: Revision = parse(body)?;
+            let revision = ed.revise(r.step, r.commands)?;
+            Ok(
+                Response::json(200, json!({ "revision": revision, "history": history(ed) }))
+                    .changed(revision),
+            )
+        }
+        ("POST", "/history/preview") => {
+            let r: Revision = parse(body)?;
+            let preview = ed.revise_preview(r.step, r.commands)?;
+            Ok(Response::json(
+                200,
+                json!({ "scene": state(&preview, false)["scene"] }),
+            ))
+        }
         ("GET", "/proposals") => Ok(Response::json(200, proposals(ed))),
         ("POST", "/proposals") => {
             let req: crate::proposal::ProposalRequest = parse(body)?;
@@ -766,6 +818,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
             let r = ed.apply(&CommandBatch {
                 commands,
                 expected_revision: None,
+                source: Some("import".into()),
             })?;
             Ok(Response::json(
                 200,
@@ -973,6 +1026,76 @@ mod tests {
             handle(&mut ed, "GET", "/render?size=64&samples=999", &[], false).status,
             422
         );
+    }
+
+    #[test]
+    fn the_history_is_listed_previewed_and_revised_over_http() {
+        let mut ed = Editor::new();
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"source": "UI", "commands": [{"op": "add", "name": "Post", "primitive": {"kind": "cylinder", "height": 1}}]}),
+        );
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands": [{"op": "add_image", "name": "Logo", "data": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, crate::image::tests::tiny_png())}]}),
+        );
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"source": "agent", "commands": [{"op": "add", "name": "Cap", "primitive": {"kind": "sphere", "radius": 0.2}}, {"op": "place", "id": "Cap", "on": "Post"}]}),
+        );
+        let (s, h) = call(&mut ed, "GET", "/history", Value::Null);
+        assert_eq!(s, 200);
+        assert_eq!(
+            (h["total"].as_u64(), h["from_loaded_scene"].as_bool()),
+            (Some(3), Some(false))
+        );
+        assert_eq!(h["steps"][0]["source"], "UI");
+        assert_eq!(h["steps"][1]["source"], "API");
+        assert_eq!(h["steps"][1]["editable"], false);
+        assert!(
+            h["steps"][1]["commands"][0]["data"]
+                .as_str()
+                .unwrap()
+                .contains("image data")
+        );
+        assert_eq!(h["steps"][2]["step"], 3);
+        let (_, last) = call(&mut ed, "GET", "/history?limit=1", Value::Null);
+        assert_eq!(last["steps"].as_array().unwrap().len(), 1);
+
+        let taller = json!({"step": 1, "commands": [{"op": "add", "name": "Post", "primitive": {"kind": "cylinder", "height": 2}}]});
+        let cap_y = |ed: &Editor| ed.scene().objects[1].transform.translation[1];
+        let before = cap_y(&ed);
+        let (s, p) = call(&mut ed, "POST", "/history/preview", taller.clone());
+        assert_eq!(s, 200);
+        assert!(
+            p["scene"]["objects"][1]["transform"]["translation"][1]
+                .as_f64()
+                .unwrap()
+                > before + 0.4
+        );
+        assert_eq!(cap_y(&ed), before, "a preview changes nothing");
+        let r = handle(
+            &mut ed,
+            "POST",
+            "/history/revise",
+            &serde_json::to_vec(&taller).unwrap(),
+            false,
+        );
+        assert_eq!((r.status, r.changed), (200, Some(ed.scene().revision)));
+        assert!(
+            cap_y(&ed) > before + 0.4,
+            "the cap is placed on the taller post again"
+        );
+        let bad = json!({"step": 1, "commands": [{"op": "add", "name": "Pole", "primitive": {"kind": "cylinder"}}]});
+        let (s, e) = call(&mut ed, "POST", "/history/revise", bad);
+        assert_eq!(s, 422);
+        assert!(e["error"].as_str().unwrap().contains("step 3"), "{e}");
     }
 
     #[test]

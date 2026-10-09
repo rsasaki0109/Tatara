@@ -51,7 +51,7 @@ export class DemoRunner {
       app.actions.wireframe(false)
       app.actions.rendered(false)
       app.showTab(scenario.tab || 'properties')
-      if (scenario.setup) await app.api.commands(scenario.setup)
+      if (scenario.setup) await app.api.commands(scenario.setup, undefined, 'setup')
       await app.refresh(false)
       const vp = app.viewport
       vp.spinRate = 0
@@ -110,6 +110,7 @@ export class DemoRunner {
       return s.after ? this.sleep(s.after) : undefined
     }
     if (s.slide) return this.slide(s)
+    if (s.scrubNumber) return this.dragNumber(s)
     if (s.stroke) return this.stroke(s)
     if (s.choose) return this.choose(s)
     if (s.upload) return this.upload(s)
@@ -449,6 +450,29 @@ export class DemoRunner {
   }
 
   /** Drag a range input's thumb to `to`, then commit it like a mouse release. */
+  /** Drag a number's label sideways (History scrubbing) to `s.to`. */
+  async dragNumber(s) {
+    const key = document.querySelector(s.scrubNumber)
+    if (!key) throw new Error(`demo: nothing matches ${s.scrubNumber}`)
+    key.scrollIntoView({ block: 'nearest' })
+    const input = key.parentElement.querySelector('input')
+    const from = Number(input.value)
+    const r = key.getBoundingClientRect()
+    const y = r.top + r.height / 2
+    await this.moveTo(r.left + r.width / 2, y)
+    this.press()
+    const x0 = this.pos.x
+    await this.app.animator.add('drag', s.ms ?? 1200, (t) => {
+      input.value = String(Math.round((from + (s.to - from) * t) * 1000) / 1000)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      this.pos = { x: x0 + t * 140, y }
+      this.placeCursor()
+    })
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    await this.idle()
+    if (s.after) await this.sleep(s.after)
+  }
+
   async slide(s) {
     const el = document.querySelector(s.slide)
     if (!el) throw new Error(`demo: nothing matches ${s.slide}`)
@@ -575,6 +599,8 @@ export class DemoRunner {
           for (const issue of data.issues) details.push(`<span class="t-err">  ⚠ ${escapeHtml(issue.message)}</span>`)
         }
         else if (call.tool === 'propose_changes') summary = `proposed ${data.ids.length > 1 ? `${data.ids.length} options` : `#${data.ids[0]}`} · waiting for review`
+        else if (call.tool === 'get_history') summary = `${data.total} steps · ${data.steps.map((x) => x.source).filter((v, i, a) => a.indexOf(v) === i).join(', ')}`
+        else if (call.tool === 'revise_step') summary = `revised step ${call.arguments.step} · replayed · revision ${data.revision}`
         else if (call.tool === 'list_proposals') {
           const done = data.decided.slice(-4)
           summary = `${data.pending.length} pending · ${done.length} decided`
@@ -598,8 +624,8 @@ export class DemoRunner {
         line.querySelector('img').src = result.image
         await this.clock.track(line.querySelector('img').decode().catch(() => {}))
       }
-      if (['propose_changes', 'list_proposals'].includes(call.tool) && !result.isError) await app.refresh(true)
-      if (!['get_scene', 'render_view', 'render_image', 'inspect_scene', 'propose_changes', 'list_proposals'].includes(call.tool) && !result.isError) {
+      if (['propose_changes', 'list_proposals', 'get_history'].includes(call.tool) && !result.isError) await app.refresh(true)
+      if (!['get_scene', 'render_view', 'render_image', 'inspect_scene', 'propose_changes', 'list_proposals', 'get_history'].includes(call.tool) && !result.isError) {
         await app.refresh(true)
         app.log('MCP', call.tool === 'apply_commands' ? app.summarize(call.arguments.commands) : call.tool)
       }
@@ -615,7 +641,9 @@ export class DemoRunner {
       let data
       if (tool === 'get_scene') data = await this.clock.track(fetch('/api/context').then((r) => r.json()))
       else if (tool === 'inspect_scene') data = await api.inspect()
-      else if (tool === 'apply_commands') data = await api.commands(args.commands, args.expected_revision)
+      else if (tool === 'apply_commands') data = await api.commands(args.commands, args.expected_revision, 'agent')
+      else if (tool === 'get_history') data = await api.history()
+      else if (tool === 'revise_step') data = await api.revise(args.step, args.commands)
       else if (tool === 'render_view') {
         const q = new URLSearchParams({ views: (args.views ?? ['iso']).join(','), size: String(args.size ?? 512) })
         if (args.object) q.set('object', args.object)

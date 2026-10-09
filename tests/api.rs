@@ -188,7 +188,7 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let init = call(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "tatara");
     let tools = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 11);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 13);
     let r = call(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "apply_commands", "arguments": {"commands": [{"op": "add", "primitive": {"kind": "torus"}}]}}})).await;
     assert_eq!(r["result"]["isError"], false, "{r}");
     let r = call(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "get_scene", "arguments": {}}})).await;
@@ -232,6 +232,19 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let r = call(json!({"jsonrpc": "2.0", "id": 31, "method": "tools/call", "params": {"name": "render_image", "arguments": {"path": png, "eye": [0, 1, 4]}}})).await;
     assert_eq!(r["result"]["isError"], true);
     std::fs::remove_dir_all(dir).ok();
+
+    // History: agent batches are marked, and an earlier step can be revised.
+    let r = call(json!({"jsonrpc": "2.0", "id": 35, "method": "tools/call", "params": {"name": "get_history", "arguments": {"limit": 50}}})).await;
+    let history: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let first = &history["steps"][0];
+    assert_eq!(first["source"], "agent", "{history}");
+    let step = first["step"].clone();
+    let commands = first["commands"].clone();
+    let r = call(json!({"jsonrpc": "2.0", "id": 36, "method": "tools/call", "params": {"name": "revise_step", "arguments": {"step": step, "commands": commands}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc": "2.0", "id": 37, "method": "tools/call", "params": {"name": "revise_step", "arguments": {"step": 999, "commands": commands}}})).await;
+    assert_eq!(r["result"]["isError"], true);
 
     // Proposals: offered for review, listed back with the author.
     let r = call(json!({"jsonrpc": "2.0", "id": 32, "method": "tools/call", "params": {"name": "propose_changes", "arguments": {"title": "A lamp", "commands": [{"op": "add", "name": "Lamp", "primitive": {"kind": "sphere"}}]}}})).await;

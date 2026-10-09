@@ -899,6 +899,68 @@ pub struct CommandBatch {
     /// Reject the batch unless the scene is at this revision.
     #[serde(default)]
     pub expected_revision: Option<u64>,
+    /// Who sent it ("UI", "agent", ...), shown in the history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// One applied batch in the scene's history.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Step {
+    pub commands: Vec<Command>,
+    /// Where it came from: "UI", "agent", "chat", "proposal", ...
+    pub source: String,
+}
+
+/// How the current scene was made: the scene it started from and the
+/// batches applied to it since. Replaying it gives the scene again, so an
+/// earlier step can be changed and everything after it follows.
+#[derive(Debug, Clone, Default)]
+struct Timeline {
+    base: Arc<Scene>,
+    steps: Vec<Arc<Step>>,
+}
+
+/// Most steps kept replayable; older ones fold into the starting scene.
+pub const MAX_STEPS: usize = 400;
+
+impl Timeline {
+    fn push(&mut self, step: Step) {
+        self.steps.push(Arc::new(step));
+        if self.steps.len() > MAX_STEPS {
+            let first = self.steps.remove(0);
+            let mut base = (*self.base).clone();
+            // The step applied once already, so it applies again.
+            if replay_into(&mut base, &first.commands).is_ok() {
+                self.base = Arc::new(base);
+            }
+        }
+    }
+
+    /// The scene this timeline makes.
+    fn replay(&self) -> Result<Scene, EngineError> {
+        let mut scene = (*self.base).clone();
+        for (i, step) in self.steps.iter().enumerate() {
+            replay_into(&mut scene, &step.commands).map_err(|e| EngineError {
+                message: format!("step {} no longer applies: {}", i + 1, e.message),
+                ..e
+            })?;
+        }
+        Ok(scene)
+    }
+}
+
+/// Apply `commands` to `scene` in place (it is left part-way on failure)
+/// and return the ids they created.
+fn replay_into(scene: &mut Scene, commands: &[Command]) -> Result<Vec<u64>, EngineError> {
+    let mut created = Vec::new();
+    for (i, command) in commands.iter().enumerate() {
+        apply_command(scene, command, &mut created).map_err(|mut e| {
+            e.command_index = Some(i);
+            e
+        })?;
+    }
+    Ok(created)
 }
 
 pub fn command_schema() -> serde_json::Value {
@@ -963,8 +1025,10 @@ struct Evaluated {
 #[derive(Debug, Default)]
 pub struct Editor {
     scene: Scene,
-    undo: Vec<Scene>,
-    redo: Vec<Scene>,
+    /// How `scene` was made (see `Timeline`).
+    timeline: Timeline,
+    undo: Vec<(Scene, Timeline)>,
+    redo: Vec<(Scene, Timeline)>,
     /// Evaluated meshes for objects with modifiers, reused while unchanged.
     evaluated: HashMap<u64, Evaluated>,
     /// The scene as last prepared for path tracing.
@@ -1076,13 +1140,80 @@ impl Editor {
         }
         let (next, created) = run(&self.scene, &batch.commands)?;
         let evaluated = self.evaluate_all(&next)?;
-        self.commit(next);
+        let mut timeline = self.timeline.clone();
+        timeline.push(Step {
+            commands: batch.commands.clone(),
+            source: batch.source.clone().unwrap_or_else(|| "API".into()),
+        });
+        self.commit(next, timeline);
         self.evaluated = evaluated;
         self.refresh_proposals();
         Ok(ApplyResult {
             revision: self.scene.revision,
             created,
         })
+    }
+
+    // -- History ------------------------------------------------------------
+
+    /// The batches that made the scene, oldest first, and whether it
+    /// started from a loaded scene rather than an empty one.
+    pub fn history(&self) -> (&[Arc<Step>], bool) {
+        let loaded = !self.timeline.base.objects.is_empty()
+            || !self.timeline.base.images.is_empty()
+            || !self.timeline.base.world.is_default();
+        (&self.timeline.steps, loaded)
+    }
+
+    /// The scene with step `step` (1-based) replaced by `commands` and every
+    /// later step replayed on top, and the history that makes it.
+    fn revised(
+        &self,
+        step: usize,
+        commands: Vec<Command>,
+    ) -> Result<(Scene, Timeline), EngineError> {
+        if commands.is_empty() {
+            return err("a step needs at least one command");
+        }
+        let Some(old) = step.checked_sub(1).and_then(|i| self.timeline.steps.get(i)) else {
+            return err(format!(
+                "no step {step}; the history has {} steps",
+                self.timeline.steps.len()
+            ));
+        };
+        let mut timeline = self.timeline.clone();
+        timeline.steps[step - 1] = Arc::new(Step {
+            commands,
+            source: old.source.clone(),
+        });
+        let scene = timeline.replay()?;
+        self.evaluate_all(&scene)?;
+        Ok((scene, timeline))
+    }
+
+    /// Change an earlier step and replay the rest: one undo step.
+    pub fn revise(&mut self, step: usize, commands: Vec<Command>) -> Result<u64, EngineError> {
+        let (scene, timeline) = self.revised(step, commands)?;
+        let evaluated = self.evaluate_all(&scene)?;
+        self.commit(scene, timeline);
+        self.evaluated = evaluated;
+        self.refresh_proposals();
+        Ok(self.scene.revision)
+    }
+
+    /// What `revise` would make, without changing anything.
+    pub fn revise_preview(
+        &self,
+        step: usize,
+        commands: Vec<Command>,
+    ) -> Result<Editor, EngineError> {
+        let (scene, _) = self.revised(step, commands)?;
+        let mut ed = Editor {
+            scene,
+            ..Editor::default()
+        };
+        ed.evaluated = self.evaluate_all(&ed.scene)?;
+        Ok(ed)
     }
 
     // -- Proposals ----------------------------------------------------------
@@ -1186,6 +1317,7 @@ impl Editor {
         let batch = CommandBatch {
             commands: p.commands.clone(),
             expected_revision: None,
+            source: Some(format!("proposal · {}", p.author)),
         };
         let result = match self.apply(&batch) {
             Ok(r) => r,
@@ -1260,16 +1392,22 @@ impl Editor {
     pub fn load(&mut self, scene: Scene) -> Result<u64, EngineError> {
         validate_scene(&scene)?;
         let evaluated = self.evaluate_all(&scene)?;
-        self.commit(scene);
+        // A loaded scene starts a new history.
+        let timeline = Timeline {
+            base: Arc::new(scene.clone()),
+            steps: Vec::new(),
+        };
+        self.commit(scene, timeline);
         self.evaluated = evaluated;
         self.refresh_proposals();
         Ok(self.scene.revision)
     }
 
-    fn commit(&mut self, mut next: Scene) {
+    fn commit(&mut self, mut next: Scene, timeline: Timeline) {
         let previous = std::mem::take(&mut self.scene);
         next.revision = previous.revision + 1;
-        self.undo.push(previous);
+        let previous_timeline = std::mem::replace(&mut self.timeline, timeline);
+        self.undo.push((previous, previous_timeline));
         if self.undo.len() > HISTORY_LIMIT {
             self.undo.remove(0);
         }
@@ -1278,20 +1416,22 @@ impl Editor {
     }
 
     pub fn undo(&mut self) -> Option<u64> {
-        let mut previous = self.undo.pop()?;
+        let (mut previous, timeline) = self.undo.pop()?;
         previous.revision = self.scene.revision + 1;
         let current = std::mem::replace(&mut self.scene, previous);
-        self.redo.push(current);
+        let current_timeline = std::mem::replace(&mut self.timeline, timeline);
+        self.redo.push((current, current_timeline));
         self.refresh_evaluated();
         self.refresh_proposals();
         Some(self.scene.revision)
     }
 
     pub fn redo(&mut self) -> Option<u64> {
-        let mut next = self.redo.pop()?;
+        let (mut next, timeline) = self.redo.pop()?;
         next.revision = self.scene.revision + 1;
         let current = std::mem::replace(&mut self.scene, next);
-        self.undo.push(current);
+        let current_timeline = std::mem::replace(&mut self.timeline, timeline);
+        self.undo.push((current, current_timeline));
         self.refresh_evaluated();
         self.refresh_proposals();
         Some(self.scene.revision)
@@ -1310,13 +1450,7 @@ impl Editor {
 /// `scene` with `commands` applied in order, and the ids they created.
 fn run(scene: &Scene, commands: &[Command]) -> Result<(Scene, Vec<u64>), EngineError> {
     let mut next = scene.clone();
-    let mut created = Vec::new();
-    for (i, command) in commands.iter().enumerate() {
-        apply_command(&mut next, command, &mut created).map_err(|mut e| {
-            e.command_index = Some(i);
-            e
-        })?;
-    }
+    let created = replay_into(&mut next, commands)?;
     Ok((next, created))
 }
 
@@ -3138,6 +3272,7 @@ mod tests {
             .apply(&CommandBatch {
                 commands: vec![Command::Clear {}],
                 expected_revision: Some(0),
+                source: None,
             })
             .unwrap_err();
         assert!(stale.stale);
@@ -3852,5 +3987,177 @@ mod tests {
         ] {
             assert!(s.contains(op));
         }
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn apply(ed: &mut Editor, source: &str, commands: serde_json::Value) {
+        let batch: CommandBatch =
+            serde_json::from_value(json!({ "commands": commands, "source": source })).unwrap();
+        ed.apply(&batch).unwrap();
+    }
+
+    fn commands(v: serde_json::Value) -> Vec<Command> {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn object<'a>(ed: &'a Editor, name: &str) -> &'a Object {
+        ed.scene().objects.iter().find(|o| o.name == name).unwrap()
+    }
+
+    /// Objects as they would be saved, without the revision.
+    fn objects(ed: &Editor) -> serde_json::Value {
+        json!(ed.scene().objects)
+    }
+
+    fn dining() -> Editor {
+        let mut ed = Editor::new();
+        apply(
+            &mut ed,
+            "UI",
+            json!([{"op": "build", "template": "table", "name": "Table"}]),
+        );
+        apply(
+            &mut ed,
+            "agent",
+            json!([{"op": "add", "name": "Lamp", "primitive": {"kind": "sphere", "radius": 0.15}, "translation": [3, 2, 0]}]),
+        );
+        apply(
+            &mut ed,
+            "agent",
+            json!([{"op": "place", "id": "Lamp", "on": "Table"}]),
+        );
+        ed
+    }
+
+    #[test]
+    fn changing_an_early_step_replays_the_rest() {
+        let mut ed = dining();
+        let (steps, loaded) = ed.history();
+        assert_eq!((steps.len(), loaded), (3, false));
+        assert_eq!(steps[1].source, "agent");
+        let lamp_y = object(&ed, "Lamp").transform.translation[1];
+        // Rebuild the table bigger: the lamp, placed on it two steps later,
+        // ends up on the new top.
+        let revision = ed
+            .revise(
+                1,
+                commands(
+                    json!([{"op": "build", "template": "table", "name": "Table", "scale": 1.4}]),
+                ),
+            )
+            .unwrap();
+        assert_eq!(revision, ed.scene().revision);
+        let higher = object(&ed, "Lamp").transform.translation[1];
+        assert!(higher > lamp_y + 0.2, "{lamp_y} -> {higher}");
+        let (steps, _) = ed.history();
+        assert_eq!(steps.len(), 3, "the history keeps its shape");
+        assert_eq!(steps[0].source, "UI");
+        assert!(matches!(steps[0].commands[0], Command::Build { scale: Some(s), .. } if s == 1.4));
+        // One undo step brings the old table and lamp back, history too.
+        ed.undo();
+        assert!((object(&ed, "Lamp").transform.translation[1] - lamp_y).abs() < 1e-12);
+        assert!(matches!(
+            ed.history().0[0].commands[0],
+            Command::Build { scale: None, .. }
+        ));
+    }
+
+    #[test]
+    fn replaying_the_history_unchanged_gives_the_same_scene() {
+        let mut ed = dining();
+        apply(
+            &mut ed,
+            "UI",
+            json!([{"op": "add", "name": "Box", "primitive": {"kind": "cube"}}]),
+        );
+        apply(
+            &mut ed,
+            "UI",
+            json!([{"op": "extrude", "id": "Box", "face": 0, "distance": 0.4}]),
+        );
+        apply(
+            &mut ed,
+            "UI",
+            json!([{"op": "material", "id": "Box", "preset": "gold"}]),
+        );
+        let same = ed.history().0[3].commands.clone();
+        let preview = ed.revise_preview(4, same).unwrap();
+        assert_eq!(json!(preview.scene().objects), objects(&ed));
+        // A preview changes nothing.
+        let wider = commands(
+            json!([{"op": "add", "name": "Box", "primitive": {"kind": "cube", "size": 2}}]),
+        );
+        let preview = ed.revise_preview(4, wider).unwrap();
+        assert_ne!(json!(preview.scene().objects), objects(&ed));
+        assert_eq!(ed.history().0.len(), 6);
+    }
+
+    #[test]
+    fn a_change_that_breaks_a_later_step_is_refused() {
+        let mut ed = dining();
+        let before = objects(&ed);
+        // Renaming the table leaves "place on Table" with nothing to find.
+        let e = ed
+            .revise(
+                1,
+                commands(json!([{"op": "build", "template": "table", "name": "Desk"}])),
+            )
+            .unwrap_err();
+        assert!(
+            e.message.starts_with("step 3 no longer applies"),
+            "{}",
+            e.message
+        );
+        assert_eq!(objects(&ed), before);
+        assert!(ed.revise(9, commands(json!([{"op": "clear"}]))).is_err());
+        assert!(ed.revise(1, Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_loaded_scene_starts_the_history_and_old_steps_fold_in() {
+        let mut ed = dining();
+        let scene = ed.scene().clone();
+        let mut other = Editor::new();
+        other.load(scene).unwrap();
+        assert_eq!(other.history(), (&[][..], true));
+        apply(
+            &mut other,
+            "UI",
+            json!([{"op": "transform", "id": "Lamp", "translation": [0, 3, 0]}]),
+        );
+        other
+            .revise(
+                1,
+                commands(json!([{"op": "transform", "id": "Lamp", "translation": [0, 4, 0]}])),
+            )
+            .unwrap();
+        assert_eq!(
+            object(&other, "Lamp").transform.translation,
+            [0.0, 4.0, 0.0]
+        );
+        // Undoing the load brings back the editor's own (empty) history.
+        other.undo();
+        other.undo();
+        other.undo();
+        assert_eq!(other.history(), (&[][..], false));
+
+        // Past the limit, the oldest steps fold into the starting scene.
+        for i in 0..MAX_STEPS + 3 {
+            apply(
+                &mut ed,
+                "UI",
+                json!([{"op": "transform", "id": "Lamp", "translation": [i as f64 * 0.001, 3, 0]}]),
+            );
+        }
+        let (steps, loaded) = ed.history();
+        assert_eq!((steps.len(), loaded), (MAX_STEPS, true));
+        let first = steps[0].commands.clone();
+        let preview = ed.revise_preview(1, first).unwrap();
+        assert_eq!(json!(preview.scene().objects), objects(&ed));
     }
 }

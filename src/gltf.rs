@@ -1345,6 +1345,7 @@ mod tests {
         ed.apply(&CommandBatch {
             commands,
             expected_revision: None,
+            source: None,
         })
         .unwrap();
         ed

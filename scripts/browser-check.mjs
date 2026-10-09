@@ -382,6 +382,19 @@ try {
   await page.evaluate(() => fetch('/api/undo', { method: 'POST' }))
   await page.evaluate(() => window.__tatara.refresh(true))
 
+  // History: every batch is a step; revising one replays the rest.
+  await page.click('.tabs [data-tab=history]')
+  await page.waitForSelector('#history .hs-step')
+  const total = await page.evaluate(() => fetch('/api/history').then((r) => r.json()).then((h) => h.total))
+  check((await page.$$('#history .hs-step')).length === Math.min(total, 200), `the History tab lists every step (${total})`)
+  await page.click('#history .hs-step:last-child .hs-head')
+  await page.waitForSelector('#history .hs-step.open [data-hs=apply]')
+  const revision0 = await page.evaluate(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision))
+  await page.click('#history [data-hs=apply]')
+  await until(page, (r) => fetch('/api/scene').then((x) => x.json()).then((s) => s.revision === r + 1), revision0)
+  check(true, 'a step re-applied from the History tab replays as one undo step')
+  await page.click('.tabs [data-tab=properties]')
+
   // Assemblies: build a chair from the empty panel; it lists as one group.
   await page.click('[data-build=chair]')
   await page.waitForSelector('#outliner li[data-group="Chair"]')
