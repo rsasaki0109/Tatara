@@ -375,6 +375,10 @@ pub fn inspect(ed: &Editor) -> Value {
             "closed": a.closed,
         }));
     }
+    issues.extend(crate::constraint::violations(
+        ed.scene(),
+        &ed.scene().constraints,
+    ));
     let summary = match issues.len() {
         0 => "no issues".to_string(),
         1 => "1 issue".to_string(),

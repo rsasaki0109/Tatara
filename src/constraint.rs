@@ -2,7 +2,8 @@
 //! scene keeps its intent instead of just its coordinates. An object (or a
 //! group, such as a built table) can be kept **on** another, keeping its
 //! place on it; kept the **mirror** image of another across a plane; or
-//! kept **matching** another's material.
+//! kept **matching** another's material; or kept a fixed **distance** from
+//! another object's or group's evaluated world-bound centre.
 //!
 //! Constraints are solved at the end of every command batch. Mirrors and
 //! matches work both ways: whichever side the batch changed leads, so moving
@@ -49,6 +50,7 @@ pub enum Kind {
     On,
     Mirrors,
     Matches,
+    Distance,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -60,6 +62,8 @@ pub enum Rule {
     Mirrors { of: Who, axis: Plane },
     /// Share `of`'s material.
     Matches { of: Who },
+    /// Keep evaluated world-bound centres this many metres apart.
+    Distance { of: Who, distance: f64 },
 }
 
 impl Rule {
@@ -68,13 +72,14 @@ impl Rule {
             Rule::On { .. } => Kind::On,
             Rule::Mirrors { .. } => Kind::Mirrors,
             Rule::Matches { .. } => Kind::Matches,
+            Rule::Distance { .. } => Kind::Distance,
         }
     }
 
     fn other(&self) -> &Who {
         match self {
             Rule::On { support, .. } => support,
-            Rule::Mirrors { of, .. } | Rule::Matches { of } => of,
+            Rule::Mirrors { of, .. } | Rule::Matches { of } | Rule::Distance { of, .. } => of,
         }
     }
 }
@@ -185,6 +190,16 @@ pub fn add(scene: &mut Scene, subject: &ObjRef, rule: Request) -> Result<(), Eng
             }
             Rule::Mirrors { of, axis }
         }
+        Request::Distance(r, distance) => {
+            if !distance.is_finite() || distance < 0.0 {
+                return err("distance must be finite and non-negative");
+            }
+            let of = who(scene, &r)?;
+            if overlaps(scene, &subject, &of) {
+                return err("a distance constraint needs disjoint objects or groups");
+            }
+            Rule::Distance { of, distance }
+        }
         Request::Matches(r) => {
             let of = who(scene, &r)?;
             if overlaps(scene, &subject, &of) {
@@ -194,7 +209,7 @@ pub fn add(scene: &mut Scene, subject: &ObjRef, rule: Request) -> Result<(), Eng
         }
     };
     let kind = rule.kind();
-    // Two objects mirror or match each other once, whichever way round.
+    // Symmetric rules bind a pair once, whichever way round.
     scene.constraints.retain(|c| {
         !(c.subject == subject && c.rule.kind() == kind)
             && !(kind != Kind::On
@@ -214,10 +229,11 @@ pub enum Request {
     On(ObjRef),
     Mirrors(ObjRef, Plane),
     Matches(ObjRef),
+    Distance(ObjRef, f64),
 }
 
 /// Drop `subject`'s constraints (of one kind, or all), and those of others
-/// that mirror or match it.
+/// that bind it with a symmetric mirror, match or distance rule.
 pub fn remove(scene: &mut Scene, subject: &ObjRef, kind: Option<Kind>) -> Result<(), EngineError> {
     let subject = who(scene, subject)?;
     let before = scene.constraints.len();
@@ -291,6 +307,7 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
         .filter(|o| changed(before, o))
         .map(|o| o.id)
         .collect();
+    let directly_changed = dirty.clone();
     let touched = |scene: &Scene, dirty: &std::collections::HashSet<u64>, who: &Who| {
         members(scene, who)
             .iter()
@@ -311,13 +328,25 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
                 *offset = [d.x, d.z];
             }
         }
-        for _ in 0..3 {
+        let has_distance = constraints.iter().any(|c| c.rule.kind() == Kind::Distance);
+        for pass in 0..if has_distance { 32 } else { 3 } {
             for c in &constraints {
                 let fresh = !before.constraints.contains(&c.id);
                 let subject = touched(scene, &dirty, &c.subject);
                 let other = touched(scene, &dirty, c.rule.other());
+                let direct_subject = touched(scene, &directly_changed, &c.subject);
+                let direct_other = touched(scene, &directly_changed, c.rule.other());
+                let (subject, other) =
+                    if c.rule.kind() == Kind::Distance && (direct_subject || direct_other) {
+                        (direct_subject, direct_other)
+                    } else {
+                        (subject, other)
+                    };
+                // Propagated distance edits still need solving, even when
+                // neither endpoint was directly edited by the command batch.
                 let lead = match (fresh, subject, other) {
-                    (false, false, false) => continue,
+                    (false, false, false) if c.rule.kind() != Kind::Distance => continue,
+                    (false, false, false) => Lead::Other,
                     (false, true, false) => Lead::Subject,
                     _ => Lead::Other,
                 };
@@ -331,6 +360,14 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
                     dirty.insert(scene.objects[i].id);
                 }
             }
+            if has_distance && pass >= 2 && violations(scene, &constraints).is_empty() {
+                break;
+            }
+        }
+        if has_distance && let Some(issue) = violations(scene, &constraints).first() {
+            return err(issue["message"]
+                .as_str()
+                .unwrap_or("constraint cannot be satisfied"));
         }
         Ok(())
     })();
@@ -372,6 +409,22 @@ fn apply(scene: &mut Scene, c: &Constraint, lead: Lead) -> Result<(), EngineErro
             for (&a, &b) in from.iter().zip(to.iter()) {
                 scene.objects[b].transform = mirror(&scene.objects[a].transform, *axis);
             }
+            Ok(())
+        }
+        Rule::Distance { of, distance } => {
+            let of = members(scene, of);
+            let (fixed, moving) = match lead {
+                Lead::Other => (&of, &subject),
+                Lead::Subject => (&subject, &of),
+            };
+            let anchor = centre(scene, fixed)?;
+            let current = centre(scene, moving)?;
+            let direction = (current - anchor).try_normalize().unwrap_or(DVec3::X);
+            let delta = anchor + direction * *distance - current;
+            if !delta.is_finite() {
+                return err("distance constraint exceeds finite scene coordinates");
+            }
+            assembly::translate(scene, moving, delta);
             Ok(())
         }
         Rule::Matches { of } => {
@@ -417,6 +470,14 @@ pub fn validate(scene: &Scene) -> Result<(), EngineError> {
                 c.id
             ));
         }
+        if let Rule::Distance { of, distance } = &c.rule
+            && (!distance.is_finite() || *distance < 0.0 || overlaps(scene, &c.subject, of))
+        {
+            return err(format!(
+                "constraint {} has an invalid distance or overlapping endpoints",
+                c.id
+            ));
+        }
         if let Rule::On { offset, .. } = &c.rule
             && !offset.iter().all(|v| v.is_finite())
         {
@@ -424,6 +485,65 @@ pub fn validate(scene: &Scene) -> Result<(), EngineError> {
         }
     }
     Ok(())
+}
+
+/// Distance residuals for inspection, including imported unsatisfied scenes.
+/// Other rule kinds retain their existing diagnostics.
+pub fn distance_violations(scene: &Scene, constraints: &[Constraint]) -> Vec<serde_json::Value> {
+    constraints.iter().filter_map(|c| {
+        let Rule::Distance { of, distance } = &c.rule else { return None };
+        let measured = centre(scene, &members(scene, &c.subject))
+            .and_then(|a| centre(scene, &members(scene, of)).map(|b| (a - b).length()));
+        match measured {
+            Ok(actual) if actual.is_finite() && (actual - distance).abs() <= 1e-6 * distance.max(1.0) => None,
+            Ok(actual) => Some(serde_json::json!({"kind":"constraint_violation", "constraint":c.id,
+                "expected":distance, "actual":actual,
+                "message":format!("distance constraint {} cannot be satisfied: expected {} m, measured {} m", c.id, distance, actual)})),
+            Err(e) => Some(serde_json::json!({"kind":"constraint_violation", "constraint":c.id,
+                "message":format!("distance constraint {} cannot be measured: {}", c.id, e)})),
+        }
+    }).collect()
+}
+
+/// Inspect all rules. Mixed distance batches must also preserve existing rules:
+/// satisfying distance alone can otherwise break an earlier on/mirror rule.
+pub fn violations(scene: &Scene, constraints: &[Constraint]) -> Vec<serde_json::Value> {
+    let mut issues = distance_violations(scene, constraints);
+    for c in constraints
+        .iter()
+        .filter(|c| c.rule.kind() != Kind::Distance)
+    {
+        let mut expected = scene.clone();
+        let error = apply(&mut expected, c, Lead::Other).err();
+        let differs = members(scene, &c.subject).iter().any(|&i| {
+            let a = &scene.objects[i];
+            let b = &expected.objects[i];
+            let [ax, ay, az] = a.transform.rotation;
+            let [bx, by, bz] = b.transform.rotation;
+            let qa = DQuat::from_euler(EulerRot::XYZ, ax, ay, az);
+            let qb = DQuat::from_euler(EulerRot::XYZ, bx, by, bz);
+            a.material != b.material
+                || !qa.is_finite()
+                || !qb.is_finite()
+                || !(qa.abs_diff_eq(qb, 1e-6) || qa.abs_diff_eq(-qb, 1e-6))
+                || a.transform
+                    .translation
+                    .iter()
+                    .chain(&a.transform.scale)
+                    .zip(b.transform.translation.iter().chain(&b.transform.scale))
+                    .any(|(x, y)| {
+                        !x.is_finite()
+                            || !y.is_finite()
+                            || (x - y).abs() > 1e-6 * x.abs().max(y.abs()).max(1.0)
+                    })
+        });
+        if error.is_some() || differs {
+            issues.push(serde_json::json!({"kind":"constraint_violation", "constraint":c.id,
+                "rule":c.rule.kind(), "message":format!("{:?} constraint {} cannot be satisfied{}", c.rule.kind(), c.id,
+                    error.map(|e| format!(": {e}")).unwrap_or_default())}));
+        }
+    }
+    issues
 }
 
 #[cfg(test)]
@@ -473,6 +593,247 @@ mod tests {
             .map(|o| o.id)
             .collect();
         inspect::bounds(&solids, &ids).unwrap().1.y
+    }
+
+    fn pair() -> Editor {
+        let mut ed = Editor::new();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"add","name":"A","primitive":{"kind":"cube"}},
+                {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[3,0,0]},
+                {"op":"constrain","id":"B","distance":2,"from":"A"}
+            ]),
+        )
+        .unwrap();
+        ed
+    }
+
+    #[test]
+    fn distance_cannot_silently_break_an_earlier_mirror_or_on_rule() {
+        let mut ed = Editor::new();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"add","name":"A","primitive":{"kind":"cube"}},
+                {"op":"add","name":"B","primitive":{"kind":"cube"}},
+                {"op":"constrain","id":"B","mirrors":"A"}
+            ]),
+        )
+        .unwrap();
+        let before = serde_json::to_value(ed.scene()).unwrap();
+        let error = apply(
+            &mut ed,
+            json!([{"op":"constrain","id":"B","distance":2,"from":"A"}]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("constraint"));
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), before);
+        apply(
+            &mut ed,
+            json!([{"op":"unconstrain","id":"B"},{"op":"constrain","id":"B","on":"A"}]),
+        )
+        .unwrap();
+        let before = serde_json::to_value(ed.scene()).unwrap();
+        assert!(
+            apply(
+                &mut ed,
+                json!([{"op":"constrain","id":"B","distance":0,"from":"A"}])
+            )
+            .is_err()
+        );
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), before);
+        let mut scene = ed.scene().clone();
+        scene.objects[1].transform.translation[1] += 3.0;
+        ed.load(scene).unwrap();
+        assert!(
+            inspect::inspect(&ed)["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "constraint_violation" && i["rule"] == "on")
+        );
+    }
+
+    #[test]
+    fn mixed_rules_compare_orientation_instead_of_euler_representations() {
+        let mut ed = Editor::new();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"add","name":"A","primitive":{"kind":"cube"},"translation":[-1,0,0]},
+                {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[1,0,0]},
+                {"op":"constrain","id":"B","mirrors":"A"},
+                {"op":"constrain","id":"B","distance":2,"from":"A"}
+            ]),
+        )
+        .unwrap();
+        let mut scene = ed.scene().clone();
+        scene.objects[1].transform.rotation = [std::f64::consts::TAU, 0.0, 0.0];
+        ed.load(scene).unwrap();
+        assert!(violations(ed.scene(), &ed.scene().constraints).is_empty());
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"B","rotation":[std::f64::consts::TAU,0,0]}]),
+        )
+        .unwrap();
+        assert!(violations(ed.scene(), &ed.scene().constraints).is_empty());
+    }
+
+    #[test]
+    fn distance_follows_either_side_and_undo_restores_the_whole_batch() {
+        let mut ed = pair();
+        assert!(close(at(&ed, "B"), [2.0, 0.0, 0.0]));
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"A","translation":[1,0,0]}]),
+        )
+        .unwrap();
+        assert!(close(at(&ed, "A"), [1.0, 0.0, 0.0]));
+        assert!(close(at(&ed, "B"), [3.0, 0.0, 0.0]));
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"B","translation":[5,0,0]}]),
+        )
+        .unwrap();
+        assert!(close(at(&ed, "A"), [3.0, 0.0, 0.0]));
+        ed.undo().unwrap();
+        assert!(close(at(&ed, "A"), [1.0, 0.0, 0.0]));
+        assert!(close(at(&ed, "B"), [3.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn distance_both_edited_uses_reference_and_coincident_centres_use_x() {
+        let mut ed = pair();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"transform","id":"A","translation":[4,0,0]},
+                {"op":"transform","id":"B","translation":[4,0,0]}
+            ]),
+        )
+        .unwrap();
+        assert!(close(at(&ed, "A"), [4.0, 0.0, 0.0]));
+        assert!(close(at(&ed, "B"), [6.0, 0.0, 0.0]));
+        apply(
+            &mut ed,
+            json!([{"op":"constrain","id":"A","distance":0,"from":"B"}]),
+        )
+        .unwrap();
+        assert_eq!(ed.scene().constraints.len(), 1);
+        assert!(close(at(&ed, "A"), at(&ed, "B")));
+        apply(
+            &mut ed,
+            json!([{"op":"unconstrain","id":"B","kind":"distance"}]),
+        )
+        .unwrap();
+        assert!(ed.scene().constraints.is_empty());
+    }
+
+    #[test]
+    fn distance_chains_propagate_from_either_end() {
+        let mut ed = pair();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"add","name":"C","primitive":{"kind":"cube"},"translation":[4,0,0]},
+                {"op":"constrain","id":"C","distance":2,"from":"B"},
+                {"op":"transform","id":"C","translation":[8,0,0]}
+            ]),
+        )
+        .unwrap();
+        // A newly added constraint is reference-led; edit C in a later batch.
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"C","translation":[10,0,0]}]),
+        )
+        .unwrap();
+        assert!(close(at(&ed, "C"), [10.0, 0.0, 0.0]));
+        assert!(distance_violations(ed.scene(), &ed.scene().constraints).is_empty());
+    }
+
+    #[test]
+    fn distance_group_moves_rigidly_and_uses_evaluated_bounds() {
+        let mut ed = Editor::new();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"add","name":"A","primitive":{"kind":"cube"},"translation":[0,1,0]},
+                {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[1,1,0]},
+
+                {"op":"add","name":"C","primitive":{"kind":"cube"},"translation":[6,1,0]},
+                {"op":"add_modifier","id":"B","modifier":{"type":"array","count":3,"offset":[2,0,0]}}
+            ]),
+        )
+        .unwrap();
+        let mut scene = ed.scene().clone();
+        scene.objects[0].group = Some("Pair".into());
+        scene.objects[1].group = Some("Pair".into());
+        ed.load(scene).unwrap();
+        apply(
+            &mut ed,
+            json!([{"op":"constrain","id":"Pair","distance":3,"from":"C"}]),
+        )
+        .unwrap();
+        // The array extends the group's bounds: its centre is A.x + 2.5,
+        // not the centre of the unmodified pair (A.x + 0.5).
+        assert!((at(&ed, "A")[0] - 0.5).abs() < 1e-6);
+        assert!((at(&ed, "B")[0] - at(&ed, "A")[0] - 1.0).abs() < 1e-6);
+        assert!(distance_violations(ed.scene(), &ed.scene().constraints).is_empty());
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"C","translation":[7,2,1]}]),
+        )
+        .unwrap();
+        assert!(distance_violations(ed.scene(), &ed.scene().constraints).is_empty());
+        assert!((at(&ed, "B")[0] - at(&ed, "A")[0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn invalid_and_incompatible_distance_batches_are_atomic() {
+        let mut ed = pair();
+        for bad in [
+            json!({"op":"constrain","id":"B","distance":-1,"from":"A"}),
+            json!({"op":"constrain","id":"B","distance":1,"from":"B"}),
+            json!({"op":"constrain","id":"B","distance":1}),
+            json!({"op":"constrain","id":"B","distance":1,"from":"A","on":"A"}),
+        ] {
+            let before = serde_json::to_value(ed.scene()).unwrap();
+            assert!(
+                apply(
+                    &mut ed,
+                    json!([{"op":"rename","id":"A","name":"Changed"},bad])
+                )
+                .is_err()
+            );
+            assert_eq!(serde_json::to_value(ed.scene()).unwrap(), before);
+        }
+        let before = serde_json::to_value(ed.scene()).unwrap();
+        let err = apply(&mut ed, json!([{"op":"constrain","id":"B","mirrors":"A"}])).unwrap_err();
+        assert!(err.to_string().contains("distance constraint"));
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), before);
+    }
+
+    #[test]
+    fn inspection_reports_loaded_distance_residuals_and_validation_rejects_bad_parameters() {
+        let mut ed = pair();
+        let mut scene = ed.scene().clone();
+        scene.objects[1].transform.translation = [8.0, 0.0, 0.0];
+        ed.load(scene.clone()).unwrap();
+        let report = inspect::inspect(&ed);
+        assert!(
+            report["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "constraint_violation"
+                    && i["expected"] == 2.0
+                    && i["actual"] == 8.0)
+        );
+        if let Rule::Distance { distance, .. } = &mut scene.constraints[0].rule {
+            *distance = f64::NAN;
+        }
+        assert!(validate(&scene).is_err());
     }
 
     #[test]

@@ -96,6 +96,17 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('#outliner li').length === 5, null, { timeout: 90000 })
   await page.waitForFunction(() => !document.querySelector('#demo-btn').disabled, null, { timeout: 90000 })
   check(true, 'the tour plays')
+  const distance = await page.evaluate(async () => {
+    const post = (path, commands) => fetch(`/api/${path}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands})}).then((r) => r.json())
+    await post('commands', [{op: 'clear'}, {op: 'add', name: 'A', primitive: {kind: 'cube'}}, {op: 'add', name: 'B', primitive: {kind: 'cube'}, translation: [3,0,0]}, {op: 'constrain', id: 'B', distance: 2, from: 'A'}])
+    await post('commands', [{op: 'transform', id: 'A', translation: [1,0,0]}])
+    const moved = await (await fetch('/api/scene')).json()
+    await post('undo', [])
+    const undone = await (await fetch('/api/scene')).json()
+    return {moved, undone}
+  })
+  check(distance.moved.objects[0].transform.translation[0] === 1 && distance.moved.objects[1].transform.translation[0] === 3, 'distance intent is solved by the WebAssembly core')
+  check(distance.undone.objects[0].transform.translation[0] === 0 && distance.undone.objects[1].transform.translation[0] === 2, 'distance endpoint changes are one Undo in WebAssembly')
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

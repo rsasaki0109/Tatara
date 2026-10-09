@@ -2102,6 +2102,18 @@ input[type='range'] {
   color: #ffb02e;
 }
 
+.c-distance { color: #67b8ff; }
+
+#c-distance {
+  width: 80px;
+  padding: 5px 7px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
 .constraint-add select {
   flex: 1;
   min-width: 0;

@@ -892,6 +892,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn distance_commands_preview_revise_inspect_and_reject_atomically() {
+        let mut ed = Editor::new();
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[
+                {"op":"add","name":"A","primitive":{"kind":"cube"}},
+                {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[3,0,0]},
+                {"op":"constrain","id":"B","distance":2,"from":"A"}
+            ]}),
+        );
+        assert_eq!(status, 200);
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Move A","commands":[{"op":"transform","id":"A","translation":[1,0,0]}]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        let id = out["ids"][0].as_u64().unwrap();
+        let (status, preview) = call(&mut ed, "GET", &format!("/proposal?id={id}"), Value::Null);
+        assert_eq!(status, 200);
+        assert_eq!(
+            preview["scene"]["objects"][1]["transform"]["translation"][0],
+            3.0
+        );
+        assert_eq!(ed.scene().objects[1].transform.translation[0], 2.0);
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            &format!("/proposal/accept?id={id}"),
+            json!({}),
+        );
+        assert_eq!(status, 200);
+        let step = 1;
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/history/revise",
+            json!({"step":step,"commands":[
+                {"op":"add","name":"A","primitive":{"kind":"cube"}},
+                {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[3,0,0]},
+                {"op":"constrain","id":"B","distance":4,"from":"A"}
+            ]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        assert_eq!(ed.scene().objects[1].transform.translation[0], 5.0);
+        let (status, report) = call(&mut ed, "GET", "/inspect", Value::Null);
+        assert_eq!(status, 200);
+        assert!(
+            !report["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "constraint_violation")
+        );
+        let before = serde_json::to_value(ed.scene()).unwrap();
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"constrain","id":"B","distance":-1,"from":"A"}]}),
+        );
+        assert_eq!(status, 422);
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), before);
+    }
+
+    #[test]
     fn chat_review_validates_without_mutating_scene_or_undo() {
         let mut ed = Editor::new();
         let mut batch: CommandBatch = serde_json::from_value(json!({"expected_revision":0,"source":"chat","commands":[{"op":"add","primitive":{"kind":"cube"}}]})).unwrap();
