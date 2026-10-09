@@ -1196,7 +1196,7 @@ export const history = {
   width: 800,
   gizmo: false,
   external: true,
-  camera: { azimuth: 30, elevation: 24, distance: 6.4, target: [0, 0.55, 0] },
+  camera: { azimuth: 30, elevation: 24, distance: 7.2, target: [0, 0.5, 0] },
   steps: [
     { wait: 200 },
     { caption: 'Every edit is a step', hint: 'build · arrange · place' },
@@ -1221,12 +1221,13 @@ export const history = {
     {
       mcp: [
         { tool: 'get_history', arguments: {}, after: 300 },
-        { tool: 'revise_step', arguments: { step: 3, commands: [{ op: 'arrange', ids: CHAIRS, layout: 'circle', around: 'Table', spacing: 0.45 }] }, after: 500 },
-        { tool: 'revise_step', arguments: { step: 1, commands: [{ op: 'build', template: 'table', name: 'Table', scale: 1.35, color: '#3a2a22' }] }, after: 1600 },
+        { tool: 'revise_step', arguments: { step: 3, commands: [{ op: 'arrange', ids: CHAIRS, layout: 'circle', around: 'Table', spacing: 0.3 }] }, after: 500 },
+        { tool: 'revise_step', arguments: { step: 1, commands: [{ op: 'build', template: 'table', name: 'Table', scale: 1.35, color: '#3a2a22' }] }, after: 900 },
       ],
     },
+    { terminal: false },
     { cursor: false },
-    { wait: 500 },
+    { wait: 1800 },
   ],
 }
 
