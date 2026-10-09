@@ -19,6 +19,7 @@ use crate::csg::{self, BoolOp};
 use crate::edit;
 use crate::image::{ImageAsset, MAX_IMAGES, decode_base64};
 use crate::modifiers::{self, Axis, Modifier};
+use crate::proposal::{self, Decided, Outcome, Proposal, ProposalRequest};
 use crate::rig;
 use crate::sculpt::{self, Brush};
 use crate::texture::{Pattern, Texture};
@@ -968,6 +969,13 @@ pub struct Editor {
     evaluated: HashMap<u64, Evaluated>,
     /// The scene as last prepared for path tracing.
     traced: crate::pathtrace::Cache,
+    /// Changes offered for review (see `proposal.rs`).
+    proposals: Vec<Proposal>,
+    /// How recent proposals ended, newest last.
+    decided: Vec<Decided>,
+    next_proposal: u64,
+    /// Bumped whenever the proposals change.
+    proposals_version: u64,
 }
 
 fn fingerprint(o: &Object) -> u64 {
@@ -1066,21 +1074,186 @@ impl Editor {
         if batch.commands.is_empty() {
             return err("batch has no commands");
         }
-        let mut next = self.scene.clone();
-        let mut created = Vec::new();
-        for (i, command) in batch.commands.iter().enumerate() {
-            apply_command(&mut next, command, &mut created).map_err(|mut e| {
-                e.command_index = Some(i);
-                e
-            })?;
-        }
+        let (next, created) = run(&self.scene, &batch.commands)?;
         let evaluated = self.evaluate_all(&next)?;
         self.commit(next);
         self.evaluated = evaluated;
+        self.refresh_proposals();
         Ok(ApplyResult {
             revision: self.scene.revision,
             created,
         })
+    }
+
+    // -- Proposals ----------------------------------------------------------
+
+    /// Offer changes for review: one proposal, or one per variant. Each is
+    /// checked by applying it to a copy of the scene; nothing changes yet.
+    pub fn propose(&mut self, req: &ProposalRequest) -> Result<Vec<u64>, EngineError> {
+        proposal::check_request(req).map_err(EngineError::new)?;
+        let batches: Vec<(String, Option<String>, Vec<Command>)> = if req.variants.is_empty() {
+            vec![(req.title.clone(), req.note.clone(), req.commands.clone())]
+        } else {
+            req.variants
+                .iter()
+                .map(|v| (v.title.clone(), v.note.clone(), v.commands.clone()))
+                .collect()
+        };
+        if self.proposals.len() + batches.len() > proposal::MAX_PENDING {
+            return err(format!(
+                "at most {} proposals can wait for review; accept or reject some first",
+                proposal::MAX_PENDING
+            ));
+        }
+        let mut made = Vec::new();
+        for (title, note, commands) in &batches {
+            let (scene, _) = run(&self.scene, commands).map_err(|e| {
+                let what = if req.variants.is_empty() {
+                    String::new()
+                } else {
+                    format!("variant {:?}: ", title)
+                };
+                EngineError {
+                    message: format!("{what}{}", e.message),
+                    ..e
+                }
+            })?;
+            self.evaluate_all(&scene)?;
+            let diff = proposal::diff(&self.scene, &scene);
+            made.push(Proposal {
+                id: 0,
+                title: if req.variants.is_empty() {
+                    title.clone()
+                } else {
+                    format!("{} · {}", req.title.trim(), title.trim())
+                },
+                note: note.clone(),
+                author: req.author.clone().unwrap_or_else(|| "agent".into()),
+                group: None,
+                commands: commands.clone(),
+                scene,
+                diff,
+                conflict: None,
+            });
+        }
+        let first = self.next_proposal.max(1);
+        let ids: Vec<u64> = (first..first + made.len() as u64).collect();
+        let group = (made.len() > 1).then_some(first);
+        for (p, id) in made.iter_mut().zip(&ids) {
+            p.id = *id;
+            p.group = group;
+        }
+        self.next_proposal = first + made.len() as u64;
+        self.proposals.extend(made);
+        self.proposals_version += 1;
+        Ok(ids)
+    }
+
+    pub fn proposals(&self) -> &[Proposal] {
+        &self.proposals
+    }
+
+    pub fn decided(&self) -> &[Decided] {
+        &self.decided
+    }
+
+    pub fn proposals_version(&self) -> u64 {
+        self.proposals_version
+    }
+
+    /// An editor holding proposal `id`'s scene, to show or render it.
+    pub fn preview(&self, id: u64) -> Option<Editor> {
+        let p = self.proposals.iter().find(|p| p.id == id)?;
+        let mut ed = Editor {
+            scene: p.scene.clone(),
+            ..Editor::default()
+        };
+        ed.evaluated = self.evaluate_all(&ed.scene).unwrap_or_default();
+        Some(ed)
+    }
+
+    /// Apply proposal `id` as one undo step; its sibling variants go.
+    pub fn accept(&mut self, id: u64) -> Result<ApplyResult, EngineError> {
+        let i = self
+            .proposals
+            .iter()
+            .position(|p| p.id == id)
+            .ok_or_else(|| EngineError::new(format!("no proposal {id}")))?;
+        if let Some(conflict) = &self.proposals[i].conflict {
+            return err(format!("proposal {id} no longer applies: {conflict}"));
+        }
+        let p = self.proposals.remove(i);
+        let batch = CommandBatch {
+            commands: p.commands.clone(),
+            expected_revision: None,
+        };
+        let result = match self.apply(&batch) {
+            Ok(r) => r,
+            Err(e) => {
+                self.proposals.insert(i, p);
+                return Err(e);
+            }
+        };
+        self.decide(&p, Outcome::Accepted);
+        if let Some(group) = p.group {
+            let (gone, kept) = std::mem::take(&mut self.proposals)
+                .into_iter()
+                .partition(|q| q.group == Some(group));
+            self.proposals = kept;
+            for q in gone {
+                self.decide(&q, Outcome::Superseded);
+            }
+        }
+        self.proposals_version += 1;
+        Ok(result)
+    }
+
+    /// Drop proposal `id` without applying it.
+    pub fn reject(&mut self, id: u64) -> Result<(), EngineError> {
+        let i = self
+            .proposals
+            .iter()
+            .position(|p| p.id == id)
+            .ok_or_else(|| EngineError::new(format!("no proposal {id}")))?;
+        let p = self.proposals.remove(i);
+        self.decide(&p, Outcome::Rejected);
+        self.proposals_version += 1;
+        Ok(())
+    }
+
+    fn decide(&mut self, p: &Proposal, outcome: Outcome) {
+        self.decided.push(Decided {
+            id: p.id,
+            title: p.title.clone(),
+            author: p.author.clone(),
+            outcome,
+            revision: self.scene.revision,
+        });
+        if self.decided.len() > proposal::MAX_DECIDED {
+            self.decided.remove(0);
+        }
+    }
+
+    /// Re-apply every proposal to the scene as it now is.
+    fn refresh_proposals(&mut self) {
+        if self.proposals.is_empty() {
+            return;
+        }
+        let mut proposals = std::mem::take(&mut self.proposals);
+        for p in &mut proposals {
+            match run(&self.scene, &p.commands)
+                .and_then(|(scene, _)| self.evaluate_all(&scene).map(|_| scene))
+            {
+                Ok(scene) => {
+                    p.diff = proposal::diff(&self.scene, &scene);
+                    p.scene = scene;
+                    p.conflict = None;
+                }
+                Err(e) => p.conflict = Some(e.message),
+            }
+        }
+        self.proposals = proposals;
+        self.proposals_version += 1;
     }
 
     /// Replace the whole scene (e.g. opening a file). Undoable.
@@ -1089,6 +1262,7 @@ impl Editor {
         let evaluated = self.evaluate_all(&scene)?;
         self.commit(scene);
         self.evaluated = evaluated;
+        self.refresh_proposals();
         Ok(self.scene.revision)
     }
 
@@ -1109,6 +1283,7 @@ impl Editor {
         let current = std::mem::replace(&mut self.scene, previous);
         self.redo.push(current);
         self.refresh_evaluated();
+        self.refresh_proposals();
         Some(self.scene.revision)
     }
 
@@ -1118,15 +1293,31 @@ impl Editor {
         let current = std::mem::replace(&mut self.scene, next);
         self.undo.push(current);
         self.refresh_evaluated();
+        self.refresh_proposals();
         Some(self.scene.revision)
     }
 
     /// Clear scene and history (used by tests and recording).
     pub fn reset(&mut self) {
         let revision = self.scene.revision + 1;
+        let version = self.proposals_version + 1;
         *self = Self::default();
         self.scene.revision = revision;
+        self.proposals_version = version;
     }
+}
+
+/// `scene` with `commands` applied in order, and the ids they created.
+fn run(scene: &Scene, commands: &[Command]) -> Result<(Scene, Vec<u64>), EngineError> {
+    let mut next = scene.clone();
+    let mut created = Vec::new();
+    for (i, command) in commands.iter().enumerate() {
+        apply_command(&mut next, command, &mut created).map_err(|mut e| {
+            e.command_index = Some(i);
+            e
+        })?;
+    }
+    Ok((next, created))
 }
 
 fn resolve(scene: &Scene, r: &ObjRef) -> Result<usize, EngineError> {

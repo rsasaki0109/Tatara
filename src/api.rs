@@ -121,7 +121,7 @@ pub fn state(ed: &Editor, ai: bool) -> Value {
             }
         }
     }
-    json!({ "scene": scene, "history": history(ed), "ai": ai })
+    json!({ "scene": scene, "history": history(ed), "ai": ai, "proposals": proposals(ed) })
 }
 
 /// Parse a render request and gather the scene for it; `RenderJob::png`
@@ -395,6 +395,32 @@ fn environment(ed: &Editor, query: &str) -> Result<Response, Response> {
     })
 }
 
+/// Pending proposals (without their scenes) and recent decisions.
+pub fn proposals(ed: &Editor) -> Value {
+    json!({
+        "version": ed.proposals_version(),
+        "pending": ed.proposals().iter().map(|p| p.summary()).collect::<Vec<_>>(),
+        "decided": ed.decided(),
+    })
+}
+
+fn proposal_id(query: &str) -> Result<u64, Response> {
+    query_param(query, "id")
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| Response::error(400, "id must be a proposal number"))
+}
+
+fn preview(ed: &Editor, query: &str) -> Result<Editor, Response> {
+    let id = proposal_id(query)?;
+    ed.preview(id)
+        .ok_or_else(|| Response::error(404, format!("no proposal {id}")))
+}
+
+/// Render proposal `id`'s scene like `/render` (views, size, object).
+pub fn proposal_render_job(ed: &Editor, query: &str) -> Result<crate::render::RenderJob, Response> {
+    render_job(&preview(ed, query)?, query)
+}
+
 /// One path tracing pass: the scene is prepared under the editor lock,
 /// then traced without it (`run`), so other requests are not held up.
 pub struct PathJob {
@@ -657,6 +683,40 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
             )
             .changed(r.revision))
         }
+        ("GET", "/proposals") => Ok(Response::json(200, proposals(ed))),
+        ("POST", "/proposals") => {
+            let req: crate::proposal::ProposalRequest = parse(body)?;
+            let ids = ed.propose(&req)?;
+            let mut out = proposals(ed);
+            out["ids"] = json!(ids);
+            Ok(Response::json(200, out))
+        }
+        ("GET", "/proposal") => {
+            let p = preview(ed, query)?;
+            let id = proposal_id(query)?;
+            let summary = ed
+                .proposals()
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.summary());
+            Ok(Response::json(
+                200,
+                json!({ "proposal": summary, "scene": state(&p, false)["scene"] }),
+            ))
+        }
+        ("GET", "/proposal/render") => proposal_render_job(ed, query).map(render_png),
+        ("POST", "/proposal/accept") => {
+            let r = ed.accept(proposal_id(query)?)?;
+            Ok(Response::json(
+                200,
+                json!({ "revision": r.revision, "created": r.created, "history": history(ed) }),
+            )
+            .changed(r.revision))
+        }
+        ("POST", "/proposal/reject") => {
+            ed.reject(proposal_id(query)?)?;
+            Ok(Response::json(200, proposals(ed)))
+        }
         ("PUT", "/scene") => {
             let scene: Scene = parse(body)?;
             let revision = ed.load(scene)?;
@@ -910,6 +970,56 @@ mod tests {
         assert_eq!((r.status, r.content_type), (200, "image/png"));
         assert_eq!(
             handle(&mut ed, "GET", "/render?size=64&samples=999", &[], false).status,
+            422
+        );
+    }
+
+    #[test]
+    fn proposals_are_previewed_rendered_and_decided_over_http() {
+        let mut ed = Editor::new();
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands": [{"op": "add", "name": "Vase", "primitive": {"kind": "cylinder"}}]}),
+        );
+        let (s, r) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title": "Options", "variants": [
+                {"title": "Blue", "commands": [{"op": "material", "id": "Vase", "color": "#2f4f8f"}]},
+                {"title": "With a cup", "commands": [{"op": "add", "name": "Cup", "primitive": {"kind": "cube"}, "translation": [1, 0.5, 0]}]}
+            ]}),
+        );
+        assert_eq!(s, 200, "{r}");
+        assert_eq!(r["ids"], json!([1, 2]));
+        assert_eq!(r["pending"][1]["diff"]["added"][0]["name"], "Cup");
+        let (_, st) = call(&mut ed, "GET", "/state", Value::Null);
+        assert_eq!(st["proposals"]["pending"].as_array().unwrap().len(), 2);
+        let (s, p) = call(&mut ed, "GET", "/proposal?id=2", Value::Null);
+        assert_eq!(s, 200);
+        assert_eq!(p["scene"]["objects"].as_array().unwrap().len(), 2);
+        assert_eq!(p["proposal"]["title"], "Options · With a cup");
+        let png = handle(
+            &mut ed,
+            "GET",
+            "/proposal/render?id=2&views=iso&size=64",
+            &[],
+            false,
+        );
+        assert_eq!((png.status, png.content_type), (200, "image/png"));
+        assert_eq!(call(&mut ed, "GET", "/proposal?id=9", Value::Null).0, 404);
+        let accepted = handle(&mut ed, "POST", "/proposal/accept?id=2", &[], false);
+        assert_eq!(accepted.status, 200);
+        assert_eq!(accepted.changed, Some(ed.scene().revision));
+        assert_eq!(ed.scene().objects.len(), 2);
+        let (_, list) = call(&mut ed, "GET", "/proposals", Value::Null);
+        assert!(list["pending"].as_array().unwrap().is_empty());
+        assert_eq!(list["decided"][0]["outcome"], "accepted");
+        assert_eq!(list["decided"][1]["outcome"], "superseded");
+        assert_eq!(
+            call(&mut ed, "POST", "/proposal/reject?id=1", Value::Null).0,
             422
         );
     }

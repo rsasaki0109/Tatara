@@ -50,7 +50,8 @@ impl AiConfig {
 
 pub struct AppState {
     editor: Mutex<Editor>,
-    events: broadcast::Sender<u64>,
+    /// Live updates: ("revision", scene revision) or ("proposals", their version).
+    events: broadcast::Sender<(&'static str, u64)>,
     ai: Option<AiConfig>,
     http: reqwest::Client,
 }
@@ -132,7 +133,11 @@ fn history(ed: &Editor) -> Value {
 }
 
 fn changed(state: &AppState, revision: u64) {
-    let _ = state.events.send(revision);
+    let _ = state.events.send(("revision", revision));
+}
+
+fn proposals_changed(state: &AppState, version: u64) {
+    let _ = state.events.send(("proposals", version));
 }
 
 /// Everything except live events and chat goes through the shared,
@@ -147,12 +152,18 @@ async fn core(
     // Renders gather the scene under the lock, then run on a worker thread
     // without it, so edits and other requests are not held up.
     if method == axum::http::Method::GET
-        && matches!(uri.path(), "/pathtrace" | "/render" | "/render/image")
+        && matches!(
+            uri.path(),
+            "/pathtrace" | "/render" | "/render/image" | "/proposal/render"
+        )
     {
         let query = uri.query().unwrap_or("");
         let job: Result<Box<dyn FnOnce() -> crate::api::Response + Send>, _> = {
             let ed = s.editor.lock().await;
-            if uri.path() == "/render/image" {
+            if uri.path() == "/proposal/render" {
+                crate::api::proposal_render_job(&ed, query)
+                    .map(|j| Box::new(move || crate::api::render_png(j)) as Box<_>)
+            } else if uri.path() == "/render/image" {
                 crate::api::image_job(&ed, query).map(|j| Box::new(move || j.run()) as Box<_>)
             } else if uri.path() == "/render" {
                 crate::api::render_job(&ed, query)
@@ -169,12 +180,17 @@ async fn core(
         };
         return reply(r);
     }
-    let r = {
+    let (r, before, after) = {
         let mut ed = s.editor.lock().await;
-        crate::api::handle(&mut ed, method.as_str(), path, &body, s.ai.is_some())
+        let before = ed.proposals_version();
+        let r = crate::api::handle(&mut ed, method.as_str(), path, &body, s.ai.is_some());
+        (r, before, ed.proposals_version())
     };
     if let Some(revision) = r.changed {
         changed(&s, revision);
+    }
+    if after != before {
+        proposals_changed(&s, after);
     }
     reply(r)
 }
@@ -204,12 +220,15 @@ fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ApiError> {
 async fn get_events(
     State(s): State<Shared>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let current = s.editor.lock().await.scene().revision;
-    let first = futures_util::stream::once(async move { current });
+    let (revision, proposals) = {
+        let ed = s.editor.lock().await;
+        (ed.scene().revision, ed.proposals_version())
+    };
+    let first = futures_util::stream::iter([("revision", revision), ("proposals", proposals)]);
     let updates = BroadcastStream::new(s.events.subscribe()).filter_map(|r| async move { r.ok() });
     let stream = first
         .chain(updates)
-        .map(|rev| Ok(Event::default().event("revision").data(rev.to_string())));
+        .map(|(kind, n)| Ok(Event::default().event(kind).data(n.to_string())));
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
@@ -250,8 +269,12 @@ async fn post_chat(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResul
     })?;
     batch.expected_revision = Some(revision);
     let mut ed = s.editor.lock().await;
+    let before = ed.proposals_version();
     let result = ed.apply(&batch)?;
     changed(&s, result.revision);
+    if ed.proposals_version() != before {
+        proposals_changed(&s, ed.proposals_version());
+    }
     Ok(Json(json!({
         "revision": result.revision,
         "created": result.created,

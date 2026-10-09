@@ -37,6 +37,13 @@ pub fn tools() -> Value {
         obj.remove("$schema");
         obj.remove("title");
     }
+    let mut propose_schema =
+        serde_json::to_value(schemars::schema_for!(crate::proposal::ProposalRequest))
+            .expect("schema serializes");
+    if let Some(obj) = propose_schema.as_object_mut() {
+        obj.remove("$schema");
+        obj.remove("title");
+    }
     json!([
         {
             "name": "get_scene",
@@ -129,6 +136,16 @@ pub fn tools() -> Value {
             }
         },
         {
+            "name": "propose_changes",
+            "description": "Offer changes for the person to review instead of applying them: they see exactly what would be added, changed and removed, preview it in the viewport and accept or reject it. Give `commands` (the same commands as apply_commands) for one proposal, or `variants` (each with a title and commands) to let them pick one of several options; accepting one drops the others. Use this for big or taste-dependent changes (layouts, looks, deletions) and when asked for options. Returns the proposal ids; call list_proposals later to see what was decided.",
+            "inputSchema": propose_schema
+        },
+        {
+            "name": "list_proposals",
+            "description": "List proposals waiting for review (with what each would change, and a conflict if the scene moved on so it no longer applies) and recent decisions: accepted, rejected, or superseded by another variant.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
             "name": "inspect_scene",
             "description": "Measure the shared scene and list problems a picture can hide: objects that intersect (with depth), float above what is beneath them (with gap) or sink below the floor (y = 0), plus every object's world bounds, size and what it rests on. Call it after building; fix floating or sunk objects with the `drop` command.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
@@ -150,7 +167,7 @@ async fn handle(http: &reqwest::Client, base: &str, msg: Value) -> Option<Value>
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "tatara", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Tatara is a 3D editor. Call get_scene first, then apply_commands. Edits appear live in the user's browser and are undoable."
+                "instructions": "Tatara is a 3D editor. Call get_scene first, then apply_commands. Edits appear live in the user's browser and are undoable. For big or taste-dependent changes, or when asked for options, use propose_changes so the person can preview and accept them."
             }))
         }
         "ping" => Ok(json!({})),
@@ -243,6 +260,14 @@ async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) 
             None => http.get(format!("{base}/api/context")),
         },
         "apply_commands" => http.post(format!("{base}/api/commands")).json(&args),
+        "propose_changes" => {
+            let mut args = args;
+            if args.get("author").is_none() {
+                args["author"] = json!("agent");
+            }
+            http.post(format!("{base}/api/proposals")).json(&args)
+        }
+        "list_proposals" => http.get(format!("{base}/api/proposals")),
         "inspect_scene" => http.get(format!("{base}/api/inspect")),
         "undo" => http.post(format!("{base}/api/undo")),
         "redo" => http.post(format!("{base}/api/redo")),
