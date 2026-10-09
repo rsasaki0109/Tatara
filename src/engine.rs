@@ -283,6 +283,8 @@ pub struct Object {
     /// A scene camera looks down local -Z, with local +Y up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<crate::camera::Lens>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light: Option<crate::light::Lamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -474,6 +476,22 @@ impl Primitive {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// Add a point or sun light; sun rays travel along local -Z.
+    AddLight {
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        translation: Option<Vec3>,
+        #[serde(default)]
+        rotation: Option<Vec3>,
+        #[serde(default)]
+        lamp: crate::light::Lamp,
+    },
+    /// Replace a light's type, colour and intensity.
+    LightSettings {
+        id: ObjRef,
+        lamp: crate::light::Lamp,
+    },
     /// Create a perspective camera. Rotation is XYZ Euler, in radians.
     AddCamera {
         #[serde(default)]
@@ -1049,6 +1067,7 @@ fn replay_into(scene: &mut Scene, commands: &[Command]) -> Result<Vec<u64>, Engi
         })?;
     }
     crate::camera::validate_scene(scene)?;
+    crate::light::validate_scene(scene)?;
     // Constraints hold after every batch.
     constraint::solve(scene, &before)?;
     Ok(created)
@@ -1617,6 +1636,49 @@ fn apply_command(
     created: &mut Vec<u64>,
 ) -> Result<(), EngineError> {
     match command {
+        Command::AddLight {
+            name,
+            translation,
+            rotation,
+            lamp,
+        } => {
+            lamp.validate()?;
+            if scene.objects.len() >= MAX_OBJECTS {
+                return err("scene object limit reached");
+            }
+            let id = scene.next_id;
+            let name = match name {
+                Some(n) => check_name(n)?,
+                None => unique_name(scene, "Light"),
+            };
+            let mut transform = Transform::default();
+            set_transform(&mut transform, translation, rotation, &None)?;
+            scene.objects.push(Object {
+                id,
+                name,
+                kind: "light".into(),
+                transform,
+                material: Material::default(),
+                mesh: Mesh::default(),
+                modifiers: Vec::new(),
+                tracks: Vec::new(),
+                smooth: false,
+                group: None,
+                bones: Vec::new(),
+                camera: None,
+                light: Some(lamp.clone()),
+            });
+            scene.next_id += 1;
+            created.push(id);
+        }
+        Command::LightSettings { id, lamp } => {
+            lamp.validate()?;
+            let i = resolve(scene, id)?;
+            if scene.objects[i].light.is_none() {
+                return err("object is not a light");
+            }
+            scene.objects[i].light = Some(lamp.clone());
+        }
         Command::AddCamera {
             name,
             translation,
@@ -1647,6 +1709,7 @@ fn apply_command(
                 group: None,
                 bones: Vec::new(),
                 camera: Some(lens.clone()),
+                light: None,
             });
             scene.next_id += 1;
             created.push(id);
@@ -1713,6 +1776,7 @@ fn apply_command(
                 group: None,
                 bones: Vec::new(),
                 camera: None,
+                light: None,
             });
             scene.next_id += 1;
             created.push(id);
@@ -1846,6 +1910,7 @@ fn apply_command(
                     group: Some(group.clone()),
                     bones: Vec::new(),
                     camera: None,
+                    light: None,
                 });
                 scene.next_id += 1;
                 created.push(id);
@@ -2125,6 +2190,7 @@ fn apply_command(
                 group: None,
                 bones: Vec::new(),
                 camera: None,
+                light: None,
             });
             scene.next_id += 1;
             created.push(id);
@@ -2675,6 +2741,7 @@ fn validate_scene(scene: &Scene) -> Result<(), EngineError> {
         anim::validate_tracks(o).map_err(ctx)?;
     }
     crate::camera::validate_scene(scene)?;
+    crate::light::validate_scene(scene)?;
     scene.animation.validate()?;
     if scene.images.len() > MAX_IMAGES {
         return err(format!("a scene holds at most {MAX_IMAGES} images"));
@@ -2774,6 +2841,7 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
                 "name": o.name,
                 "kind": o.kind,
                 "camera": o.camera,
+                "light": o.light,
                 "transform": o.transform,
                 "material": o.material,
                 "modifiers": o.modifiers,
@@ -3594,6 +3662,7 @@ mod tests {
             group: None,
             bones: Vec::new(),
             camera: None,
+            light: None,
         });
         assert!(ed.load(scene.clone()).is_err(), "id must be below next_id");
         scene.next_id = 6;

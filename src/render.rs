@@ -216,6 +216,7 @@ impl Shading {
 }
 
 pub(crate) struct Prepared {
+    pub(crate) scene_lights: Vec<crate::light::Emitter>,
     pub(crate) tris: Vec<Tri>,
     pub(crate) materials: Vec<Shading>,
     pub(crate) center: DVec3,
@@ -387,6 +388,7 @@ pub(crate) fn prepare(
         .map(|p| p.y)
         .fold(0.0, f64::min);
     Ok(Prepared {
+        scene_lights: crate::light::emitters(ed, frame),
         tris,
         materials,
         center,
@@ -961,6 +963,13 @@ pub struct RenderJob {
 
 /// Check `opts` and gather what the render needs from `ed`.
 pub fn render_job(ed: &Editor, opts: &RenderOptions) -> Result<RenderJob, EngineError> {
+    // The fast studio rasterizer has no arbitrary-light shadow maps. Use the
+    // shared tracer for agent views whenever an editable scene light exists.
+    let mut effective = opts.clone();
+    if effective.samples.is_none() && ed.scene().objects.iter().any(|o| o.light.is_some()) {
+        effective.samples = Some(8);
+    }
+    let opts = &effective;
     if opts.views.is_empty() || opts.views.len() > 6 {
         return Err(EngineError::new("request between 1 and 6 views"));
     }

@@ -543,6 +543,7 @@ export class Viewport {
     for (const [id, node] of this.nodes) {
       if (seen.has(id)) continue
       this.nodes.delete(id)
+      if (node.light) { this.scene.remove(node.light, node.light.target); node.light.dispose() }
       if (this.gizmo.object === node.group) this.gizmo.detach()
       const done = () => {
         this.root.remove(node.group)
@@ -565,8 +566,8 @@ export class Viewport {
     const material = new THREE.MeshPhysicalMaterial({ clearcoatRoughness: 0.18 })
     installTriplanar(material)
     const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material)
-    mesh.castShadow = !o.camera
-    mesh.receiveShadow = !o.camera
+    mesh.castShadow = !o.camera && !o.light
+    mesh.receiveShadow = !o.camera && !o.light
     mesh.userData.id = o.id
     material.userData.objectId = o.id
     const lineMat = new THREE.LineBasicMaterial({ color: 0x15171a, transparent: true, opacity: 0.55 })
@@ -1516,6 +1517,7 @@ export class Viewport {
   /** What an object shows at the current frame: its displayed mesh, posed by its bones. */
   shownMesh(o) {
     // Viewport-only camera body and viewing pyramid; not part of scene geometry.
+    if (o.light) return {vertices:[[0,.08,0],[.08,0,0],[0,0,.08],[-.08,0,0],[0,0,-.08],[0,-.08,0]],faces:[[0,2,1],[0,3,2],[0,4,3],[0,1,4],[5,1,2],[5,2,3],[5,3,4],[5,4,1]]}
     if (o.camera) return { vertices: [[-.14,-.1,0],[.14,-.1,0],[.14,.1,0],[-.14,.1,0],[-.3,-.2,-.45],[.3,-.2,-.45],[.3,.2,-.45],[-.3,.2,-.45]], faces: [[0,3,2,1],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]] }
     return posedMesh(o, displayMesh(o), this.currentFrame)
   }
@@ -1874,6 +1876,46 @@ export class Viewport {
     return p.applyMatrix4(node.group.matrixWorld)
   }
 
+  /** Scene lights are viewport helpers plus actual physically attenuated lights. */
+  syncSceneLights() {
+    for (const node of this.nodes.values()) {
+      const lamp = node.data.light
+      if (!lamp) continue
+      if (!node.light || node.lightKind !== lamp.kind) {
+        if (node.light) { this.scene.remove(node.light, node.light.target); node.light.dispose() }
+        node.light = lamp.kind === 'sun' ? new THREE.DirectionalLight() : new THREE.PointLight()
+        node.lightKind = lamp.kind
+        node.light.castShadow = true
+        node.light.shadow.mapSize.set(512,512)
+        node.light.shadow.bias = -.0005
+        node.light.shadow.camera.near = .01
+        node.light.shadow.camera.far = 1000
+        this.scene.add(node.light)
+        if (node.light.target) this.scene.add(node.light.target)
+      }
+      const t = pose(node.data,this.currentFrame).transform
+      const light = node.light
+      light.color.set(lamp.color)
+      light.intensity = lamp.intensity
+      light.visible = lamp.intensity > 0
+      node.mesh.material.color.set(lamp.color)
+      node.mesh.material.emissive.set(lamp.color)
+      node.mesh.material.emissiveIntensity = .8
+      if (lamp.kind === 'sun') {
+        const box=this.sceneBounds()
+        const sphere=box.isEmpty() ? new THREE.Sphere(new THREE.Vector3(0,.5,0),2) : box.getBoundingSphere(new THREE.Sphere())
+        const q=new THREE.Quaternion().setFromEuler(new THREE.Euler(...t.rotation,'XYZ'))
+        const toward=new THREE.Vector3(0,0,1).applyQuaternion(q)
+        const distance=Math.max(10,sphere.radius*2+1)
+        light.position.copy(sphere.center).addScaledVector(toward,distance)
+        light.target.position.copy(sphere.center)
+        const radius=Math.max(2,sphere.radius*1.5)
+        Object.assign(light.shadow.camera,{left:-radius,right:radius,bottom:-radius,top:radius,far:distance+sphere.radius*2+10})
+        light.shadow.camera.updateProjectionMatrix()
+      } else light.position.fromArray(t.translation)
+    }
+  }
+
   // -- frame ----------------------------------------------------------------
 
   frame() {
@@ -1887,6 +1929,7 @@ export class Viewport {
     if (this.sceneCameraId != null) this.applySceneCamera()
     else this.controls.update()
     this.flushStroke()
+    this.syncSceneLights()
     this.placeLinks()
     if (this.glowing()) {
       this.bloom()

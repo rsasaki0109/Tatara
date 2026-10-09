@@ -1,5 +1,6 @@
 // 16px stroke icons.
 const P = {
+  light: '<circle cx="8" cy="8" r="3"/><path d="M8 1v2m0 10v2M1 8h2m10 0h2M3 3l1.4 1.4m7.2 7.2L13 13M13 3l-1.4 1.4m-7.2 7.2L3 13"/>',
   cube: '<path d="M8 1.8 13.6 5v6L8 14.2 2.4 11V5z"/><path d="M2.4 5 8 8.2 13.6 5M8 8.2v6"/>',
   sphere: '<circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="6" ry="2.3"/><path d="M8 2c-2.2 2.4-2.2 9.6 0 12"/>',
   cylinder: '<ellipse cx="8" cy="3.8" rx="5" ry="1.8"/><path d="M3 3.8v8.4c0 1 2.2 1.8 5 1.8s5-.8 5-1.8V3.8"/>',

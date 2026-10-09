@@ -11,6 +11,7 @@ pub mod gltf;
 pub mod image;
 pub mod inspect;
 pub mod layout;
+pub mod light;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod modifiers;

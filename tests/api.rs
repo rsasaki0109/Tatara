@@ -586,6 +586,28 @@ async fn mcp_bridge_edits_the_shared_scene() {
     assert_ne!(r["result"]["isError"], true, "{r}");
     assert!(std::fs::read(&output).unwrap().starts_with(b"\x89PNG"));
     std::fs::remove_file(output).unwrap();
+
+    let r=call(json!({"jsonrpc":"2.0","id":69,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"add_light","name":"MCP Key","translation":[0,2,3]},{"op":"light_settings","id":"MCP Key","lamp":{"color":"#ff6633","intensity":30}}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"get_scene","arguments":{}}})).await;
+    let scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(
+        scene["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["name"] == "MCP Key" && o["light"]["intensity"] == 30.)
+    );
+    let r=call(json!({"jsonrpc":"2.0","id":71,"method":"tools/call","params":{"name":"render_view","arguments":{"views":["front"],"size":64}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    assert!(
+        r["result"]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["type"] == "image")
+    );
     child.kill().await.unwrap();
 }
 

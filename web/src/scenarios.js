@@ -1458,4 +1458,26 @@ export const sceneCamera = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, sceneCamera }
+
+export const sceneLight = {
+  title:'Light belongs to the scene',width:800,gizmo:false,
+  setup:[
+    {op:'world',strength:0},
+    {op:'add',name:'Subject',primitive:{kind:'sphere'},translation:[0,.6,0],scale:[.9,.9,.9],color:'#e4ded0'},
+    {op:'add',name:'Plinth',primitive:{kind:'cube'},translation:[0,.1,0],scale:[1.8,.2,1.8],color:'#84958e'},
+  ],
+  camera:{azimuth:22,elevation:22,distance:4.5,target:[0,.6,0]},
+  steps:[
+    {caption:'Build the lighting as part of the scene',hint:'typed lights · editable power · one Undo'},
+    {click:'[data-action=addLight]',after:900},
+    {caption:'A point light makes the subject visible',hint:'candela · inverse-square falloff · shadow rays'},
+    {type:'60',into:'#light-intensity',cps:12,after:1100},
+    {run:[{op:'light_settings',id:'Light',lamp:{kind:'point',color:'#ff9966',intensity:60}}],after:1000},
+    {caption:'Change the colour, keep the composition',hint:'the same light in the viewport and agent renders'},
+    {click:'[data-action=undo]',after:1000},
+    {caption:'Undo restores the light, not the whole scene',hint:'point and sun · glTF punctual lights'},
+    {cursor:false},{wait:1000},
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, sceneCamera, sceneLight }

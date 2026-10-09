@@ -155,6 +155,20 @@ try {
   })
   check(sceneCamera.status === 200 && sceneCamera.bytes.join(',') === '137,80,78,71', 'WebAssembly renders from a named scene camera without a server')
   check(sceneCamera.before.objects[0].camera.fov === 50 && sceneCamera.after.objects[0].camera.fov === 50, 'scene camera lenses survive one Undo in WebAssembly')
+
+  const analyticLight=await page.evaluate(async()=>{
+    const post=commands=>fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands})}).then(r=>r.json())
+    await post([{op:'clear'},{op:'add_light',name:'Static key',translation:[0,2,3],lamp:{color:'#ff6633',intensity:25}},{op:'add',primitive:{kind:'cube'}}])
+    const before=await(await fetch('/api/scene')).json()
+    const rendered=await fetch('/api/render?views=front&size=64')
+    const bytes=Array.from(new Uint8Array(await rendered.arrayBuffer()).slice(0,4))
+    await post([{op:'light_settings',id:'Static key',lamp:{kind:'sun',intensity:4}}])
+    await fetch('/api/undo',{method:'POST'})
+    const after=await(await fetch('/api/scene')).json()
+    return {before,after,status:rendered.status,bytes}
+  })
+  check(analyticLight.status===200 && analyticLight.bytes.join(',')==='137,80,78,71','WebAssembly agent views trace editable analytic lights without a server')
+  check(analyticLight.after.objects[0].light.color==='#ff6633' && analyticLight.after.objects[0].light.kind==='point','light settings and one Undo work through the WebAssembly command core')
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

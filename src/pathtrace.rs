@@ -807,6 +807,14 @@ impl Traced {
                 sum += bsdf(v, l, true) * self.env.radiance(l) * through * (weight / density);
             }
         }
+        for light in &self.prep.scene_lights {
+            if let Some((l, power, distance)) = light.sample(p)
+                && n.dot(l) > 0.
+            {
+                let through = self.transmittance(p, l, distance);
+                sum += bsdf(v, l, false) * power * through;
+            }
+        }
         for light in &self.lights {
             let l = cone(light.dir, light.spread, rng);
             if n.dot(l) <= 0.0 {
@@ -862,8 +870,35 @@ impl Traced {
             (None, Some((l, _))) if l.y > 0.0 => l,
             _ => DVec3::Y,
         };
-        let sun = self.transmittance(p + DVec3::Y * EPS, l, f64::INFINITY);
-        let sun = sun.dot(DVec3::splat(1.0 / 3.0));
+        let sun = if self.prep.scene_lights.is_empty() {
+            self.transmittance(p + DVec3::Y * EPS, l, f64::INFINITY)
+                .dot(DVec3::splat(1.0 / 3.0))
+        } else {
+            // Blend the world's existing catcher with analytic light power;
+            // a nearly-off point light must not erase the studio's shadows.
+            let world_weight = lum(self.env.radiance(l)) * l.y.max(0.0)
+                + self
+                    .lights
+                    .iter()
+                    .map(|light| lum(light.radiance) * light.dir.y.max(0.0))
+                    .sum::<f64>();
+            let mut visible = world_weight
+                * self
+                    .transmittance(p + DVec3::Y * EPS, l, f64::INFINITY)
+                    .dot(DVec3::splat(1.0 / 3.0));
+            let mut total = world_weight;
+            for light in &self.prep.scene_lights {
+                if let Some((d, power, distance)) = light.sample(p) {
+                    let weight = lum(power) * d.y.max(0.0);
+                    total += weight;
+                    visible += weight
+                        * self
+                            .transmittance(p + DVec3::Y * EPS, d, distance)
+                            .dot(DVec3::splat(1.0 / 3.0));
+                }
+            }
+            if total > 1e-9 { visible / total } else { 1.0 }
+        };
         // Contact shadow: is the sky above this point blocked nearby?
         let up = cosine(DVec3::Y, rng);
         let sky = if self

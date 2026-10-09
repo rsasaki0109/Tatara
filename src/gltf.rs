@@ -277,6 +277,7 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
     let mut accessors = Vec::new();
     let mut meshes = Vec::new();
     let mut cameras = Vec::new();
+    let mut lights = Vec::new();
     let mut materials = Vec::new();
     let mut nodes = Vec::new();
     let mut channels = Vec::new();
@@ -317,6 +318,19 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
                 "translation":o.transform.translation,"rotation":[q.x,q.y,q.z,q.w],
                 "scale":o.transform.scale}));
             roots.push(node);
+        } else if let Some(lamp) = &o.light {
+            let [x, y, z] = o.transform.rotation;
+            let q = DQuat::from_euler(EulerRot::XYZ, x, y, z);
+            let kind = match lamp.kind {
+                crate::light::Kind::Point => "point",
+                crate::light::Kind::Sun => "directional",
+            };
+            lights.push(json!({"name":o.name,"type":kind,"color":hex_to_linear(&lamp.color),"intensity":lamp.intensity}));
+            node = nodes.len();
+            nodes.push(json!({"name":o.name,"translation":o.transform.translation,"rotation":[q.x,q.y,q.z,q.w],"scale":o.transform.scale,
+                "extensions":{"KHR_lights_punctual":{"light":lights.len()-1}}}));
+            roots.push(node);
+            extensions.insert("KHR_lights_punctual".into());
         } else {
             let tex = o.material.texture.as_ref();
             let mesh = ed.evaluated(o);
@@ -655,6 +669,9 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         "accessors": accessors,
         "bufferViews": views,
     });
+    if !lights.is_empty() {
+        doc["extensions"]["KHR_lights_punctual"] = json!({"lights":lights});
+    }
     if !cameras.is_empty() {
         doc["cameras"] = json!(cameras);
     }
@@ -1251,6 +1268,42 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
                 return err("scene object limit reached");
             }
         }
+        if let Some(li) = node["extensions"]["KHR_lights_punctual"]["light"].as_u64() {
+            let light = &doc["extensions"]["KHR_lights_punctual"]["lights"][li as usize];
+            let kind = match light["type"].as_str() {
+                Some("point") => crate::light::Kind::Point,
+                Some("directional") => crate::light::Kind::Sun,
+                _ => return err("only point and directional glTF lights are supported"),
+            };
+            let rgb = light["color"]
+                .as_array()
+                .map(|v| [0, 1, 2].map(|i| v.get(i).and_then(Value::as_f64).unwrap_or(1.)))
+                .unwrap_or([1.; 3]);
+            let lamp = crate::light::Lamp {
+                kind,
+                color: linear_to_hex(rgb),
+                intensity: light["intensity"].as_f64().unwrap_or(1.),
+            };
+            lamp.validate()?;
+            let (scale, q, t) = world.to_scale_rotation_translation();
+            if !DMat4::from_scale_rotation_translation(scale, q, t).abs_diff_eq(world, 1e-6) {
+                return err("light transform must be clean TRS without shear");
+            }
+            let (x, y, z) = q.to_euler(EulerRot::XYZ);
+            let base = clean_name(node["name"].as_str().or(light["name"].as_str()), "Light");
+            let n = names.entry(base.clone()).or_insert(0);
+            *n += 1;
+            let name = if *n > 1 { format!("{base} {n}") } else { base };
+            commands.push(Command::AddLight {
+                name: Some(name),
+                translation: Some(t.to_array()),
+                rotation: Some([x, y, z]),
+                lamp,
+            });
+            if commands.len() > MAX_OBJECTS {
+                return err("scene object limit reached");
+            }
+        }
         let Some(mi) = node["mesh"].as_u64() else {
             continue;
         };
@@ -1380,7 +1433,9 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
         }
     }
     if commands.is_empty() {
-        return err("the file contains no triangle meshes or perspective cameras");
+        return err(
+            "the file contains no triangle meshes, perspective cameras or supported lights",
+        );
     }
     // Images first: the meshes' textures refer to them.
     let mut all = std::mem::take(&mut images.commands);
