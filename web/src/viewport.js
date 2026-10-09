@@ -1167,8 +1167,9 @@ export class Viewport {
       const editing = on && ed.active
       const mesh = node.baseMesh
       const warned = this.warned.has(node.id)
-      node.outline.visible = (on && !editing) || (warned && !editing)
-      node.outline.material.color.set(on ? SELECT : WARN)
+      const mark = this.highlights?.get(node.id)
+      node.outline.visible = (on && !editing) || ((warned || mark != null) && !editing)
+      node.outline.material.color.set(on ? SELECT : mark ?? WARN)
       node.cageLines.visible = editing || (on && Boolean(node.data.display))
       node.seams.visible = node.seams.geometry.attributes.position?.count > 0 && (editing || this.uvPreview === node.id)
       this.setBones(node)
@@ -1206,6 +1207,12 @@ export class Viewport {
   /** Outline objects that inspection flagged (ids), or none. */
   setWarnings(ids = []) {
     this.warned = new Set(ids)
+    this.setSelection(this.selected, this.face)
+  }
+
+  /** Outline objects in colours of their own (Map id -> colour), or none. */
+  setHighlights(marks) {
+    this.highlights = marks ?? new Map()
     this.setSelection(this.selected, this.face)
   }
 

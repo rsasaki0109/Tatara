@@ -416,9 +416,10 @@ fn preview(ed: &Editor, query: &str) -> Result<Editor, Response> {
         .ok_or_else(|| Response::error(404, format!("no proposal {id}")))
 }
 
-/// Render proposal `id`'s scene like `/render` (views, size, object).
-pub fn proposal_render_job(ed: &Editor, query: &str) -> Result<crate::render::RenderJob, Response> {
-    render_job(&preview(ed, query)?, query)
+/// A path-traced image of proposal `id`'s scene, like `/render/image`
+/// (a thumbnail from the viewer's camera).
+pub fn proposal_image_job(ed: &Editor, query: &str) -> Result<ImageJob, Response> {
+    image_job(&preview(ed, query)?, query)
 }
 
 /// One path tracing pass: the scene is prepared under the editor lock,
@@ -704,7 +705,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
                 json!({ "proposal": summary, "scene": state(&p, false)["scene"] }),
             ))
         }
-        ("GET", "/proposal/render") => proposal_render_job(ed, query).map(render_png),
+        ("GET", "/proposal/render") => proposal_image_job(ed, query).map(ImageJob::run),
         ("POST", "/proposal/accept") => {
             let r = ed.accept(proposal_id(query)?)?;
             Ok(Response::json(
@@ -1004,7 +1005,7 @@ mod tests {
         let png = handle(
             &mut ed,
             "GET",
-            "/proposal/render?id=2&views=iso&size=64",
+            "/proposal/render?id=2&w=32&h=24&samples=2&eye=2,2,4&target=0,0.5,0",
             &[],
             false,
         );

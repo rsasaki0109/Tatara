@@ -357,6 +357,31 @@ try {
   await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => !s.world))
   await page.waitForFunction(() => !window.__tatara.debug().worldBackground)
 
+  // Proposals: changes offered for review show as cards; hovering one
+  // previews it, Accept applies it and drops its sibling variant.
+  const objects0 = await page.evaluate(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects.length))
+  await page.evaluate(() =>
+    fetch('/api/proposals', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Lamps', variants: [
+        { title: 'Round', commands: [{ op: 'add', name: 'Round lamp', primitive: { kind: 'sphere' }, translation: [3, 0.5, 0] }] },
+        { title: 'Square', commands: [{ op: 'add', name: 'Square lamp', primitive: { kind: 'cube' }, translation: [3, 0.5, 0] }] },
+      ] }),
+    }),
+  )
+  await page.evaluate(() => window.__tatara.refresh(true))
+  await page.waitForSelector('#proposals:not([hidden]) .proposal-card:nth-child(3)')
+  await page.hover('#proposals .proposal-card:nth-child(3) .pc-title')
+  await page.waitForFunction(() => window.__tatara.debug().previewing != null)
+  check(true, 'a proposal card previews its change in the viewport')
+  await page.click('#proposals .proposal-card:nth-child(3) [data-pc=accept]')
+  await until(page, (n) => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects.length === n + 1 && s.objects.at(-1).name === 'Square lamp'), objects0)
+  await page.waitForSelector('#proposals[hidden]', { state: 'attached' })
+  check(true, 'accepting a variant applies it and drops the others')
+  await page.evaluate(() => fetch('/api/undo', { method: 'POST' }))
+  await page.evaluate(() => window.__tatara.refresh(true))
+
   // Assemblies: build a chair from the empty panel; it lists as one group.
   await page.click('[data-build=chair]')
   await page.waitForSelector('#outliner li[data-group="Chair"]')

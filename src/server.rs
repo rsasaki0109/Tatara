@@ -161,8 +161,8 @@ async fn core(
         let job: Result<Box<dyn FnOnce() -> crate::api::Response + Send>, _> = {
             let ed = s.editor.lock().await;
             if uri.path() == "/proposal/render" {
-                crate::api::proposal_render_job(&ed, query)
-                    .map(|j| Box::new(move || crate::api::render_png(j)) as Box<_>)
+                crate::api::proposal_image_job(&ed, query)
+                    .map(|j| Box::new(move || j.run()) as Box<_>)
             } else if uri.path() == "/render/image" {
                 crate::api::image_job(&ed, query).map(|j| Box::new(move || j.run()) as Box<_>)
             } else if uri.path() == "/render" {

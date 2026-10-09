@@ -117,6 +117,21 @@ export class DemoRunner {
     if (s.uv !== undefined) return this.uv(s)
     if (s.samples) return this.samples(s)
     if (s.reach) return this.reach(s)
+    if (s.hover) {
+      // Point at an element: the cursor moves there and it sees the mouse.
+      const el = document.querySelector(s.hover)
+      if (!el) throw new Error(`demo: nothing matches ${s.hover}`)
+      const r = el.getBoundingClientRect()
+      await this.moveTo(r.left + r.width * 0.5, r.top + r.height * 0.5)
+      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+      await this.idle()
+      return s.after ? this.sleep(s.after) : undefined
+    }
+    if (s.leave) {
+      document.querySelector(s.leave)?.dispatchEvent(new MouseEvent('mouseleave'))
+      await this.idle()
+      return s.after ? this.sleep(s.after) : undefined
+    }
     if (s.reveal) {
       const el = document.querySelector(s.reveal)
       if (!el) throw new Error(`demo: nothing matches ${s.reveal}`)
@@ -559,10 +574,16 @@ export class DemoRunner {
           summary = escapeHtml(data.summary)
           for (const issue of data.issues) details.push(`<span class="t-err">  ⚠ ${escapeHtml(issue.message)}</span>`)
         }
+        else if (call.tool === 'propose_changes') summary = `proposed ${data.ids.length > 1 ? `${data.ids.length} options` : `#${data.ids[0]}`} · waiting for review`
+        else if (call.tool === 'list_proposals') {
+          const done = data.decided.slice(-4)
+          summary = `${data.pending.length} pending · ${done.length} decided`
+          for (const d of done) details.push(`<span class="t-say">  ${d.outcome === 'accepted' ? '✓' : '·'} ${escapeHtml(d.outcome)}: ${escapeHtml(d.title)}</span>`)
+        }
         else if (data.created?.length > 6) summary = `revision ${data.revision} · created ${data.created.length} objects`
         else if (data.created?.length) summary = `revision ${data.revision} · created ${JSON.stringify(data.created)}`
         else summary = `revision ${data.revision}`
-        summary = details.length ? `<span class="t-err">⚠</span> ${summary}` : `<span class="t-ok">✓</span> ${summary}`
+        summary = details.length && call.tool === 'inspect_scene' ? `<span class="t-err">⚠</span> ${summary}` : `<span class="t-ok">✓</span> ${summary}`
       }
       this.termLine(`<span class="t-in">←</span> ${summary}`)
       for (const line of details) {
@@ -577,7 +598,8 @@ export class DemoRunner {
         line.querySelector('img').src = result.image
         await this.clock.track(line.querySelector('img').decode().catch(() => {}))
       }
-      if (!['get_scene', 'render_view', 'render_image', 'inspect_scene'].includes(call.tool) && !result.isError) {
+      if (['propose_changes', 'list_proposals'].includes(call.tool) && !result.isError) await app.refresh(true)
+      if (!['get_scene', 'render_view', 'render_image', 'inspect_scene', 'propose_changes', 'list_proposals'].includes(call.tool) && !result.isError) {
         await app.refresh(true)
         app.log('MCP', call.tool === 'apply_commands' ? app.summarize(call.arguments.commands) : call.tool)
       }
@@ -607,6 +629,8 @@ export class DemoRunner {
         )
         return { text: '', image, isError: false }
       }
+      else if (tool === 'propose_changes') data = await api.propose({ author: 'agent', ...args })
+      else if (tool === 'list_proposals') data = await api.proposals()
       else if (tool === 'render_image') {
         const [w, h] = args.size ?? [1280, 720]
         const q = new URLSearchParams({ w: String(w), h: String(h), samples: String(args.samples ?? 128), view: args.view ?? 'iso' })
