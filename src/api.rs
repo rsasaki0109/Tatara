@@ -892,6 +892,84 @@ mod tests {
     use super::*;
 
     #[test]
+    fn alignment_commands_preview_undo_revise_and_reject_atomically() {
+        let mut ed = Editor::new();
+        let setup = json!([
+            {"op":"add","name":"A","primitive":{"kind":"cube"},"translation":[-2,1,0]},
+            {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[2,3,4]},
+            {"op":"constrain","id":"B","align":"y","from":"A"}
+        ]);
+        let (status, _) = call(&mut ed, "POST", "/commands", json!({"commands":setup}));
+        assert_eq!(status, 200);
+        assert_eq!(ed.scene().objects[1].transform.translation, [2., 1., 4.]);
+        let original = serde_json::to_value(ed.scene()).unwrap();
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Lift B", "commands":[{"op":"transform","id":"B","translation":[2,5,4]}]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        let id = out["ids"][0].as_u64().unwrap();
+        let (_, preview) = call(&mut ed, "GET", &format!("/proposal?id={id}"), Value::Null);
+        assert_eq!(
+            preview["scene"]["objects"][0]["transform"]["translation"],
+            json!([-2.0, 5.0, 0.0])
+        );
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), original);
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                &format!("/proposal/accept?id={id}"),
+                json!({})
+            )
+            .0,
+            200
+        );
+        assert_eq!(ed.scene().objects[0].transform.translation[1], 5.);
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        assert_eq!(ed.scene().objects[0].transform.translation[1], 1.);
+        assert_eq!(call(&mut ed, "POST", "/redo", json!({})).0, 200);
+        let mut revised = setup;
+        revised[2]["align"] = json!("xz");
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/history/revise",
+            json!({"step":1,"commands":revised}),
+        );
+        assert_eq!(status, 200, "{out}");
+        assert_eq!(ed.scene().objects[0].transform.translation, [2., 1., 4.]);
+        assert_eq!(ed.scene().objects[1].transform.translation, [2., 5., 4.]);
+        let (_, report) = call(&mut ed, "GET", "/inspect", Value::Null);
+        assert!(
+            !report["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "constraint_violation")
+        );
+        let before = serde_json::to_value(ed.scene()).unwrap();
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"material","id":"A","color":"#ffffff"},{"op":"constrain","id":"B","align":"bad","from":"A"}]}),
+        );
+        assert_eq!(status, 400);
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), before);
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"constrain","id":"A","align":"y","from":"A"}]}),
+        );
+        assert_eq!(status, 422);
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), before);
+    }
+
+    #[test]
     fn distance_commands_preview_revise_inspect_and_reject_atomically() {
         let mut ed = Editor::new();
         let (status, _) = call(

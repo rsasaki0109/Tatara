@@ -2103,8 +2103,9 @@ input[type='range'] {
 }
 
 .c-distance { color: #67b8ff; }
+.c-align { color: #e4bd69; }
 
-#c-distance {
+#c-distance, #c-align {
   width: 80px;
   padding: 5px 7px;
   border: 1px solid var(--line-2);

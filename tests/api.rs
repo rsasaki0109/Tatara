@@ -508,6 +508,27 @@ async fn mcp_bridge_edits_the_shared_scene() {
             .iter()
             .any(|i| i["kind"] == "constraint_violation")
     );
+    // Alignment is available through the same 16 tools, with free axes retained.
+    let r = call(json!({"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"add","name":"Aligned A","primitive":{"kind":"cube"},"translation":[20,1,0]},
+        {"op":"add","name":"Aligned B","primitive":{"kind":"cube"},"translation":[23,4,2]},
+        {"op":"constrain","id":"Aligned B","align":"y","from":"Aligned A"}
+    ]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc":"2.0","id":54,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"transform","id":"Aligned B","translation":[25,6,3]}]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc":"2.0","id":55,"method":"tools/call","params":{"name":"get_scene","arguments":{}}})).await;
+    let scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let a = scene["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Aligned A")
+        .unwrap();
+    assert_eq!(a["transform"]["translation"], json!([20.0, 6.0, 0.0]));
+    let r = call(json!({"jsonrpc":"2.0","id":56,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"constrain","id":"Aligned A","align":"y","from":"Aligned A"}]}}})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
     child.kill().await.unwrap();
 }
 

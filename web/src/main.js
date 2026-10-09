@@ -1206,9 +1206,9 @@ function currentBone(o) {
 const subjectOf = (o) => o.group ?? o.id
 const whoName = (who) => (typeof who === 'number' ? (objectById(who)?.name ?? `#${who}`) : who)
 const involves = (o, who) => who === o.id || (o.group != null && who === o.group)
-const RULES = { on: 'Keep on', mirrors: 'Mirror of', matches: 'Match look of', distance: 'Keep distance' }
+const RULES = { on: 'Keep on', mirrors: 'Mirror of', matches: 'Match look of', distance: 'Keep distance', align: 'Keep aligned' }
 
-const LINK = { on: 0x4fd1c5, mirrors: 0xa78bfa, matches: 0xffb02e, distance: 0x67b8ff }
+const LINK = { on: 0x4fd1c5, mirrors: 0xa78bfa, matches: 0xffb02e, distance: 0x67b8ff, align: 0xe4bd69 }
 const idsOf = (who) => app.scene.objects.filter((x) => x.id === who || (x.group != null && x.group === who)).map((x) => x.id)
 
 /** Dashed lines from the selection to what its constraints tie it to. */
@@ -1227,6 +1227,7 @@ function constraintCard(o) {
     if (c.kind === 'on') return self ? `On ${other}` : `${other} rests on it`
     if (c.kind === 'mirrors') return `Mirrors ${other}${c.axis === 'z' ? ' (front/back)' : ''}`
     if (c.kind === 'distance') return `${c.distance} m from ${other}`
+    if (c.kind === 'align') return `Aligned ${c.axes.toUpperCase()} with ${other}`
     return `Matches ${other}`
   }
   const rows = mine
@@ -1245,7 +1246,10 @@ function constraintCard(o) {
   const add = targets.length
     ? `<div class="row constraint-add"><select id="c-kind">${Object.entries(RULES).map(([k, label]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${label}</option>`).join('')}</select><select id="c-target">${targets.map((w) => `<option value="${escapeHtml(JSON.stringify(w))}">${escapeHtml(whoName(w))}</option>`).join('')}</select><button class="small-btn" data-constrain>Keep</button></div>`
     : ''
-  return `<div class="card constraints"><div class="card-title">Constraints <span class="muted small">${o.group ? `the whole ${escapeHtml(o.group)} · ` : ''}kept through every edit</span></div>${rows}${kind === 'distance' && targets.length ? `<label class="row small">Distance (m)<input id="c-distance" type="number" min="0" step="any" required value="${app.constraintDistance ?? 2}"></label>` : ''}${add}</div>`
+  const axes = kind === 'align' && targets.length
+    ? `<label class="row small">World axes<select id="c-align">${['x', 'y', 'z', 'xy', 'xz', 'yz', 'xyz'].map((a) => `<option value="${a}" ${a === (app.constraintAxes ?? 'y') ? 'selected' : ''}>${a.toUpperCase()}</option>`).join('')}</select></label>`
+    : ''
+  return `<div class="card constraints"><div class="card-title">Constraints <span class="muted small">${o.group ? `the whole ${escapeHtml(o.group)} · ` : ''}kept through every edit</span></div>${rows}${kind === 'distance' && targets.length ? `<label class="row small">Distance (m)<input id="c-distance" type="number" min="0" step="any" required value="${app.constraintDistance ?? 2}"></label>` : ''}${axes}${add}</div>`
 }
 
 function rigCard(o) {
@@ -1345,6 +1349,10 @@ $('properties').addEventListener('change', (e) => {
     app.constraintDistance = Number(target.value)
     return
   }
+  if (target.id === 'c-align') {
+    app.constraintAxes = target.value
+    return
+  }
   if (target.id === 'bool-with') {
     app.boolWith = Number(target.value)
     return render()
@@ -1416,7 +1424,9 @@ $('properties').addEventListener('click', (e) => {
     const kind = $('c-kind').value
     const target = JSON.parse($('c-target').value)
     if (kind === 'distance' && !$('c-distance').reportValidity()) return
-    const rule = kind === 'distance' ? { distance: Number($('c-distance').value), from: target } : { [kind]: target }
+    const rule = kind === 'distance'
+      ? { distance: Number($('c-distance').value), from: target }
+      : kind === 'align' ? { align: $('c-align').value, from: target } : { [kind]: target }
     return run([{ op: 'constrain', id: subjectOf(o0), ...rule }]).catch(() => {})
   }
   const unconstrain = e.target.closest('[data-unconstrain]')

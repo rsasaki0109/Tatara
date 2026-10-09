@@ -3,7 +3,8 @@
 //! group, such as a built table) can be kept **on** another, keeping its
 //! place on it; kept the **mirror** image of another across a plane; or
 //! kept **matching** another's material; or kept a fixed **distance** from
-//! another object's or group's evaluated world-bound centre.
+//! another object's or group's evaluated world-bound centre; or keep centres
+//! **aligned** along selected world axes while leaving the other axes free.
 //!
 //! Constraints are solved at the end of every command batch. Mirrors and
 //! matches work both ways: whichever side the batch changed leads, so moving
@@ -51,6 +52,34 @@ pub enum Kind {
     Mirrors,
     Matches,
     Distance,
+    Align,
+}
+
+/// World axes whose evaluated bound centres must coincide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Axes {
+    X,
+    Y,
+    Z,
+    Xy,
+    Xz,
+    Yz,
+    Xyz,
+}
+
+impl Axes {
+    fn mask(self) -> DVec3 {
+        match self {
+            Self::X => DVec3::X,
+            Self::Y => DVec3::Y,
+            Self::Z => DVec3::Z,
+            Self::Xy => DVec3::new(1.0, 1.0, 0.0),
+            Self::Xz => DVec3::new(1.0, 0.0, 1.0),
+            Self::Yz => DVec3::new(0.0, 1.0, 1.0),
+            Self::Xyz => DVec3::ONE,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -64,6 +93,8 @@ pub enum Rule {
     Matches { of: Who },
     /// Keep evaluated world-bound centres this many metres apart.
     Distance { of: Who, distance: f64 },
+    /// Keep evaluated centres equal on these axes; other axes stay free.
+    Align { of: Who, axes: Axes },
 }
 
 impl Rule {
@@ -73,13 +104,17 @@ impl Rule {
             Rule::Mirrors { .. } => Kind::Mirrors,
             Rule::Matches { .. } => Kind::Matches,
             Rule::Distance { .. } => Kind::Distance,
+            Rule::Align { .. } => Kind::Align,
         }
     }
 
     fn other(&self) -> &Who {
         match self {
             Rule::On { support, .. } => support,
-            Rule::Mirrors { of, .. } | Rule::Matches { of } | Rule::Distance { of, .. } => of,
+            Rule::Mirrors { of, .. }
+            | Rule::Matches { of }
+            | Rule::Distance { of, .. }
+            | Rule::Align { of, .. } => of,
         }
     }
 }
@@ -200,6 +235,13 @@ pub fn add(scene: &mut Scene, subject: &ObjRef, rule: Request) -> Result<(), Eng
             }
             Rule::Distance { of, distance }
         }
+        Request::Align(r, axes) => {
+            let of = who(scene, &r)?;
+            if overlaps(scene, &subject, &of) {
+                return err("an alignment constraint needs disjoint objects or groups");
+            }
+            Rule::Align { of, axes }
+        }
         Request::Matches(r) => {
             let of = who(scene, &r)?;
             if overlaps(scene, &subject, &of) {
@@ -230,10 +272,11 @@ pub enum Request {
     Mirrors(ObjRef, Plane),
     Matches(ObjRef),
     Distance(ObjRef, f64),
+    Align(ObjRef, Axes),
 }
 
 /// Drop `subject`'s constraints (of one kind, or all), and those of others
-/// that bind it with a symmetric mirror, match or distance rule.
+/// that bind it with a symmetric mirror, match, distance or alignment rule.
 pub fn remove(scene: &mut Scene, subject: &ObjRef, kind: Option<Kind>) -> Result<(), EngineError> {
     let subject = who(scene, subject)?;
     let before = scene.constraints.len();
@@ -328,24 +371,24 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
                 *offset = [d.x, d.z];
             }
         }
-        let has_distance = constraints.iter().any(|c| c.rule.kind() == Kind::Distance);
-        for pass in 0..if has_distance { 32 } else { 3 } {
+        let spatial = |c: &Constraint| matches!(c.rule, Rule::Distance { .. } | Rule::Align { .. });
+        let has_spatial = constraints.iter().any(spatial);
+        for pass in 0..if has_spatial { 32 } else { 3 } {
             for c in &constraints {
                 let fresh = !before.constraints.contains(&c.id);
                 let subject = touched(scene, &dirty, &c.subject);
                 let other = touched(scene, &dirty, c.rule.other());
                 let direct_subject = touched(scene, &directly_changed, &c.subject);
                 let direct_other = touched(scene, &directly_changed, c.rule.other());
-                let (subject, other) =
-                    if c.rule.kind() == Kind::Distance && (direct_subject || direct_other) {
-                        (direct_subject, direct_other)
-                    } else {
-                        (subject, other)
-                    };
-                // Propagated distance edits still need solving, even when
+                let (subject, other) = if spatial(c) && (direct_subject || direct_other) {
+                    (direct_subject, direct_other)
+                } else {
+                    (subject, other)
+                };
+                // Propagated spatial edits still need solving, even when
                 // neither endpoint was directly edited by the command batch.
                 let lead = match (fresh, subject, other) {
-                    (false, false, false) if c.rule.kind() != Kind::Distance => continue,
+                    (false, false, false) if !spatial(c) => continue,
                     (false, false, false) => Lead::Other,
                     (false, true, false) => Lead::Subject,
                     _ => Lead::Other,
@@ -360,11 +403,11 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
                     dirty.insert(scene.objects[i].id);
                 }
             }
-            if has_distance && pass >= 2 && violations(scene, &constraints).is_empty() {
+            if has_spatial && pass >= 2 && violations(scene, &constraints).is_empty() {
                 break;
             }
         }
-        if has_distance && let Some(issue) = violations(scene, &constraints).first() {
+        if has_spatial && let Some(issue) = violations(scene, &constraints).first() {
             return err(issue["message"]
                 .as_str()
                 .unwrap_or("constraint cannot be satisfied"));
@@ -427,6 +470,19 @@ fn apply(scene: &mut Scene, c: &Constraint, lead: Lead) -> Result<(), EngineErro
             assembly::translate(scene, moving, delta);
             Ok(())
         }
+        Rule::Align { of, axes } => {
+            let of = members(scene, of);
+            let (fixed, moving) = match lead {
+                Lead::Other => (&of, &subject),
+                Lead::Subject => (&subject, &of),
+            };
+            let delta = (centre(scene, fixed)? - centre(scene, moving)?) * axes.mask();
+            if !delta.is_finite() {
+                return err("alignment constraint exceeds finite scene coordinates");
+            }
+            assembly::translate(scene, moving, delta);
+            Ok(())
+        }
         Rule::Matches { of } => {
             let of = members(scene, of);
             let (from, to) = match lead {
@@ -483,6 +539,14 @@ pub fn validate(scene: &Scene) -> Result<(), EngineError> {
         {
             return err(format!("constraint {} has a bad offset", c.id));
         }
+        if let Rule::Align { of, .. } = &c.rule
+            && overlaps(scene, &c.subject, of)
+        {
+            return err(format!(
+                "constraint {} has overlapping alignment endpoints",
+                c.id
+            ));
+        }
     }
     Ok(())
 }
@@ -505,8 +569,8 @@ pub fn distance_violations(scene: &Scene, constraints: &[Constraint]) -> Vec<ser
     }).collect()
 }
 
-/// Inspect all rules. Mixed distance batches must also preserve existing rules:
-/// satisfying distance alone can otherwise break an earlier on/mirror rule.
+/// Inspect all rules. Spatial batches must also preserve existing rules:
+/// satisfying distance or alignment alone can break an earlier on/mirror rule.
 pub fn violations(scene: &Scene, constraints: &[Constraint]) -> Vec<serde_json::Value> {
     let mut issues = distance_violations(scene, constraints);
     for c in constraints
@@ -607,6 +671,183 @@ mod tests {
         )
         .unwrap();
         ed
+    }
+
+    #[test]
+    fn alignment_selects_world_axes_and_either_endpoint_leads() {
+        for (axes, mask) in [
+            ("x", [true, false, false]),
+            ("y", [false, true, false]),
+            ("z", [false, false, true]),
+            ("xy", [true, true, false]),
+            ("xz", [true, false, true]),
+            ("yz", [false, true, true]),
+            ("xyz", [true, true, true]),
+        ] {
+            let mut ed = Editor::new();
+            apply(
+                &mut ed,
+                json!([
+                    {"op":"add","name":"A","primitive":{"kind":"cube"},"translation":[1,2,3]},
+                    {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[4,5,6]},
+                    {"op":"constrain","id":"B","align":axes,"from":"A"}
+                ]),
+            )
+            .unwrap();
+            let aligned = std::array::from_fn(|i| {
+                if mask[i] {
+                    [1., 2., 3.][i]
+                } else {
+                    [4., 5., 6.][i]
+                }
+            });
+            assert!(close(at(&ed, "B"), aligned), "{axes}");
+            apply(
+                &mut ed,
+                json!([{"op":"transform","id":"A","translation":[7,8,9]}]),
+            )
+            .unwrap();
+            let moved = std::array::from_fn(|i| if mask[i] { [7., 8., 9.][i] } else { aligned[i] });
+            assert!(close(at(&ed, "B"), moved));
+            apply(
+                &mut ed,
+                json!([{"op":"transform","id":"B","translation":[10,11,12]}]),
+            )
+            .unwrap();
+            let followed = std::array::from_fn(|i| {
+                if mask[i] {
+                    [10., 11., 12.][i]
+                } else {
+                    [7., 8., 9.][i]
+                }
+            });
+            assert!(close(at(&ed, "A"), followed));
+            ed.undo().unwrap();
+            assert!(close(at(&ed, "A"), [7., 8., 9.]));
+            assert!(close(at(&ed, "B"), moved));
+            assert!(violations(ed.scene(), &ed.scene().constraints).is_empty());
+        }
+    }
+
+    #[test]
+    fn alignment_chains_propagate_and_both_edits_are_reference_led() {
+        let mut ed = Editor::new();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"add","name":"A","primitive":{"kind":"cube"}},
+                {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[2,1,0]},
+                {"op":"add","name":"C","primitive":{"kind":"cube"},"translation":[4,2,0]},
+                {"op":"constrain","id":"B","align":"y","from":"A"},
+                {"op":"constrain","id":"C","align":"y","from":"B"}
+            ]),
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"C","translation":[4,3,0]}]),
+        )
+        .unwrap();
+        assert_eq!(at(&ed, "A"), [0., 3., 0.]);
+        assert_eq!(at(&ed, "B"), [2., 3., 0.]);
+        assert_eq!(at(&ed, "C"), [4., 3., 0.]);
+        apply(
+            &mut ed,
+            json!([{"op":"unconstrain","id":"C","kind":"align"}]),
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"transform","id":"B","translation":[2,8,0]},
+                {"op":"transform","id":"A","translation":[0,5,0]}
+            ]),
+        )
+        .unwrap();
+        assert_eq!(at(&ed, "B"), [2., 5., 0.]);
+        assert_eq!(at(&ed, "C"), [4., 3., 0.]);
+        apply(
+            &mut ed,
+            json!([{"op":"constrain","id":"A","align":"xz","from":"B"}]),
+        )
+        .unwrap();
+        assert_eq!(ed.scene().constraints.len(), 1); // Reversed pair replaces, not duplicates.
+        apply(
+            &mut ed,
+            json!([{"op":"unconstrain","id":"B","kind":"align"}]),
+        )
+        .unwrap();
+        assert!(ed.scene().constraints.is_empty());
+    }
+
+    #[test]
+    fn alignment_uses_group_and_modifier_bounds_and_moves_groups_rigidly() {
+        let mut ed = Editor::new();
+        apply(&mut ed, json!([
+            {"op":"add","name":"A","primitive":{"kind":"cube"}},
+            {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[1,0,0]},
+            {"op":"add","name":"C","primitive":{"kind":"cube"},"translation":[6,4,0]},
+            {"op":"add_modifier","id":"B","modifier":{"type":"array","count":3,"offset":[2,0,0]}}
+        ])).unwrap();
+        let mut scene = ed.scene().clone();
+        scene.objects[0].group = Some("Pair".into());
+        scene.objects[1].group = Some("Pair".into());
+        ed.load(scene).unwrap();
+        apply(
+            &mut ed,
+            json!([{"op":"constrain","id":"Pair","align":"xy","from":"C"}]),
+        )
+        .unwrap();
+        assert!(close(at(&ed, "A"), [3.5, 4., 0.])); // Pair bounds centre was x=2.5.
+        assert!(close(at(&ed, "B"), [4.5, 4., 0.]));
+        apply(&mut ed, json!([{"op":"move","id":"Pair","offset":[1,2,3]}])).unwrap();
+        assert!(close(at(&ed, "C"), [7., 6., 0.]));
+        assert!(close(at(&ed, "B"), [5.5, 6., 3.]));
+        apply(&mut ed, json!([{"op":"delete","id":"C"}])).unwrap();
+        assert!(ed.scene().constraints.is_empty());
+    }
+
+    #[test]
+    fn alignment_rejects_overlap_ambiguity_and_conflicts_atomically_and_inspects_loaded_rules() {
+        let mut ed = Editor::new();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"add","name":"A","primitive":{"kind":"cube"},"translation":[1,0,0]},
+                {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[-1,0,0]},
+                {"op":"constrain","id":"B","mirrors":"A"}
+            ]),
+        )
+        .unwrap();
+        for command in [
+            json!({"op":"constrain","id":"B","align":"x","from":"A"}),
+            json!({"op":"constrain","id":"A","align":"y","from":"A"}),
+            json!({"op":"constrain","id":"B","align":"y"}),
+            json!({"op":"constrain","id":"B","align":"y","distance":1,"from":"A"}),
+        ] {
+            let before = serde_json::to_value(ed.scene()).unwrap();
+            assert!(apply(&mut ed, json!([command])).is_err());
+            assert_eq!(serde_json::to_value(ed.scene()).unwrap(), before);
+        }
+        apply(&mut ed, json!([{"op":"unconstrain","id":"B"}, {"op":"constrain","id":"B","align":"y","from":"A"}])).unwrap();
+        let mut scene = ed.scene().clone();
+        scene.objects[1].transform.translation[1] = 5.;
+        ed.load(scene.clone()).unwrap();
+        assert!(
+            inspect::inspect(&ed)["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "constraint_violation" && i["rule"] == "align")
+        );
+        scene.constraints[0].subject = scene.constraints[0].rule.other().clone();
+        assert!(validate(&scene).is_err());
+        assert!(
+            serde_json::from_value::<crate::engine::Command>(
+                json!({"op":"constrain","id":"B","align":"yx","from":"A"})
+            )
+            .is_err()
+        );
     }
 
     #[test]

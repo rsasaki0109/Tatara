@@ -547,6 +547,35 @@ try {
   await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => (s.constraints || []).length === 0))
   check(true, 'the distance rule can be removed from the Constraints card')
 
+  // Axis alignment leaves the other coordinates free, whichever endpoint leads.
+  await page.evaluate(() => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands: [
+    {op: 'clear'}, {op: 'add', name: 'Anchor', primitive: {kind: 'cube'}, translation: [-2,1,0]},
+    {op: 'add', name: 'Partner', primitive: {kind: 'cube'}, translation: [2,3,4]},
+  ]})}))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects.length === 2 && s.objects[1].name === 'Partner' && s.objects[1].transform.translation[1] === 3))
+  await page.click('#outliner li:last-child')
+  await page.selectOption('#c-kind', 'align')
+  await page.selectOption('#c-align', 'y')
+  await page.click('[data-constrain]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => (s.constraints || []).some((c) => c.kind === 'align' && c.axes === 'y') && s.objects[1].transform.translation[1] === 1))
+  check((await page.textContent('.constraints')).includes('Aligned Y with Anchor'), 'the Constraints card creates and describes world-axis alignment')
+  await page.evaluate(() => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands: [{op: 'transform', id: 'Anchor', translation: [-3,2,1]}]})}))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => JSON.stringify(s.objects[1].transform.translation) === '[2,2,4]'))
+  check(true, 'alignment follows the anchor while unselected axes stay free')
+  await page.evaluate(() => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands: [{op: 'transform', id: 'Partner', translation: [5,4,6]}]})}))
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => JSON.stringify(s.objects[0].transform.translation) === '[-3,4,1]'))
+  check(true, 'either alignment endpoint can lead')
+  await page.click('[data-action=undo]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].transform.translation[1] === 2 && s.objects[1].transform.translation[1] === 2))
+  check(true, 'one Undo restores both alignment endpoints')
+  await page.selectOption('#c-align', 'xz')
+  await page.click('[data-constrain]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => (s.constraints || []).length === 1 && s.constraints[0].axes === 'xz' && JSON.stringify(s.objects[1].transform.translation) === '[-3,2,1]'))
+  check(true, 'multiple alignment axes replace the existing pair rule')
+  await page.click('.constraints [data-unconstrain]')
+  await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => (s.constraints || []).length === 0))
+  check(true, 'alignment can be removed from the Constraints card')
+
   await page.setViewportSize({ width: 390, height: 844 })
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
   check(!overflow, 'phone layout has no horizontal scroll')
