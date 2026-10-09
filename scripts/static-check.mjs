@@ -107,6 +107,17 @@ try {
   })
   check(distance.moved.objects[0].transform.translation[0] === 1 && distance.moved.objects[1].transform.translation[0] === 3, 'distance intent is solved by the WebAssembly core')
   check(distance.undone.objects[0].transform.translation[0] === 0 && distance.undone.objects[1].transform.translation[0] === 2, 'distance endpoint changes are one Undo in WebAssembly')
+  const aligned = await page.evaluate(async () => {
+    const post = (path, commands) => fetch(`/api/${path}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands})}).then((r) => r.json())
+    await post('commands', [{op: 'clear'}, {op: 'add', name: 'A', primitive: {kind: 'cube'}, translation: [0,1,0]}, {op: 'add', name: 'B', primitive: {kind: 'cube'}, translation: [3,2,4]}, {op: 'constrain', id: 'B', align: 'y', from: 'A'}])
+    await post('commands', [{op: 'transform', id: 'B', translation: [5,6,7]}])
+    const moved = await (await fetch('/api/scene')).json()
+    await post('undo', [])
+    const undone = await (await fetch('/api/scene')).json()
+    return {moved, undone}
+  })
+  check(JSON.stringify(aligned.moved.objects[0].transform.translation) === '[0,6,0]' && JSON.stringify(aligned.moved.objects[1].transform.translation) === '[5,6,7]', 'WebAssembly alignment preserves free axes and follows either endpoint')
+  check(JSON.stringify(aligned.undone.objects[0].transform.translation) === '[0,1,0]' && JSON.stringify(aligned.undone.objects[1].transform.translation) === '[3,1,4]', 'WebAssembly alignment edits are one Undo')
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

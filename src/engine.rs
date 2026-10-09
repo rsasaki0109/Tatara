@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::anim::{self, Animation, Interpolation, KeyValue, Property, Track};
 use crate::assembly::{self, Layout, Side, Template};
-use crate::constraint::{self, Constraint, Kind as ConstraintKind, Plane};
+use crate::constraint::{self, Axes, Constraint, Kind as ConstraintKind, Plane};
 use crate::csg::{self, BoolOp};
 use crate::edit;
 use crate::image::{ImageAsset, MAX_IMAGES, decode_base64};
@@ -860,7 +860,9 @@ pub enum Command {
     /// its material the same as another's, whichever is changed. A new rule
     /// of the same kind replaces the old one. `distance` with `from` keeps
     /// evaluated world-bound centres that many metres apart; either edited
-    /// side leads, and `from` leads if both sides were edited.
+    /// side leads, and `from` leads if both sides were edited. `align` with
+    /// `from` keeps centres equal on the selected world axes (x/y/z/xy/xz/yz/xyz),
+    /// leaving the other axes free, with the same lead policy.
     Constrain {
         id: ObjRef,
         #[serde(default)]
@@ -874,12 +876,15 @@ pub enum Command {
         /// Distance in metres between evaluated world-bound centres.
         #[serde(default)]
         distance: Option<f64>,
-        /// The other object or group for a distance constraint.
+        /// World axes on which evaluated bound centres must coincide.
+        #[serde(default)]
+        align: Option<Axes>,
+        /// The other object or group for distance or alignment.
         #[serde(default)]
         from: Option<ObjRef>,
     },
     /// Drop `id`'s constraints (only those of `kind`: on, mirrors or
-    /// matches or distance, if given), including symmetric rules that point at it.
+    /// matches, distance or align, if given), including symmetric rules that point at it.
     Unconstrain {
         id: ObjRef,
         #[serde(default)]
@@ -2214,20 +2219,24 @@ fn apply_command(
             axis,
             matches,
             distance,
+            align,
             from,
         } => {
-            let request = match (on, mirrors, matches, distance, from) {
-                (Some(r), None, None, None, None) => constraint::Request::On(r.clone()),
-                (None, Some(r), None, None, None) => {
+            let request = match (on, mirrors, matches, distance, align, from) {
+                (Some(r), None, None, None, None, None) => constraint::Request::On(r.clone()),
+                (None, Some(r), None, None, None, None) => {
                     constraint::Request::Mirrors(r.clone(), axis.unwrap_or_default())
                 }
-                (None, None, Some(r), None, None) => constraint::Request::Matches(r.clone()),
-                (None, None, None, Some(d), Some(r)) => {
+                (None, None, Some(r), None, None, None) => constraint::Request::Matches(r.clone()),
+                (None, None, None, Some(d), None, Some(r)) => {
                     constraint::Request::Distance(r.clone(), *d)
+                }
+                (None, None, None, None, Some(axes), Some(r)) => {
+                    constraint::Request::Align(r.clone(), *axes)
                 }
                 _ => {
                     return err(
-                        "constrain needs exactly one of `on`, `mirrors`, `matches`, or `distance` with `from`",
+                        "constrain needs exactly one of `on`, `mirrors`, `matches`, `distance` with `from`, or `align` with `from`",
                     );
                 }
             };

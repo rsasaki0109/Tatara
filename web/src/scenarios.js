@@ -1366,4 +1366,27 @@ export const distance = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance }
+export const alignment = {
+  title: 'Keep them aligned', width: 800, gizmo: false,
+  setup: [
+    {op: 'add', name: 'Anchor', primitive: {kind: 'cube'}, scale: [0.4,0.7,0.4], translation: [-1,0.35,0], color: '#769c8b'},
+    {op: 'add', name: 'Partner', primitive: {kind: 'cube'}, scale: [0.4,0.7,0.4], translation: [1,1.1,0], color: '#be6651'},
+  ],
+  camera: {azimuth: 12, elevation: 22, distance: 4.5, target: [0,0.7,0]},
+  steps: [
+    {caption: 'Keep centres aligned on the axes you choose', hint: 'world axes · evaluated bounds · objects or groups'},
+    {pick: 'Partner', after: 200},
+    {choose: '#c-kind', value: 'Keep aligned', after: 200},
+    {choose: '#c-align', value: 'Y', after: 200},
+    {click: '[data-constrain]', after: 800},
+    {caption: 'Lift one: both stay at the same height', hint: 'constrain · align Y · from Anchor'},
+    {run: [{op: 'transform', id: 'Anchor', translation: [-1.4,1.2,0]}], after: 1300},
+    {caption: 'Either side leads; X and Z remain free', hint: 'a relation, rather than frozen coordinates'},
+    {run: [{op: 'transform', id: 'Partner', translation: [1.4,0.7,0.4]}], after: 1300},
+    {click: '[data-action=undo]', after: 1000},
+    {caption: 'One Undo restores both objects', hint: 'same typed commands in chat, MCP, proposals and history'},
+    {cursor: false}, {wait: 1000},
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment }
