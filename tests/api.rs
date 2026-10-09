@@ -235,7 +235,8 @@ async fn mcp_bridge_edits_the_shared_scene() {
 
     // History: agent batches are marked, and an earlier step can be revised.
     let r = call(json!({"jsonrpc": "2.0", "id": 35, "method": "tools/call", "params": {"name": "get_history", "arguments": {"limit": 50}}})).await;
-    let history: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let history: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     let first = &history["steps"][0];
     assert_eq!(first["source"], "agent", "{history}");
     let step = first["step"].clone();
