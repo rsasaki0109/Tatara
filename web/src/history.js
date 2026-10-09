@@ -64,7 +64,7 @@ export class HistoryPanel {
   row(s) {
     const open = s.step === this.open
     const label = escapeHtml(this.summarize(s.commands))
-    const head = `<div class="hs-head" data-hs-open="${s.step}"><span class="hs-n">${s.step}</span><span class="hs-what">${label}</span><span class="hs-src">${escapeHtml(s.source)}</span></div>`
+    const head = `<div class="hs-head" data-hs-open="${s.step}"><span class="hs-n">${s.step}</span><span class="hs-what">${label}</span><span class="hs-src">${escapeHtml(s.actor ? `${s.actor.name} · ${s.source}` : s.source)}</span></div>`
     if (!open) return `<li class="hs-step" data-step="${s.step}">${head}</li>`
     const commands = this.draft ?? s.commands
     const body = s.editable
@@ -144,6 +144,7 @@ export class HistoryPanel {
       else {
         this.close()
         this.open = step
+        this.baseRevision = this.data.revision
         this.draft = structuredClone(this.steps.find((s) => s.step === step).commands)
       }
       this.draw()
@@ -239,7 +240,7 @@ export class HistoryPanel {
     if (!this.draft || this.open == null) return
     clearTimeout(this.timer)
     try {
-      await this.api.revise(this.open, this.draft)
+      await this.api.revise(this.open, this.draft, this.baseRevision)
       const step = this.open
       this.previewing = false
       this.open = null

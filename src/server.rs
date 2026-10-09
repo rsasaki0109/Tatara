@@ -49,6 +49,7 @@ impl AiConfig {
 }
 
 pub struct AppState {
+    presence: Mutex<crate::collaboration::Room>,
     editor: Mutex<Editor>,
     /// Live updates: ("revision", scene revision) or ("proposals", their version).
     events: broadcast::Sender<(&'static str, u64)>,
@@ -61,6 +62,7 @@ pub type Shared = Arc<AppState>;
 pub fn state(ai: Option<AiConfig>) -> Shared {
     let (events, _) = broadcast::channel(64);
     Arc::new(AppState {
+        presence: Mutex::new(crate::collaboration::Room::default()),
         editor: Mutex::new(Editor::new()),
         events,
         ai,
@@ -75,6 +77,10 @@ pub fn router(state: Shared, web_dir: PathBuf) -> Router {
     let index = web_dir.join("index.html");
     let api = Router::new()
         .route("/events", get(get_events))
+        .route(
+            "/presence",
+            get(get_presence).post(post_presence).delete(leave_presence),
+        )
         .route("/ai", get(get_ai))
         .route("/chat", post(post_chat))
         .fallback(core)
@@ -220,16 +226,68 @@ fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ApiError> {
 async fn get_events(
     State(s): State<Shared>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let receiver = s.events.subscribe();
     let (revision, proposals) = {
         let ed = s.editor.lock().await;
         (ed.scene().revision, ed.proposals_version())
     };
-    let first = futures_util::stream::iter([("revision", revision), ("proposals", proposals)]);
-    let updates = BroadcastStream::new(s.events.subscribe()).filter_map(|r| async move { r.ok() });
+    let presence = s.presence.lock().await.version;
+    let first = futures_util::stream::iter([
+        ("revision", revision),
+        ("proposals", proposals),
+        ("presence", presence),
+    ]);
+    let updates = BroadcastStream::new(receiver).map(|r| r.unwrap_or(("resync", 0)));
     let stream = first
         .chain(updates)
         .map(|(kind, n)| Ok(Event::default().event(kind).data(n.to_string())));
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+fn presence_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn presence_snapshot(room: &crate::collaboration::Room) -> Value {
+    json!({ "version": room.version, "peers": room.peers(), "ttl_ms": crate::collaboration::TTL_MS })
+}
+
+async fn get_presence(State(s): State<Shared>) -> Json<Value> {
+    let mut room = s.presence.lock().await;
+    let before = room.version;
+    room.expire(presence_now());
+    if before != room.version {
+        let _ = s.events.send(("presence", room.version));
+    }
+    Json(presence_snapshot(&room))
+}
+
+async fn post_presence(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResult {
+    let p: crate::collaboration::Presence = parse(&body)?;
+    let mut room = s.presence.lock().await;
+    let before = room.version;
+    room.update(p, presence_now())?;
+    if before != room.version {
+        let _ = s.events.send(("presence", room.version));
+    }
+    Ok(Json(presence_snapshot(&room)))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LeavePresence {
+    id: String,
+}
+
+async fn leave_presence(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResult {
+    let p: LeavePresence = parse(&body)?;
+    let mut room = s.presence.lock().await;
+    room.leave(&p.id);
+    let _ = s.events.send(("presence", room.version));
+    Ok(Json(presence_snapshot(&room)))
 }
 
 async fn get_ai(State(s): State<Shared>) -> Json<Value> {
@@ -351,6 +409,7 @@ pub fn parse_batch(text: &str) -> Result<CommandBatch, String> {
     Ok(CommandBatch {
         expected_revision: None,
         source: Some("chat".into()),
+        actor: None,
         ..batch
     })
 }

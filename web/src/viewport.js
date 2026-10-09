@@ -1677,6 +1677,21 @@ export class Viewport {
 
   // -- camera ---------------------------------------------------------------
 
+  viewPeerCamera({ eye, target, fov }) {
+    this.anim.items.get('camera')?.finish(false)
+    this.spinRate = 0
+    // Flush any residual orbit damping before installing the peer pose.
+    const damping = this.controls.enableDamping
+    this.controls.enableDamping = false
+    this.controls.update()
+    this.camera.position.fromArray(eye)
+    this.controls.target.fromArray(target)
+    this.camera.fov = fov
+    this.camera.updateProjectionMatrix()
+    this.controls.update()
+    this.controls.enableDamping = damping
+  }
+
   getOrbit() {
     const t = this.controls.target
     const off = this.camera.position.clone().sub(t)
@@ -1740,6 +1755,42 @@ export class Viewport {
     const fov = Math.min(this.camera.fov, this.camera.fov * this.camera.aspect) * DEG
     const distance = Math.max(1.2, (sphere.radius * padding) / Math.sin(fov / 2))
     return this.orbitTo({ target: sphere.center.toArray(), distance, elevation, azimuth }, ms)
+  }
+
+  /** Advisory peer outlines and camera frusta, outside the model root. */
+  setPresence(peers) {
+    if (this.peerRoot) {
+      this.scene.remove(this.peerRoot)
+      this.peerRoot.traverse((o) => { o.geometry?.dispose(); o.material?.dispose() })
+    }
+    this.peerRoot = new THREE.Group()
+    this.scene.add(this.peerRoot)
+    for (const p of peers) {
+      for (const id of p.selection) {
+        const node = this.nodes.get(id)
+        if (!node) continue
+        node.group.updateWorldMatrix(true, true)
+        const box = new THREE.Box3().setFromObject(node.group)
+        const helper = new THREE.Box3Helper(box, new THREE.Color(p.color))
+        helper.material.depthTest = false
+        helper.renderOrder = 9
+        this.peerRoot.add(helper)
+      }
+      if (p.camera) {
+        const cam = new THREE.PerspectiveCamera(p.camera.fov, 1.6, 0.08, 0.45)
+        cam.position.fromArray(p.camera.eye)
+        cam.lookAt(new THREE.Vector3(...p.camera.target))
+        cam.updateMatrixWorld()
+        const helper = new THREE.CameraHelper(cam)
+        const colors = helper.geometry.getAttribute('color')
+        const c = new THREE.Color(p.color)
+        for (let i = 0; i < colors.count; i++) colors.setXYZ(i, c.r, c.g, c.b)
+        colors.needsUpdate = true
+        helper.material.depthTest = false
+        helper.renderOrder = 9
+        this.peerRoot.add(helper)
+      }
+    }
   }
 
   /** Page (client) coordinates of a world point given as [x, y, z]. */

@@ -418,14 +418,18 @@ pub fn history_steps(ed: &Editor, query: &str) -> Result<Value, Response> {
                     editable = false;
                 }
             }
-            json!({ "step": i + 1, "source": step.source, "commands": commands, "editable": editable })
+            json!({ "step": i + 1, "source": step.source, "actor": step.actor, "commands": commands, "editable": editable })
         })
         .collect();
-    Ok(json!({ "total": steps.len(), "from_loaded_scene": loaded, "steps": listed }))
+    Ok(
+        json!({ "revision": ed.scene().revision, "total": steps.len(), "from_loaded_scene": loaded, "steps": listed }),
+    )
 }
 
 #[derive(serde::Deserialize)]
 struct Revision {
+    #[serde(default)]
+    expected_revision: Option<u64>,
     step: usize,
     commands: Vec<crate::engine::Command>,
 }
@@ -722,6 +726,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
         ("GET", "/history") => history_steps(ed, query).map(|v| Response::json(200, v)),
         ("POST", "/history/revise") => {
             let r: Revision = parse(body)?;
+            ed.ensure_revision(r.expected_revision)?;
             let revision = ed.revise(r.step, r.commands)?;
             Ok(
                 Response::json(200, json!({ "revision": revision, "history": history(ed) }))
@@ -816,6 +821,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
         ("POST", "/import") => {
             let commands = crate::gltf::import(body)?;
             let r = ed.apply(&CommandBatch {
+                actor: None,
                 commands,
                 expected_revision: None,
                 source: Some("import".into()),
@@ -1256,5 +1262,60 @@ mod tests {
         assert_eq!(query_param("a=%", "a").as_deref(), Some("%"));
         assert_eq!(query_param("a=%E3%81%82", "a").as_deref(), Some("あ"));
         assert_eq!(query_param("a=あ%", "a").as_deref(), Some("あ%"));
+    }
+    #[test]
+    fn participant_attribution_survives_replay_and_stale_edits_are_atomic() {
+        let mut ed = Editor::new();
+        let actor = json!({"id":"alice", "name":"Alice"});
+        let commands = json!([{"op":"add", "primitive":{"kind":"cube"}}]);
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"actor":actor,"commands":commands,"expected_revision":0}),
+        );
+        assert_eq!(status, 200);
+        let (status, error) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"actor":{"id":"bob","name":"Bob"},"commands":[{"op":"clear"}],"expected_revision":0}),
+        );
+        assert_eq!(status, 409);
+        assert_eq!(error["detail"]["stale"], true);
+        assert_eq!(ed.scene().objects.len(), 1);
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/history/revise",
+                json!({"step":1,"commands":commands})
+            )
+            .0,
+            200
+        );
+        let (stale, _) = call(
+            &mut ed,
+            "POST",
+            "/history/revise",
+            json!({"step":1,"commands":commands,"expected_revision":1}),
+        );
+        assert_eq!(stale, 409);
+        ed.undo().unwrap();
+        ed.redo().unwrap();
+        let (_, history) = call(&mut ed, "GET", "/history", Value::Null);
+        assert_eq!(history["steps"][0]["actor"], actor);
+        let before = ed.scene().revision;
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"actor":{"id":"bad","name":""},"commands":[{"op":"clear"}]})
+            )
+            .0,
+            422
+        );
+        assert_eq!(ed.scene().revision, before);
     }
 }

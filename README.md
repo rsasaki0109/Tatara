@@ -114,6 +114,10 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>History</b> — change any earlier step; everything after it replays.</td>
     <td><b>Constraints</b> — keep on, mirror and match: say it once, it holds through every edit.</td>
   </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/collaborate.gif" alt="Mira joins through a real MCP process; her cursor, selection outline, camera and advisory editing lock appear in the local editor. She raises and recolours the cube, and the History tab records her name. An edit based on revision zero is refused with a recovery reason; leaving clears her presence."></td>
+    <td><b>Shared session</b> — see another person or agent’s cursor, selection and camera, review who changed what, and refuse stale edits safely.</td>
+  </tr>
 </table>
 
 Every GIF above is a deterministic recording of the real editor: real toolbar clicks and face picks, real Rust mesh operations and a real `tatara --mcp` process. The chat clip replays a fixed command batch, so it needs no API key. In the *See* clip the agent's decisions are scripted, but every tool call, including the images it gets back, comes from a real `tatara --mcp` process. Regenerate them all with `node scripts/record-demo.mjs`.
@@ -124,7 +128,7 @@ Blender is the benchmark for what a 3D suite can do. Tatara starts from a differ
 
 - **One command API for everything.** The UI, the in-editor chat and external agents all call `POST /api/commands`, described by a generated JSON Schema at `GET /api/schema`.
 - **Edits you can trust.** A batch is validated and applied atomically: if any command fails, nothing changes. Each batch is one undo step, and `expected_revision` rejects edits based on a stale scene.
-- **A shared, live scene.** Agents edit the scene open in your browser, and the change appears immediately.
+- **A shared, live scene.** Multiple tabs and MCP agents edit the same local session. See each participant’s cursor, selection, camera and advisory editing locks, with command authors in the history. Stale edits are refused with a recovery reason.
 - **A history you can change.** Because every edit is a command, the scene is a recipe. Open any earlier step, change a value, and every step after it replays: rebuild the table bigger and the chairs circle it again, and the lamp placed on it stays on top.
 - **Intent that holds.** Say what must stay true, such as this vase stays on the table, these speakers mirror each other, or these cups share a glaze, and it holds through every later edit, by you, an agent or a replayed history.
 - **Review before it lands.** Agents can propose a change, or several alternatives, instead of applying it. You preview each one in place, see exactly what it adds, changes and removes, and accept the one you want. Nothing changes until you do.
@@ -179,6 +183,7 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 - **glTF 2.0:** export a binary `.glb` with one node, mesh and PBR material per object (emission, `KHR_materials_emissive_strength`, `KHR_materials_transmission`, alpha blending texture images, normal maps, UVs and tangents included), modifiers applied and normals split at creases; it passes the Khronos glTF Validator with no errors or warnings. Import `.glb` or `.gltf` with embedded buffers through the node hierarchy. Base colour and normal textures come in as scene images, and textured meshes keep their UVs per face corner. Split vertices are welded and coplanar triangle pairs become quads again (never across a UV seam), so imported models stay editable. The whole import is one undo step.
 - **Agents:** a stdio MCP bridge, generated command schemas, scene bounds, optional full mesh reads and `render_view`. That tool gives agents eyes: a headless Rust renderer returns labelled multi-view PNGs, and the Agent panel shows the same image to you. `inspect_scene` gives them a ruler: it measures intersections (with depth), objects floating above their support (with the gap) and anything sunk below the floor, and the **Checks** card shows the same report with the culprits outlined in red. The `drop` command settles an object on whatever is beneath it.
 - **Layout by relation:** `build` makes furniture from primitives at real-world size (table, chair, lamp, mug, plant, shelf), each piece one **group** that `move`, `drop`, `delete`, `place` and `arrange` treat as a unit. `place` puts something on another object (`at` a spot of its top) or beside it; `arrange` lays items out in a row, a grid or a circle around something, turned to face it. Everything settles onto what is below it, so agents never compute coordinates. The outliner folds each group into one row, and the empty Properties panel builds the same pieces with one click.
+- **Collaboration (native server):** open the same server in two tabs and set your name in the session card. Coloured cursors and object outlines show who is looking where; camera frusta and **View camera** show another participant’s view. Focusing an object property or dragging in the viewport announces an **advisory** editing lock. It does not block edits: `expected_revision` protects command batches and history revisions, returning HTTP 409 when the scene changed (refresh, review and retry). Presence heartbeats every 5 seconds while idle. Leaving a page announces departure; if a browser closes abruptly, presence expires after 30 seconds without a heartbeat and disappears on the next update. Command batches may include `actor: {"id":"alice", "name":"Alice"}`; history keeps it through undo/redo and parametric replay. This is a local, in-memory session, shared global undo, at most 64 participants and 32 object IDs per presence list. Participant names are display metadata, not authenticated identities. Presence is not saved to scene files; the browser-only WASM build stays private to its tab. There is no automatic rebase yet, and legacy callers that omit `expected_revision` still apply against the latest scene.
 - **Chat (optional):** an OpenAI-compatible Chat Completions endpoint translates requests into validated commands.
 
 | Key | Action | Key | Action |
@@ -210,17 +215,20 @@ Start the editor first, then add Tatara to your MCP client's configuration:
 }
 ```
 
-You can also build once and point the client at `target/release/tatara` with `args: ["--mcp"]`.
+The bridge exposes 16 tools. You can also build once and point the client at `target/release/tatara` with `args: ["--mcp"]`.
 
 | Tool | Purpose |
 | --- | --- |
 | `get_scene` | IDs, names, transforms, materials, world bounds, counts and revision. Pass `include_mesh: true` for vertices and polygons. |
-| `apply_commands` | Apply a validated, atomic batch. Pass `expected_revision` to reject stale edits. |
+| `apply_commands` | Apply a validated, atomic batch. Pass `expected_revision` to reject stale edits and optional `actor: {id,name}` to attribute them. |
+| `get_presence` | Active participants: names, selections, cursors, cameras and advisory editing locks. |
+| `update_presence` | Join or heartbeat with `actor: {id,name}`, optional `cursor: [u,v]` (0–1), `selection`, `editing` (object IDs) and `camera: {eye,target,fov}`. Heartbeat every 5–10 seconds. |
+| `leave_presence` | Remove the participant identified by `id` and release advisory locks. |
 | `undo` / `redo` | Step the shared history. |
 | `import_gltf` / `export_gltf` | Read a local `.glb`/`.gltf` into the scene, or write the scene to a `.glb`. |
 | `constrain` / `unconstrain` (commands) | `id`, then `on`, `mirrors` (with `axis` `x`/`z`) or `matches`, another object or group / `id` and an optional `kind`. Applied through `apply_commands`; listed in `get_scene` as `constraints`. |
-| `get_history` | The steps that made the scene, oldest first: number, source and commands (`limit` keeps the last few). |
-| `revise_step` | **Change an earlier step** (`step`, and its new `commands`) and replay everything after it, as one undo step. Refused, naming the step, if a later step no longer applies. |
+| `get_history` | The steps that made the scene, oldest first: number, source, optional actor and commands, plus the current revision (`limit` keeps the last few). |
+| `revise_step` | **Change an earlier step** (`step`, and its new `commands`) and replay everything after it, as one undo step. Pass `expected_revision` from `get_history` to reject stale edits. Refused, naming the step, if a later step no longer applies. |
 | `propose_changes` | **Offer changes for review.** `title`, then `commands` (like `apply_commands`) or `variants` (`[{"title", "commands"}]`, up to 6). Nothing changes until the person accepts one in the Proposals tray; returns the proposal ids. |
 | `list_proposals` | Pending proposals with what each changes (and a conflict if the scene moved on), plus recent decisions: accepted, rejected or superseded. |
 | `inspect_scene` | **Measure the scene.** Lists intersections with their depth, floating objects with their gap and objects below the floor, plus each object's world bounds, size and what it rests on. |
@@ -293,7 +301,7 @@ curl http://127.0.0.1:3000/api/commands \
 ]}
 ```
 
-Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj`, `GET /api/export/glb`, `POST /api/import` (raw `.glb`/`.gltf` body), `GET /api/render?views=front,top&size=512&object=Vase&frame=24&samples=32` (PNG; `samples` path traces it), `GET /api/pathtrace?w=640&h=360&eye=x,y,z&target=x,y,z&fov=36&samples=4` (the next pass of the progressive, denoised rendered preview for that camera: a little-endian u32 sample count, then sRGB RGBA bytes; `aperture` and `focus` add depth of field), `GET /api/render/image?w=1920&h=1080&view=iso&samples=256&aperture=0.05&frames=1-48&background=transparent` (a final render as a PNG, or an animated PNG for a frame range; `eye`/`target`/`fov` set the camera), `GET /api/history?limit=100` (the steps), `POST /api/history/preview` and `POST /api/history/revise` (body `{"step": 3, "commands": [...]}`: the replayed scene, or commit it), `GET /api/proposals` and `POST /api/proposals` (list or offer proposals), `GET /api/proposal?id=3` (its summary and scene), `GET /api/proposal/render?id=3&w=240&h=180&eye=x,y,z&target=x,y,z&samples=8` (a path-traced thumbnail), `POST /api/proposal/accept?id=3` and `POST /api/proposal/reject?id=3`, `GET /api/environment?w=512` (the world's environment map for the viewport: size, the sun split off as a direction and its light, then linear RGBA floats), `GET /api/context?frame=24` (poses at a frame), `GET /api/inspect` (the `inspect_scene` report) and `GET /api/events`. The last is a server-sent event stream of revisions.
+Other routes are `GET /api/scene`, `GET /api/context`, `GET /api/state`, `PUT /api/scene`, `POST /api/undo`, `POST /api/redo`, `GET /api/export/obj`, `GET /api/export/glb`, `POST /api/import` (raw `.glb`/`.gltf` body), `GET /api/render?views=front,top&size=512&object=Vase&frame=24&samples=32` (PNG; `samples` path traces it), `GET /api/pathtrace?w=640&h=360&eye=x,y,z&target=x,y,z&fov=36&samples=4` (the next pass of the progressive, denoised rendered preview for that camera: a little-endian u32 sample count, then sRGB RGBA bytes; `aperture` and `focus` add depth of field), `GET /api/render/image?w=1920&h=1080&view=iso&samples=256&aperture=0.05&frames=1-48&background=transparent` (a final render as a PNG, or an animated PNG for a frame range; `eye`/`target`/`fov` set the camera), `GET /api/history?limit=100` (the steps), `POST /api/history/preview` and `POST /api/history/revise` (body `{"step": 3, "commands": [...]}`: the replayed scene, or commit it), `GET /api/proposals` and `POST /api/proposals` (list or offer proposals), `GET /api/proposal?id=3` (its summary and scene), `GET /api/proposal/render?id=3&w=240&h=180&eye=x,y,z&target=x,y,z&samples=8` (a path-traced thumbnail), `POST /api/proposal/accept?id=3` and `POST /api/proposal/reject?id=3`, `GET /api/environment?w=512` (the world's environment map for the viewport: size, the sun split off as a direction and its light, then linear RGBA floats), `GET /api/context?frame=24` (poses at a frame), `GET /api/inspect` (the `inspect_scene` report) and `GET /api/events`. Presence uses `GET /api/presence`, `POST /api/presence` (the same body as `update_presence`) and `DELETE /api/presence` (`{"id":"alice"}`). The event stream includes `revision`, `proposals` and `presence` versions, and `resync` on a lagged subscriber. Reconnecting clients read the current state and presence, including fresh revision/version counters after a server restart.
 
 ## Optional in-editor chat
 
@@ -351,6 +359,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Bevel, loop cut, vertex moves | Rust: `src/edit.rs` |
 | Keyframes and sampling | Rust: `src/anim.rs` (mirrored for playback in `web/src/anim.js`) |
 | Sculpt brushes | Rust: `src/sculpt.rs` (mirrored for the live stroke preview in `web/src/sculpt.js`) |
+| Ephemeral presence and participant validation | Rust: `src/collaboration.rs` (native endpoints/SSE in `src/server.rs`, session UI in `web/src/collaboration.js`) |
 | HTTP API, live events, chat provider | Rust: `src/server.rs` (axum) |
 | Stdio MCP bridge | Rust: `src/mcp.rs` |
 | Editor UI and WebGL presentation | JavaScript + Three.js: `web/src` |
@@ -358,18 +367,21 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 
 The native server and the WebAssembly build answer `/api` through the same `api::handle` router. In the browser build, `backend.js` sends the editor's `/api` requests into the module, so the UI is identical in both. Build the static site with `node scripts/build-static.mjs` (output in `web/dist-static/`), and check it with `node scripts/static-check.mjs`. The `Pages` workflow publishes it on every push to `main`.
 
-The browser is a presentation layer; geometry and authoritative edits run in Rust. The server binds to loopback and is single-user.
+The browser is a presentation layer; geometry and authoritative edits run in Rust. The server binds to loopback; browsers and agents accessing the same local server share one scene and undo history. It is not an authenticated remote collaboration service.
 
 ## Development
 
 ```sh
+rustup toolchain install 1.99 --component clippy
+rustup target add wasm32-unknown-unknown
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+cargo +1.99 clippy --all-targets -- -D warnings
+cargo clippy -p tatara-wasm --target wasm32-unknown-unknown -- -D warnings
 cargo test --workspace           # engine, API router, HTTP, MCP bridge, mock chat, wasm ABI
 npm --prefix web ci && npm --prefix web run build
 cargo build --release
-node scripts/browser-check.mjs   # real-browser editing, history, files, layout and all scenarios
-rustup target add wasm32-unknown-unknown
+node scripts/browser-check.mjs   # two-browser collaboration, editing and all scenarios
 node scripts/build-static.mjs    # browser-only build in web/dist-static
 node scripts/static-check.mjs    # drives it under a /Tatara/ sub-path with no server
 ```
@@ -384,7 +396,7 @@ The aim is a creation suite that surpasses Blender for human and agent collabora
 2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓, ~~textures and UVs in glTF~~ ✓, ~~image and normal textures both ways~~ ✓; next: metallic-roughness, occlusion and emissive maps, and opening `.tatara.json` links directly in the web build.
 3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓, ~~procedural textures~~ ✓, ~~relief, image textures and normal maps~~ ✓, ~~seamless triplanar blending~~ ✓, ~~node-based materials~~ ✓, ~~UV unwrapping and editing~~ ✓, ~~path-traced rendered preview~~ ✓, ~~depth of field and final renders to PNG and animated PNG~~ ✓, ~~HDRI and sky lighting~~ ✓; next: more nodes (emission, 3D noise, curves), UV pinning and stitching, texture painting, cameras and lights as scene objects and render passes.
 4. **Motion:** ~~keyframes and timeline~~ ✓, ~~rigging with bones, automatic weights and glTF skins~~ ✓, ~~inverse kinematics~~ ✓; next: weight painting, IK constraints that follow a target object, a graph editor for curves, animating modifier parameters and constraints.
-5. **Agents:** ~~visual feedback (`render_view`)~~ ✓, ~~measurements and collision reports (`inspect_scene`)~~ ✓; ~~layout by relation (`build`, `place`, `arrange`)~~ ✓, ~~reviewable change proposals and variants~~ ✓; ~~a parametric history you can edit and replay~~ ✓; ~~constraints that keep intent (on, mirror, match)~~ ✓; next: more constraints (distances, alignment, symmetry within a mesh) and live multi-user sessions.
+5. **Agents:** ~~visual feedback (`render_view`)~~ ✓, ~~measurements and collision reports (`inspect_scene`)~~ ✓; ~~layout by relation (`build`, `place`, `arrange`)~~ ✓, ~~reviewable change proposals and variants~~ ✓; ~~a parametric history you can edit and replay~~ ✓; ~~constraints that keep intent (on, mirror, match)~~ ✓; ~~local multi-user presence, command authors and stale-edit rejection~~ ✓; next: automatic rebase for independent changes, authenticated remote sessions, chat proposal mode and more constraints (distances, alignment, symmetry within a mesh).
 
 Not yet available: `.blend` compatibility, motion blur and render passes. Extrusion moves a face along its normal and does not repair self-intersections. OBJ carries geometry only. glTF carries geometry, transforms, PBR factors with emission, transmission and alpha, and transform animation, and textures with UVs and normal maps, but no material animation yet. Imports read base colour and normal textures on the first UV set; other maps and `KHR_texture_transform` are ignored, and images in external files are skipped. Edits that change a mesh's topology (extrude, subdivide, booleans, mirror) drop its own UVs and fall back to projection. glTF has no triplanar blending, so exported projected textures use the side each face is turned to, which shows seams on curved surfaces in other viewers. Importing a sheared node hierarchy bakes the transform into the vertices. Save the native scene to keep modifiers and edit history.
 

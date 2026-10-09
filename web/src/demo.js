@@ -109,6 +109,11 @@ export class DemoRunner {
       await this.idle()
       return s.after ? this.sleep(s.after) : undefined
     }
+    if (s.sessionPresence) {
+      app.collaboration?.panel.classList.add('demo-session')
+      await app.collaboration?.load()
+      return this.sleep(s.after ?? 500)
+    }
     if (s.slide) return this.slide(s)
     if (s.scrubNumber) return this.dragNumber(s)
     if (s.stroke) return this.stroke(s)
@@ -599,6 +604,7 @@ export class DemoRunner {
           for (const issue of data.issues) details.push(`<span class="t-err">  ⚠ ${escapeHtml(issue.message)}</span>`)
         }
         else if (call.tool === 'propose_changes') summary = `proposed ${data.ids.length > 1 ? `${data.ids.length} options` : `#${data.ids[0]}`} · waiting for review`
+        else if (call.tool.includes('presence')) summary = `${data.peers.length} participants · presence updated`
         else if (call.tool === 'get_history') summary = `${data.total} steps · ${data.steps.map((x) => x.source).filter((v, i, a) => a.indexOf(v) === i).join(', ')}`
         else if (call.tool === 'revise_step') summary = `revised step ${call.arguments.step} · replayed · revision ${data.revision}`
         else if (call.tool === 'list_proposals') {
@@ -641,7 +647,12 @@ export class DemoRunner {
       let data
       if (tool === 'get_scene') data = await this.clock.track(fetch('/api/context').then((r) => r.json()))
       else if (tool === 'inspect_scene') data = await api.inspect()
-      else if (tool === 'apply_commands') data = await api.commands(args.commands, args.expected_revision, 'agent')
+      else if (tool === 'apply_commands') {
+        data = await this.clock.track(fetch('/api/commands', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: 'agent', ...args }) }).then(async (r) => { const data = await r.json(); if (!r.ok) throw new Error(data.error); return data }))
+      }
+      else if (tool === 'get_presence') data = await api.presence()
+      else if (tool === 'update_presence') data = await api.updatePresence(args)
+      else if (tool === 'leave_presence') data = await api.leavePresence(args.id)
       else if (tool === 'get_history') data = await api.history()
       else if (tool === 'revise_step') data = await api.revise(args.step, args.commands)
       else if (tool === 'render_view') {

@@ -7,6 +7,7 @@ export class ApiError extends Error {
 }
 
 export function createApi(clock) {
+  let actor = null
   const request = (method, path, body) =>
     clock.track(
       fetch(`/api${path}`, {
@@ -23,7 +24,11 @@ export function createApi(clock) {
   return {
     state: () => request('GET', '/state'),
     scene: () => request('GET', '/scene'),
-    commands: (commands, expected_revision, source) => request('POST', '/commands', { commands, expected_revision, source }),
+    setActor: (value) => { actor = value },
+    presence: () => request('GET', '/presence'),
+    updatePresence: (presence) => request('POST', '/presence', presence),
+    leavePresence: (id) => request('DELETE', '/presence', { id }),
+    commands: (commands, expected_revision, source) => request('POST', '/commands', { commands, expected_revision, source, ...(actor ? { actor } : {}) }),
     putScene: (scene) => request('PUT', '/scene', scene),
     undo: () => request('POST', '/undo'),
     redo: () => request('POST', '/redo'),
@@ -33,7 +38,7 @@ export function createApi(clock) {
     history: () => request('GET', '/history?limit=200'),
     schema: () => request('GET', '/schema'),
     previewRevision: (step, commands) => request('POST', '/history/preview', { step, commands }),
-    revise: (step, commands) => request('POST', '/history/revise', { step, commands }),
+    revise: (step, commands, expected_revision) => request('POST', '/history/revise', { step, commands, expected_revision }),
     proposals: () => request('GET', '/proposals'),
     propose: (proposal) => request('POST', '/proposals', proposal),
     proposal: (id) => request('GET', `/proposal?id=${id}`),

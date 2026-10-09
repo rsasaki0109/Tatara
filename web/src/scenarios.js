@@ -1298,4 +1298,32 @@ export const constraints = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints }
+// A real MCP participant joins the same scene as the person in the UI.
+export const collaborate = {
+  title: 'Shared session', width: 800, external: true, gizmo: false,
+  setup: [{ op: 'add', name: 'Cube', primitive: { kind: 'cube' }, translation: [-0.7, 0.5, 0], color: '#75add4' }, { op: 'add', name: 'Orb', primitive: { kind: 'sphere', radius: 0.4 }, translation: [0.8, 0.4, 0], color: '#daa284' }],
+  camera: { azimuth: 30, elevation: 22, distance: 5.5, target: [0, 0.5, 0] },
+  steps: [
+    { caption: 'One scene, more than one pair of hands', hint: 'presence · shared typed commands' },
+    { mcp: [{ tool: 'update_presence', arguments: { actor: { id: 'mira', name: 'Mira' }, cursor: [0.62, 0.38], selection: [1], editing: [1], camera: { eye: [-0.2, 1.45, 1.4], target: [0, 0.5, 0], fov: 36 } }, after: 100 }] },
+    { terminal: false },
+    { sessionPresence: true, after: 1300 },
+    { caption: 'See their cursor, selection and camera', hint: 'coloured outline · advisory editing lock' },
+    { sessionPresence: true, after: 1400 },
+    { caption: 'Mira changes the cube; you see the same edit', hint: 'apply_commands · author in history' },
+    { mcp: [{ tool: 'apply_commands', arguments: { actor: { id: 'mira', name: 'Mira' }, commands: [{ op: 'material', id: 'Cube', color: '#79b691' }, { op: 'move', id: 'Cube', offset: [0, 0.25, 0] }] }, after: 100 }, { tool: 'update_presence', arguments: { actor: { id: 'mira', name: 'Mira' }, cursor: [0.68, 0.48], selection: [2], editing: [], camera: { eye: [-0.2, 1.45, 1.4], target: [0, 0.5, 0], fov: 36 } }, after: 100 }] },
+    { terminal: false },
+    { sessionPresence: true, after: 700 },
+    { tab: 'history' },
+    { wait: 1500 },
+    { caption: 'Edits from an old revision are refused with a reason', hint: 'expected_revision · no lost updates' },
+    { mcp: [{ tool: 'apply_commands', arguments: { actor: { id: 'mira', name: 'Mira' }, expected_revision: 0, commands: [{ op: 'delete', id: 'Cube' }] }, after: 1200 }] },
+    { caption: 'Leaving clears the advisory lock and presence', hint: 'leave_presence · expires after 30 seconds' },
+    { mcp: [{ tool: 'leave_presence', arguments: { id: 'mira' }, after: 100 }] },
+    { terminal: false },
+    { sessionPresence: true, after: 900 },
+    { cursor: false },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate }
