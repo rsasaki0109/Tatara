@@ -1210,6 +1210,57 @@ export class Viewport {
     this.setSelection(this.selected, this.face)
   }
 
+  /**
+   * Dashed lines between related objects (constraints of the selection):
+   * `[{ from: [ids], to: [ids], color }]`. They follow the objects as they
+   * move and draw over everything.
+   */
+  setLinks(links = []) {
+    if (!this.linkGroup) {
+      this.linkGroup = new THREE.Group()
+      this.scene.add(this.linkGroup)
+    }
+    for (const line of [...this.linkGroup.children]) {
+      line.geometry.dispose()
+      line.material.dispose()
+      this.linkGroup.remove(line)
+    }
+    for (const link of links) {
+      const g = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3))
+      const m = new THREE.LineDashedMaterial({ color: link.color, dashSize: 0.07, gapSize: 0.05, depthTest: false, transparent: true, opacity: 0.9 })
+      const line = new THREE.Line(g, m)
+      line.renderOrder = 9
+      line.frustumCulled = false
+      line.userData.link = link
+      this.linkGroup.add(line)
+    }
+    this.placeLinks()
+  }
+
+  placeLinks() {
+    if (!this.linkGroup?.children.length) return
+    const centre = (ids) => {
+      const box = new THREE.Box3()
+      for (const id of ids) {
+        const node = this.nodes.get(id)
+        if (node) box.expandByObject(node.mesh)
+      }
+      return box.isEmpty() ? null : box.getCenter(new THREE.Vector3())
+    }
+    for (const line of this.linkGroup.children) {
+      const { from, to } = line.userData.link
+      const a = centre(from)
+      const b = centre(to)
+      line.visible = Boolean(a && b)
+      if (!a || !b) continue
+      const p = line.geometry.attributes.position
+      p.setXYZ(0, a.x, a.y, a.z)
+      p.setXYZ(1, b.x, b.y, b.z)
+      p.needsUpdate = true
+      line.computeLineDistances()
+    }
+  }
+
   /** Outline objects in colours of their own (Map id -> colour), or none. */
   setHighlights(marks) {
     this.highlights = marks ?? new Map()
@@ -1744,6 +1795,7 @@ export class Viewport {
     }
     this.controls.update()
     this.flushStroke()
+    this.placeLinks()
     if (this.glowing()) {
       this.bloom()
       this.renderGlow()

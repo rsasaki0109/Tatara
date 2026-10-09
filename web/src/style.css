@@ -2074,3 +2074,35 @@ input[type='range'] {
   font-size: 10px;
   opacity: 0.75;
 }
+
+/* Constraints card. */
+.constraint-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.c-kind {
+  font-size: 13px;
+  text-align: center;
+}
+
+.c-on {
+  color: #4fd1c5;
+}
+
+.c-mirrors {
+  color: #a78bfa;
+}
+
+.c-matches {
+  color: #ffb02e;
+}
+
+.constraint-add select {
+  flex: 1;
+  min-width: 0;
+}

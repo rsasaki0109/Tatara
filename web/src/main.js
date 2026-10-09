@@ -365,6 +365,7 @@ function syncEdit() {
   viewport.setBone(rigged?.bones?.length ? currentBone(rigged).name : null)
   if (!rigged?.bones?.length) app.ik = false
   viewport.setIk(app.ik ? { id: rigged.id, bone: currentBone(rigged).name } : null)
+  viewport.setLinks(constraintLinks(objectById(app.selected)))
   render()
 }
 
@@ -966,7 +967,7 @@ let renderedKey = ''
 function renderProperties(o) {
   const el = $('properties')
   const key = o
-    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, app.ik, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
+    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, app.ik, app.scene.constraints, app.constraintKind, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
     : `none:${JSON.stringify([app.scene.world, Object.keys(app.scene.images || {})])}`
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -1036,6 +1037,7 @@ function renderProperties(o) {
       <div class="vec-row"><span>Rotation°${keyed('rotation')}</span>${vec('rotation', t.rotation, 5, (r) => (r * 180) / Math.PI)}</div>
       <div class="vec-row"><span>Scale${keyed('scale')}</span>${vec('scale', t.scale, 0.1)}</div>
     </div>
+    ${constraintCard(o)}
     <div class="card">
       <div class="card-title">Material${keyed('color')}</div>
       <div class="glazes">${glazes}</div>
@@ -1179,6 +1181,52 @@ function currentBone(o) {
   return o.bones?.find((b) => b.name === app.bone) || o.bones?.[0] || null
 }
 
+// Constraints: relations kept true through every edit (src/constraint.rs).
+// A part of a built assembly is constrained as its whole group.
+const subjectOf = (o) => o.group ?? o.id
+const whoName = (who) => (typeof who === 'number' ? (objectById(who)?.name ?? `#${who}`) : who)
+const involves = (o, who) => who === o.id || (o.group != null && who === o.group)
+const RULES = { on: 'Keep on', mirrors: 'Mirror of', matches: 'Match look of' }
+
+const LINK = { on: 0x4fd1c5, mirrors: 0xa78bfa, matches: 0xffb02e }
+const idsOf = (who) => app.scene.objects.filter((x) => x.id === who || (x.group != null && x.group === who)).map((x) => x.id)
+
+/** Dashed lines from the selection to what its constraints tie it to. */
+function constraintLinks(o) {
+  if (!o) return []
+  return (app.scene.constraints || [])
+    .filter((c) => involves(o, c.subject) || involves(o, c.support ?? c.of))
+    .map((c) => ({ from: idsOf(c.subject), to: idsOf(c.support ?? c.of), color: LINK[c.kind] }))
+}
+
+function constraintCard(o) {
+  const mine = (app.scene.constraints || []).filter((c) => involves(o, c.subject) || involves(o, c.support ?? c.of))
+  const describe = (c) => {
+    const self = involves(o, c.subject)
+    const other = whoName(self ? (c.support ?? c.of) : c.subject)
+    if (c.kind === 'on') return self ? `On ${other}` : `${other} rests on it`
+    if (c.kind === 'mirrors') return `Mirrors ${other}${c.axis === 'z' ? ' (front/back)' : ''}`
+    return `Matches ${other}`
+  }
+  const rows = mine
+    .map((c) => `<div class="constraint-row"><span class="c-kind c-${c.kind}">${c.kind === 'on' ? '⤓' : c.kind === 'mirrors' ? '⇋' : '≡'}</span><span>${escapeHtml(describe(c))}</span><button class="chip" data-unconstrain="${escapeHtml(JSON.stringify([c.subject, c.kind]))}" title="Stop keeping this">✕</button></div>`)
+    .join('')
+  const self = subjectOf(o)
+  const seen = new Set()
+  const targets = []
+  for (const x of app.scene.objects) {
+    const who = x.group ?? x.id
+    if (who === self || seen.has(who)) continue
+    seen.add(who)
+    targets.push(who)
+  }
+  const kind = app.constraintKind ?? 'on'
+  const add = targets.length
+    ? `<div class="row constraint-add"><select id="c-kind">${Object.entries(RULES).map(([k, label]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${label}</option>`).join('')}</select><select id="c-target">${targets.map((w) => `<option value="${escapeHtml(JSON.stringify(w))}">${escapeHtml(whoName(w))}</option>`).join('')}</select><button class="small-btn" data-constrain>Keep</button></div>`
+    : ''
+  return `<div class="card constraints"><div class="card-title">Constraints <span class="muted small">${o.group ? `the whole ${escapeHtml(o.group)} · ` : ''}kept through every edit</span></div>${rows}${add}</div>`
+}
+
 function rigCard(o) {
   const head = (extra) => `<div class="card rig"><div class="card-title">Rig <span class="muted small">${extra}</span></div>`
   if (!o.bones?.length) {
@@ -1268,6 +1316,10 @@ $('properties').addEventListener('change', (e) => {
     if (!next) return render()
     return actions.setModifier(i, next).catch(() => {})
   }
+  if (target.id === 'c-kind') {
+    app.constraintKind = target.value
+    return
+  }
   if (target.id === 'bool-with') {
     app.boolWith = Number(target.value)
     return render()
@@ -1335,6 +1387,16 @@ $('properties').addEventListener('click', (e) => {
   const build = e.target.closest('[data-build]')
   if (build) return run([{ op: 'build', template: build.dataset.build, translation: [freeSpot(0.7), 0, 0] }]).then((r) => r && select(r.created[0])).catch(() => {})
   const o0 = objectById(app.selected)
+  if (e.target.closest('[data-constrain]') && o0) {
+    const kind = $('c-kind').value
+    const target = JSON.parse($('c-target').value)
+    return run([{ op: 'constrain', id: subjectOf(o0), [kind]: target }]).catch(() => {})
+  }
+  const unconstrain = e.target.closest('[data-unconstrain]')
+  if (unconstrain) {
+    const [subject, kind] = JSON.parse(unconstrain.dataset.unconstrain)
+    return run([{ op: 'unconstrain', id: subject, kind }]).catch(() => {})
+  }
   const addMod = e.target.closest('[data-add-mod]')
   if (addMod) return actions.addModifier(addMod.dataset.addMod).catch(() => {})
   const remove = e.target.closest('[data-mod-remove]')

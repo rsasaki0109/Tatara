@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::anim::{self, Animation, Interpolation, KeyValue, Property, Track};
 use crate::assembly::{self, Layout, Side, Template};
+use crate::constraint::{self, Constraint, Kind as ConstraintKind, Plane};
 use crate::csg::{self, BoolOp};
 use crate::edit;
 use crate::image::{ImageAsset, MAX_IMAGES, decode_base64};
@@ -294,6 +295,9 @@ pub struct Scene {
     /// What lights the scene from afar (the studio unless set).
     #[serde(default, skip_serializing_if = "World::is_default")]
     pub world: World,
+    /// Relations kept true through every edit (see `constraint.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<Constraint>,
 }
 
 impl Default for Scene {
@@ -305,6 +309,7 @@ impl Default for Scene {
             animation: Animation::default(),
             images: BTreeMap::new(),
             world: World::default(),
+            constraints: Vec::new(),
         }
     }
 }
@@ -847,6 +852,31 @@ pub enum Command {
         #[serde(default)]
         background: Option<bool>,
     },
+    /// Keep a relation true through every later edit. `on` keeps `id` (an
+    /// object or group) resting on another where it sits now: move the
+    /// support and it follows, move it and it keeps its new spot on it.
+    /// `mirrors` keeps it the mirror image of another across X = 0 (or
+    /// `axis: "z"`): move either one and the other follows. `matches` keeps
+    /// its material the same as another's, whichever is changed. A new rule
+    /// of the same kind replaces the old one.
+    Constrain {
+        id: ObjRef,
+        #[serde(default)]
+        on: Option<ObjRef>,
+        #[serde(default)]
+        mirrors: Option<ObjRef>,
+        #[serde(default)]
+        axis: Option<Plane>,
+        #[serde(default)]
+        matches: Option<ObjRef>,
+    },
+    /// Drop `id`'s constraints (only those of `kind`: on, mirrors or
+    /// matches, if given), including mirror and match rules that point at it.
+    Unconstrain {
+        id: ObjRef,
+        #[serde(default)]
+        kind: Option<ConstraintKind>,
+    },
     /// Remove every object.
     Clear {},
     /// Store a PNG, JPEG or Radiance HDR image under `name` (replacing one
@@ -953,6 +983,7 @@ impl Timeline {
 /// Apply `commands` to `scene` in place (it is left part-way on failure)
 /// and return the ids they created.
 fn replay_into(scene: &mut Scene, commands: &[Command]) -> Result<Vec<u64>, EngineError> {
+    let before = constraint::snapshot(scene);
     let mut created = Vec::new();
     for (i, command) in commands.iter().enumerate() {
         apply_command(scene, command, &mut created).map_err(|mut e| {
@@ -960,6 +991,8 @@ fn replay_into(scene: &mut Scene, commands: &[Command]) -> Result<Vec<u64>, Engi
             e
         })?;
     }
+    // Constraints hold after every batch.
+    constraint::solve(scene, &before)?;
     Ok(created)
 }
 
@@ -2150,6 +2183,24 @@ fn apply_command(
             w.validate(scene)?;
             scene.world = w;
         }
+        Command::Constrain {
+            id,
+            on,
+            mirrors,
+            axis,
+            matches,
+        } => {
+            let request = match (on, mirrors, matches) {
+                (Some(r), None, None) => constraint::Request::On(r.clone()),
+                (None, Some(r), None) => {
+                    constraint::Request::Mirrors(r.clone(), axis.unwrap_or_default())
+                }
+                (None, None, Some(r)) => constraint::Request::Matches(r.clone()),
+                _ => return err("constrain needs exactly one of `on`, `mirrors` or `matches`"),
+            };
+            constraint::add(scene, id, request)?;
+        }
+        Command::Unconstrain { id, kind } => constraint::remove(scene, id, *kind)?,
         Command::Clear {} => scene.objects.clear(),
         Command::AddImage { name, data } => {
             let name = check_name(name)?;
@@ -2200,6 +2251,14 @@ fn apply_command(
 /// After every command: drop UVs an edit invalidated, and check that
 /// textures only name images the scene holds.
 fn tidy(scene: &mut Scene) -> Result<(), EngineError> {
+    // Constraints on objects that are gone go with them.
+    let alive: Vec<bool> = scene
+        .constraints
+        .iter()
+        .map(|c| constraint::alive(scene, c))
+        .collect();
+    let mut keep = alive.into_iter();
+    scene.constraints.retain(|_| keep.next().unwrap_or(false));
     for o in &mut scene.objects {
         // Animation of bones that are gone goes with them.
         let bones = &o.bones;
@@ -2441,6 +2500,7 @@ fn validate_scene(scene: &Scene) -> Result<(), EngineError> {
             .map_err(|e| EngineError::new(format!("image {name:?}: {}", e.message)))?;
     }
     check_images(scene)?;
+    constraint::validate(scene)?;
     Ok(())
 }
 
@@ -2551,6 +2611,7 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
         "units": "meters, Y up, rotations in radians (XYZ euler)",
         "animation": scene.animation,
         "world": scene.world,
+        "constraints": scene.constraints,
         "frame": frame,
         "bounds": bounds,
         "objects": objects,

@@ -1231,4 +1231,71 @@ export const history = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history }
+// Constraints: what must stay true is said once and then holds through
+// every edit: the vase stays on the table, the speakers stay mirrored and
+// the cups keep one glaze.
+const cup = (name, at) => [
+  { op: 'add', name, primitive: { kind: 'vessel', profile: CUP, thickness: 0.01, segments: 48 }, scale: [1.2, 1.2, 1.2], color: '#e9e6df', roughness: 0.4 },
+  { op: 'place', id: name, on: 'Table', at },
+]
+const speaker = (name, x) => ({ op: 'add', name, primitive: { kind: 'cube' }, scale: [0.32, 0.7, 0.3], translation: [x, 0.35, -0.2], color: '#2a2b30', roughness: 0.6 })
+export const constraints = {
+  title: 'Constraints',
+  width: 800,
+  gizmo: false,
+  external: true,
+  setup: [
+    { op: 'build', template: 'table', name: 'Table' },
+    { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 64 }, scale: [0.9, 0.9, 0.9], color: '#2f4f8f', roughness: 0.3 },
+    { op: 'place', id: 'Vase', on: 'Table', at: [0.25, 0.5] },
+    ...cup('Cup 1', [0.6, 0.35]),
+    ...cup('Cup 2', [0.72, 0.6]),
+    ...cup('Cup 3', [0.84, 0.35]),
+    speaker('Speaker L', -1.5),
+    speaker('Speaker R', 1.9),
+  ],
+  camera: { azimuth: 18, elevation: 22, distance: 5.6, target: [0.1, 0.45, 0] },
+  steps: [
+    { wait: 200 },
+    { caption: 'Say what must stay true', hint: 'Constraints · keep on' },
+    { pick: 'Vase', after: 200 },
+    { choose: '#c-target', value: 'Table', after: 150 },
+    { click: '[data-constrain]', after: 400 },
+    { caption: 'Mirrored pairs snap into place', hint: 'mirror of' },
+    { pick: 'Speaker R', after: 200 },
+    { choose: '#c-kind', value: 'Mirror of', after: 150 },
+    { choose: '#c-target', value: 'Speaker L', after: 150 },
+    { click: '[data-constrain]', after: 700 },
+    { caption: 'Agents state intent too: cups stay on the table, one glaze', hint: 'constrain · on · matches' },
+    {
+      mcp: [
+        {
+          tool: 'apply_commands',
+          arguments: {
+            commands: [
+              ...['Cup 1', 'Cup 2', 'Cup 3'].map((id) => ({ op: 'constrain', id, on: 'Table' })),
+              { op: 'constrain', id: 'Cup 2', matches: 'Cup 1' },
+              { op: 'constrain', id: 'Cup 3', matches: 'Cup 1' },
+            ],
+          },
+          after: 500,
+        },
+      ],
+    },
+    { terminal: false },
+    { select: null },
+    { caption: 'Move the table: what is kept on it comes along', hint: 'on' },
+    { run: [{ op: 'move', id: 'Table', offset: [0.5, 0, 0.6] }], after: 900 },
+    { caption: 'Move one speaker: the other mirrors it', hint: 'either side leads' },
+    { pick: 'Speaker L', after: 150 },
+    { run: [{ op: 'transform', id: 'Speaker L', translation: [-2.1, 0.35, 0.5], rotation: [0, 0.6, 0] }], after: 900 },
+    { caption: 'Glaze one cup: they all follow', hint: 'matches' },
+    { pick: 'Cup 2', after: 150 },
+    { click: '[data-preset=jade]', after: 1200 },
+    { select: null },
+    { cursor: false },
+    { wait: 800 },
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints }
