@@ -1215,7 +1215,7 @@ export const history = {
     { click: '[data-hs-open="1"]', after: 300 },
     { click: '[data-hs-add*="scale"]', after: 200 },
     { caption: '…and everything after it replays', hint: 'chairs re-circle · lamp and mug stay on top' },
-    { drag: '.hs-key[data-scrub*="scale"]', to: 1.35, ms: 1600, after: 500 },
+    { scrubNumber: '.hs-key[data-scrub*="scale"]', to: 1.35, ms: 1600, after: 500 },
     { click: '[data-hs=apply]', after: 900 },
     { caption: 'Agents revise steps too, not just add more', hint: 'get_history · revise_step' },
     {

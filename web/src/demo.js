@@ -110,7 +110,7 @@ export class DemoRunner {
       return s.after ? this.sleep(s.after) : undefined
     }
     if (s.slide) return this.slide(s)
-    if (s.drag) return this.dragNumber(s)
+    if (s.scrubNumber) return this.dragNumber(s)
     if (s.stroke) return this.stroke(s)
     if (s.choose) return this.choose(s)
     if (s.upload) return this.upload(s)
@@ -452,8 +452,8 @@ export class DemoRunner {
   /** Drag a range input's thumb to `to`, then commit it like a mouse release. */
   /** Drag a number's label sideways (History scrubbing) to `s.to`. */
   async dragNumber(s) {
-    const key = document.querySelector(s.drag)
-    if (!key) throw new Error(`demo: nothing matches ${s.drag}`)
+    const key = document.querySelector(s.scrubNumber)
+    if (!key) throw new Error(`demo: nothing matches ${s.scrubNumber}`)
     key.scrollIntoView({ block: 'nearest' })
     const input = key.parentElement.querySelector('input')
     const from = Number(input.value)
