@@ -954,9 +954,14 @@ pub struct CommandBatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<crate::collaboration::Actor>,
     pub commands: Vec<Command>,
-    /// Reject the batch unless the scene is at this revision.
+    /// Reject the batch unless the scene is at this revision, unless `rebase`
+    /// is enabled and the stale edit has unchanged dependencies.
     #[serde(default)]
     pub expected_revision: Option<u64>,
+    /// Reapply supported independent edits from a retained revision snapshot.
+    /// Conflicting, unavailable or scene-wide dependencies are still refused.
+    #[serde(default)]
+    pub rebase: bool,
     /// Who sent it ("UI", "agent", ...), shown in the history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -970,6 +975,9 @@ pub struct Step {
     pub commands: Vec<Command>,
     /// Where it came from: "UI", "agent", "chat", "proposal", ...
     pub source: String,
+    /// The stale context revision safely reapplied onto newer edits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rebased_from: Option<u64>,
 }
 
 /// How the current scene was made: the scene it started from and the
@@ -1073,6 +1081,8 @@ fn err<T>(message: impl Into<String>) -> Result<T, EngineError> {
 pub struct ApplyResult {
     pub revision: u64,
     pub created: Vec<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rebased_from: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,20 +1212,56 @@ impl Editor {
     }
 
     pub fn apply(&mut self, batch: &CommandBatch) -> Result<ApplyResult, EngineError> {
-        self.ensure_revision(batch.expected_revision)?;
+        let rebased_from = if let Some(expected) = batch.expected_revision
+            && expected != self.scene.revision
+            && batch.rebase
+        {
+            let conflict = |message: String| EngineError {
+                message: format!(
+                    "cannot rebase revision {expected}: {message}; refresh the scene and review the edit"
+                ),
+                command_index: None,
+                stale: true,
+            };
+            let (base, timeline) = self
+                .undo
+                .iter()
+                .chain(&self.redo)
+                .find(|(scene, _)| scene.revision == expected)
+                .ok_or_else(|| conflict("the context snapshot is no longer available".into()))?;
+            if !Arc::ptr_eq(&timeline.base, &self.timeline.base) {
+                return Err(conflict("the scene or replay base was replaced".into()));
+            }
+            crate::rebase::validate(base, &self.scene, &batch.commands)
+                .map_err(|e| conflict(e.message))?;
+            Some(expected)
+        } else {
+            self.ensure_revision(batch.expected_revision)?;
+            None
+        };
         if let Some(actor) = &batch.actor {
             actor.validate()?;
         }
         if batch.commands.is_empty() {
             return err("batch has no commands");
         }
-        let (next, created) = run(&self.scene, &batch.commands)?;
+        let (next, created) = run(&self.scene, &batch.commands).map_err(|mut e| {
+            if let Some(expected) = rebased_from {
+                e.message = format!(
+                    "cannot rebase revision {expected}: {}; refresh the scene and review the edit",
+                    e.message
+                );
+                e.stale = true;
+            }
+            e
+        })?;
         let evaluated = self.evaluate_all(&next)?;
         let mut timeline = self.timeline.clone();
         timeline.push(Step {
             actor: batch.actor.clone(),
             commands: batch.commands.clone(),
             source: batch.source.clone().unwrap_or_else(|| "API".into()),
+            rebased_from,
         });
         self.commit(next, timeline);
         self.evaluated = evaluated;
@@ -1223,6 +1269,7 @@ impl Editor {
         Ok(ApplyResult {
             revision: self.scene.revision,
             created,
+            rebased_from,
         })
     }
 
@@ -1258,6 +1305,7 @@ impl Editor {
             actor: old.actor.clone(),
             commands,
             source: old.source.clone(),
+            rebased_from: old.rebased_from,
         });
         let scene = timeline.replay()?;
         self.evaluate_all(&scene)?;
@@ -1391,6 +1439,7 @@ impl Editor {
             actor: None,
             commands: p.commands.clone(),
             expected_revision: None,
+            rebase: false,
             source: Some(format!("proposal · {}", p.author)),
         };
         let result = match self.apply(&batch) {
@@ -1522,7 +1571,7 @@ impl Editor {
 }
 
 /// `scene` with `commands` applied in order, and the ids they created.
-fn run(scene: &Scene, commands: &[Command]) -> Result<(Scene, Vec<u64>), EngineError> {
+pub(crate) fn run(scene: &Scene, commands: &[Command]) -> Result<(Scene, Vec<u64>), EngineError> {
     let mut next = scene.clone();
     let created = replay_into(&mut next, commands)?;
     Ok((next, created))
@@ -3407,6 +3456,7 @@ mod tests {
                 actor: None,
                 commands: vec![Command::Clear {}],
                 expected_revision: Some(0),
+                rebase: false,
                 source: None,
             })
             .unwrap_err();

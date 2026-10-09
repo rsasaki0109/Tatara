@@ -1414,4 +1414,26 @@ export const keepLayout = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout }
+export const rebase = {
+  title: 'Combine independent edits', width: 800, gizmo: false,
+  setup: [
+    {op: 'add', name: 'Alice object', primitive: {kind: 'cube'}, scale: [0.4,0.7,0.4], translation: [-1,0.35,0], color: '#769c8b'},
+    {op: 'add', name: 'Bob object', primitive: {kind: 'cube'}, scale: [0.4,0.7,0.4], translation: [1,0.35,0], color: '#769c8b'},
+  ],
+  camera: {azimuth: 12, elevation: 22, distance: 4.5, target: [0,0.5,0]},
+  steps: [
+    {caption: 'Two people start from the same scene', hint: 'actor-tagged command replay · one shared revision'},
+    {rememberRevision: true},
+    {submitBatch: {actor: {id: 'alice', name: 'Alice'}, source: 'UI', commands: [{op: 'transform', id: 'Alice object', translation: [-1,1,0]}]}, contextRevision: true, after: 1000},
+    {caption: 'Alice lifts hers; Bob edits his older context', hint: 'independent objects · unchanged dependencies'},
+    {submitBatch: {actor: {id: 'bob', name: 'Bob'}, source: 'UI', rebase: true, commands: [{op: 'material', id: 'Bob object', color: '#be6651'}]}, contextRevision: true, expectRebase: true, after: 1200},
+    {click: '.tabs [data-tab=history]', after: 700},
+    {caption: 'Both changes survive, with their authors', hint: 'history records a combined edit'},
+    {wait: 1000},
+    {click: '[data-action=undo]', after: 1000},
+    {caption: 'Undo Bob, keep Alice’s work', hint: 'same object conflicts still need review'},
+    {cursor: false}, {wait: 1000},
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase }

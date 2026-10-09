@@ -28,7 +28,7 @@ export function createApi(clock) {
     presence: () => request('GET', '/presence'),
     updatePresence: (presence) => request('POST', '/presence', presence),
     leavePresence: (id) => request('DELETE', '/presence', { id }),
-    commands: (commands, expected_revision, source) => request('POST', '/commands', { commands, expected_revision, source, ...(actor ? { actor } : {}) }),
+    commands: (commands, expected_revision, source) => request('POST', '/commands', { commands, expected_revision, source, rebase: true, ...(actor ? { actor } : {}) }),
     putScene: (scene) => request('PUT', '/scene', scene),
     undo: () => request('POST', '/undo'),
     redo: () => request('POST', '/redo'),

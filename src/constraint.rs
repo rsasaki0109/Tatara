@@ -108,7 +108,7 @@ impl Rule {
         }
     }
 
-    fn other(&self) -> &Who {
+    pub(crate) fn other(&self) -> &Who {
         match self {
             Rule::On { support, .. } => support,
             Rule::Mirrors { of, .. }

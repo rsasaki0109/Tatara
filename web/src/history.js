@@ -64,7 +64,7 @@ export class HistoryPanel {
   row(s) {
     const open = s.step === this.open
     const label = escapeHtml(this.summarize(s.commands))
-    const head = `<div class="hs-head" data-hs-open="${s.step}"><span class="hs-n">${s.step}</span><span class="hs-what">${label}</span><span class="hs-src">${escapeHtml(s.actor ? `${s.actor.name} · ${s.source}` : s.source)}</span></div>`
+    const head = `<div class="hs-head" data-hs-open="${s.step}"><span class="hs-n">${s.step}</span><span class="hs-what">${label}</span><span class="hs-src">${escapeHtml(s.actor ? `${s.actor.name} · ${s.source}` : s.source)}${s.rebased_from != null ? ' · combined' : ''}</span></div>`
     if (!open) return `<li class="hs-step" data-step="${s.step}">${head}</li>`
     const commands = this.draft ?? s.commands
     const body = s.editable

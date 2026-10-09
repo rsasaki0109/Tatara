@@ -552,7 +552,131 @@ async fn mcp_bridge_edits_the_shared_scene() {
     assert_eq!(b["transform"]["translation"], json!([43.5, 0.5, 2.0]));
     let r = call(json!({"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"unarrange","id":scene["arrangements"][0]["id"]}]}}})).await;
     assert_eq!(r["result"]["isError"], false, "{r}");
+    // Rebase independent object edits without losing the newer command.
+    let r = call(json!({"jsonrpc":"2.0","id":61,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"add","name":"Rebase A","primitive":{"kind":"cube"},"translation":[60,0,0]},
+        {"op":"add","name":"Rebase B","primitive":{"kind":"cube"},"translation":[63,0,0]}
+    ]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc":"2.0","id":62,"method":"tools/call","params":{"name":"get_scene","arguments":{}}})).await;
+    let scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let context = scene["revision"].as_u64().unwrap();
+    let r = call(json!({"jsonrpc":"2.0","id":63,"method":"tools/call","params":{"name":"apply_commands","arguments":{"expected_revision":context,"commands":[{"op":"transform","id":"Rebase A","translation":[61,0,0]}]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc":"2.0","id":64,"method":"tools/call","params":{"name":"apply_commands","arguments":{"expected_revision":context,"rebase":true,"commands":[{"op":"material","id":"Rebase B","color":"#ff0000"}]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let result: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(result["rebased_from"], context);
+    let r = call(json!({"jsonrpc":"2.0","id":65,"method":"tools/call","params":{"name":"get_history","arguments":{}}})).await;
+    let history: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        history["steps"].as_array().unwrap().last().unwrap()["rebased_from"],
+        context
+    );
+    let r = call(json!({"jsonrpc":"2.0","id":66,"method":"tools/call","params":{"name":"apply_commands","arguments":{"expected_revision":context,"rebase":true,"commands":[{"op":"transform","id":"Rebase A","translation":[62,0,0]}]}}})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
     child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_independent_edits_rebase_and_undo_preserves_the_first_writer() {
+    let base = editor(None).await;
+    let c = reqwest::Client::new();
+    let command_url = format!("{base}/api/commands");
+    assert_eq!(
+        c.post(&command_url)
+            .json(&json!({"commands":[
+                {"op":"add","name":"A","primitive":{"kind":"cube"}},
+                {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[3,0,0]}
+            ]}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let alice = json!({"expected_revision":1,"rebase":true,"actor":{"id":"alice","name":"Alice"},"commands":[{"op":"transform","id":"A","translation":[1,0,0]}]});
+    let bob = json!({"expected_revision":1,"rebase":true,"actor":{"id":"bob","name":"Bob"},"commands":[{"op":"material","id":"B","color":"#ff0000"}]});
+    let (a, b) = tokio::join!(
+        c.post(&command_url).json(&alice).send(),
+        c.post(&command_url).json(&bob).send()
+    );
+    let a = a.unwrap();
+    let b = b.unwrap();
+    assert_eq!(a.status(), 200);
+    assert_eq!(b.status(), 200);
+    let a: Value = a.json().await.unwrap();
+    let b: Value = b.json().await.unwrap();
+    assert_eq!(
+        [&a, &b].iter().filter(|r| r["rebased_from"] == 1).count(),
+        1
+    );
+    let scene: Value = c
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(scene["objects"][0]["transform"]["translation"][0], 1.0);
+    assert_eq!(scene["objects"][1]["material"]["color"], "#ff0000");
+    assert_eq!(
+        c.post(format!("{base}/api/undo"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let undone: Value = c
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    if a["revision"] == 2 {
+        assert_eq!(undone["objects"][0]["transform"]["translation"][0], 1.0);
+        assert_ne!(undone["objects"][1]["material"]["color"], "#ff0000");
+    } else {
+        assert_eq!(undone["objects"][0]["transform"]["translation"][0], 0.0);
+        assert_eq!(undone["objects"][1]["material"]["color"], "#ff0000");
+    }
+    assert_eq!(
+        c.post(format!("{base}/api/redo"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(c.post(&command_url).json(&json!({"expected_revision":5,"commands":[{"op":"transform","id":"A","translation":[2,0,0]}]})).send().await.unwrap().status(), 200);
+    let before: Value = c
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let stale = c.post(&command_url).json(&json!({"expected_revision":5,"rebase":true,"commands":[{"op":"transform","id":"A","translation":[3,0,0]}]})).send().await.unwrap();
+    assert_eq!(stale.status(), 409);
+    let error: Value = stale.json().await.unwrap();
+    assert!(error["error"].as_str().unwrap().contains("A"));
+    let after: Value = c
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after, before);
 }
 
 #[tokio::test]

@@ -458,7 +458,11 @@ pub fn history_steps(ed: &Editor, query: &str) -> Result<Value, Response> {
                     editable = false;
                 }
             }
-            json!({ "step": i + 1, "source": step.source, "actor": step.actor, "commands": commands, "editable": editable })
+            let mut item = json!({ "step": i + 1, "source": step.source, "actor": step.actor, "commands": commands, "editable": editable });
+            if let Some(revision) = step.rebased_from {
+                item["rebased_from"] = json!(revision);
+            }
+            item
         })
         .collect();
     Ok(
@@ -757,11 +761,9 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
         ("POST", "/commands") => {
             let batch: CommandBatch = parse(body)?;
             let r = ed.apply(&batch)?;
-            Ok(Response::json(
-                200,
-                json!({ "revision": r.revision, "created": r.created, "history": history(ed) }),
-            )
-            .changed(r.revision))
+            let mut out = json!(r);
+            out["history"] = history(ed);
+            Ok(Response::json(200, out).changed(r.revision))
         }
         ("GET", "/history") => history_steps(ed, query).map(|v| Response::json(200, v)),
         ("POST", "/history/revise") => {
@@ -864,6 +866,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
                 actor: None,
                 commands,
                 expected_revision: None,
+                rebase: false,
                 source: Some("import".into()),
             })?;
             Ok(Response::json(
@@ -890,6 +893,51 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebased_commands_expose_context_and_history_but_keep_strict_conflicts() {
+        let mut ed = Editor::new();
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[
+                    {"op":"add","name":"A","primitive":{"kind":"cube"}},
+                    {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[3,0,0]}
+                ]})
+            )
+            .0,
+            200
+        );
+        assert_eq!(call(&mut ed, "POST", "/commands", json!({"expected_revision":1,"actor":{"id":"alice","name":"Alice"},"commands":[{"op":"transform","id":"A","translation":[1,0,0]}]})).0, 200);
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"expected_revision":1,"rebase":true,"actor":{"id":"bob","name":"Bob"},"commands":[{"op":"material","id":"B","color":"#ff0000"}]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        assert_eq!(out["rebased_from"], 1);
+        let (_, history) = call(&mut ed, "GET", "/history", Value::Null);
+        assert_eq!(history["steps"][2]["rebased_from"], 1);
+        assert_eq!(history["steps"][2]["actor"]["name"], "Bob");
+        let before = ed.scene().clone();
+        for rebase in [false, true] {
+            let (status, out) = call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"expected_revision":1,"rebase":rebase,"commands":[{"op":"transform","id":"A","translation":[2,0,0]}]}),
+            );
+            assert_eq!(status, 409, "{out}");
+            assert_eq!(out["detail"]["stale"], true);
+            assert_eq!(*ed.scene(), before);
+        }
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        assert_eq!(ed.scene().objects[0].transform.translation[0], 1.);
+        assert_ne!(ed.scene().objects[1].material.color, "#ff0000");
+    }
 
     #[test]
     fn maintained_layout_proposals_undo_history_and_atomic_errors_share_one_path() {

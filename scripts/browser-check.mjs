@@ -701,6 +701,38 @@ try {
   await until(bob, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision === Number(document.querySelector('#status-rev').textContent.replace('Revision ', ''))))
   const attribution = await alice.evaluate(() => fetch('/api/history').then((r) => r.json()).then((h) => h.steps.at(-1).actor.name))
   check(attribution === 'Alice', 'shared edits retain their author in history')
+  // Real UI edits from two browsers share an older context without losing either.
+  await alice.evaluate(() => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands: [
+    {op: 'clear'}, {op: 'add', name: 'A', primitive: {kind: 'cube'}},
+    {op: 'add', name: 'B', primitive: {kind: 'cube'}, translation: [3,0,0]},
+  ]})}))
+  await Promise.all([alice, bob].map((p) => until(p, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects.length === 2 && s.objects[0].name === 'A' && s.objects[1].name === 'B'))))
+  const context = await alice.evaluate(() => fetch('/api/scene').then((r) => r.json()).then((s) => s.revision))
+  await alice.click('#outliner li:first-child')
+  await bob.click('#outliner li:last-child')
+  await alice.fill('#p-name', 'A combined')
+  await bob.fill('#p-name', 'B first')
+  await bob.locator('#p-name').press('Tab')
+  await until(bob, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[1].name === 'B first'))
+  await bob.click('#outliner')
+  await alice.locator('#p-name').press('Tab')
+  await until(alice, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].name === 'A combined' && s.objects[1].name === 'B first'))
+  await until(bob, () => document.querySelector('#outliner').textContent.includes('A combined'))
+  const combined = await alice.evaluate(() => fetch('/api/history').then((r) => r.json()).then((h) => h.steps.at(-1)))
+  check(combined.rebased_from === context && combined.actor.name === 'Alice', 'two browsers preserve independent real UI edits from the same context')
+  await alice.click('.tabs [data-tab=history]')
+  await alice.waitForFunction(() => document.querySelector('#history').textContent.includes('combined'))
+  check(true, 'history marks an edit combined with newer changes')
+  await alice.click('[data-action=undo]')
+  await until(alice, () => fetch('/api/scene').then((r) => r.json()).then((s) => s.objects[0].name === 'A' && s.objects[1].name === 'B first'))
+  await until(bob, () => document.querySelector('#outliner').textContent.includes('B first') && !document.querySelector('#outliner').textContent.includes('A combined'))
+  check(true, 'Undo removes only the rebased edit and keeps the other browser change')
+  const rebasedConflict = await alice.evaluate(async () => {
+    const s = await (await fetch('/api/scene')).json()
+    const responses = await Promise.all(['First', 'Second'].map((name) => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({expected_revision: s.revision, rebase: true, commands: [{op: 'rename', id: s.objects[0].id, name}]})})))
+    return Promise.all(responses.map(async (r) => ({status: r.status, data: await r.json()})))
+  })
+  check(rebasedConflict.map((r) => r.status).sort().join(',') === '200,409' && rebasedConflict.find((r) => r.status === 409).data.error.includes('cannot rebase'), 'same-object concurrent edits are refused even when rebase is enabled')
   // A new server starts at revision/presence version zero. Open tabs must
   // recover from that, not confuse it with an old response from this session.
   const exited = new Promise((resolve) => server.once('exit', resolve))

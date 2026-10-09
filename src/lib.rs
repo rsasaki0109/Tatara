@@ -16,6 +16,7 @@ pub mod modifiers;
 pub mod nodes;
 pub mod pathtrace;
 pub mod proposal;
+pub mod rebase;
 pub mod render;
 pub mod rig;
 pub mod sculpt;
