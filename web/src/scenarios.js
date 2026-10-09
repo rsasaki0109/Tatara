@@ -1235,7 +1235,7 @@ export const history = {
 // every edit: the vase stays on the table, the speakers stay mirrored and
 // the cups keep one glaze.
 const cup = (name, at) => [
-  { op: 'add', name, primitive: { kind: 'vessel', profile: CUP, thickness: 0.01, segments: 48 }, scale: [1.2, 1.2, 1.2], color: '#e9e6df', roughness: 0.4 },
+  { op: 'add', name, primitive: { kind: 'vessel', profile: CUP, thickness: 0.01, segments: 48 }, color: '#e9e6df', roughness: 0.4 },
   { op: 'place', id: name, on: 'Table', at },
 ]
 const speaker = (name, x) => ({ op: 'add', name, primitive: { kind: 'cube' }, scale: [0.32, 0.7, 0.3], translation: [x, 0.35, -0.2], color: '#2a2b30', roughness: 0.6 })
@@ -1248,13 +1248,13 @@ export const constraints = {
     { op: 'build', template: 'table', name: 'Table' },
     { op: 'add', name: 'Vase', primitive: { kind: 'vessel', profile: VASE, thickness: 0.02, segments: 64 }, scale: [0.9, 0.9, 0.9], color: '#2f4f8f', roughness: 0.3 },
     { op: 'place', id: 'Vase', on: 'Table', at: [0.25, 0.5] },
-    ...cup('Cup 1', [0.6, 0.35]),
-    ...cup('Cup 2', [0.72, 0.6]),
-    ...cup('Cup 3', [0.84, 0.35]),
+    ...cup('Cup 1', [0.58, 0.3]),
+    ...cup('Cup 2', [0.75, 0.7]),
+    ...cup('Cup 3', [0.92, 0.3]),
     speaker('Speaker L', -1.5),
     speaker('Speaker R', 1.9),
   ],
-  camera: { azimuth: 18, elevation: 22, distance: 5.6, target: [0.1, 0.45, 0] },
+  camera: { azimuth: 16, elevation: 20, distance: 6.6, target: [0.2, 0.45, 0.2] },
   steps: [
     { wait: 200 },
     { caption: 'Say what must stay true', hint: 'Constraints · keep on' },

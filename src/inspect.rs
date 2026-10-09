@@ -405,6 +405,24 @@ pub fn settle(scene_solids: &[Solid], ids: &[u64]) -> Result<f64, EngineError> {
     Ok(-drop_distance(&body, &rest).0)
 }
 
+/// Like [`settle`], but only the objects `onto` (and the floor) can hold
+/// the body up.
+pub fn settle_onto(scene_solids: &[Solid], ids: &[u64], onto: &[u64]) -> Result<f64, EngineError> {
+    let parts: Vec<&Solid> = scene_solids
+        .iter()
+        .filter(|s| ids.contains(&s.id) && !s.tris.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return Err(EngineError::new("nothing with faces to drop"));
+    }
+    let body = merge(&parts);
+    let rest: Vec<&Solid> = scene_solids
+        .iter()
+        .filter(|s| onto.contains(&s.id))
+        .collect();
+    Ok(-drop_distance(&body, &rest).0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

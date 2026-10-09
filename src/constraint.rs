@@ -350,7 +350,18 @@ fn apply(scene: &mut Scene, c: &Constraint, lead: Lead) -> Result<(), EngineErro
                 &subject,
                 DVec3::new(target.x - now.x, 0.0, target.z - now.z),
             );
-            assembly::settle_from_above(scene, &subject)
+            // Rest on the support itself, not on whatever else sits on it
+            // (things kept on one table must not climb onto each other).
+            let (mine, base) = (ids(scene, &subject), ids(scene, &support));
+            let solids = inspect::scene_solids(scene)?;
+            let none = || EngineError::new("nothing with faces to constrain");
+            let top = inspect::bounds(&solids, &base).ok_or_else(none)?.1.y;
+            let low = inspect::bounds(&solids, &mine).ok_or_else(none)?.0.y;
+            assembly::translate(scene, &subject, DVec3::Y * (top + 0.5 - low));
+            let solids = inspect::scene_solids(scene)?;
+            let dy = inspect::settle_onto(&solids, &mine, &base)?;
+            assembly::translate(scene, &subject, DVec3::Y * dy);
+            Ok(())
         }
         Rule::Mirrors { of, axis } => {
             let of = members(scene, of);
@@ -504,6 +515,33 @@ mod tests {
         // Deleting the table drops the constraint.
         apply(&mut ed, json!([{"op": "delete", "id": "Table"}])).unwrap();
         assert!(ed.scene().constraints.is_empty());
+    }
+
+    #[test]
+    fn things_kept_on_one_support_do_not_climb_onto_each_other() {
+        let mut ed = Editor::new();
+        let mut commands = vec![json!({"op": "build", "template": "table", "name": "Table"})];
+        for (i, x) in [0.0, 0.12, 0.24].iter().enumerate() {
+            // Overlapping footprints, each meant to sit on the table.
+            commands.push(json!({"op": "add", "name": format!("Cup {i}"), "primitive": {"kind": "cylinder", "radius": 0.1, "height": 0.12}, "translation": [x, 2.0, 0.0]}));
+            commands.push(json!({"op": "constrain", "id": format!("Cup {i}"), "on": "Table"}));
+        }
+        apply(&mut ed, json!(commands)).unwrap();
+        for _ in 0..3 {
+            apply(
+                &mut ed,
+                json!([{"op": "move", "id": "Table", "offset": [0.2, 0, 0.1]}]),
+            )
+            .unwrap();
+        }
+        for i in 0..3 {
+            let b = bottom(&ed, &format!("Cup {i}"));
+            assert!(
+                (b - table_top(&ed)).abs() < 1e-6,
+                "cup {i} sits at {b}, the top is at {}",
+                table_top(&ed)
+            );
+        }
     }
 
     #[test]
