@@ -987,7 +987,7 @@ let renderedKey = ''
 function renderProperties(o) {
   const el = $('properties')
   const key = o
-    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, app.ik, app.scene.constraints, app.constraintKind, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
+    ? JSON.stringify([o.id, o.name, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, app.ik, app.scene.constraints, app.scene.arrangements, app.constraintKind, o.group, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
     : `none:${JSON.stringify([app.scene.world, Object.keys(app.scene.images || {})])}`
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -1058,6 +1058,7 @@ function renderProperties(o) {
       <div class="vec-row"><span>Scale${keyed('scale')}</span>${vec('scale', t.scale, 0.1)}</div>
     </div>
     ${constraintCard(o)}
+    ${arrangementCard(o)}
     <div class="card">
       <div class="card-title">Material${keyed('color')}</div>
       <div class="glazes">${glazes}</div>
@@ -1217,6 +1218,24 @@ function constraintLinks(o) {
   return (app.scene.constraints || [])
     .filter((c) => involves(o, c.subject) || involves(o, c.support ?? c.of))
     .map((c) => ({ from: idsOf(c.subject), to: idsOf(c.support ?? c.of), color: LINK[c.kind] }))
+    .concat((app.scene.arrangements || []).filter((a) => a.around != null && (involves(o, a.around) || a.items.some((w) => involves(o, w))))
+      .flatMap((a) => a.items.map((w) => ({from: idsOf(w), to: idsOf(a.around), color: 0x87d39f}))))
+}
+
+/** The selected object leads a maintained row, grid or circle of other items. */
+function arrangementCard(o) {
+  const self = subjectOf(o)
+  const targets = [...new Set(app.scene.objects.map(subjectOf))].filter((w) => w !== self)
+  const chosen = app.layoutItems ?? targets
+  const rows = (app.scene.arrangements || []).filter((a) => involves(o, a.around) || a.items.some((w) => involves(o, w)))
+    .map((a) => `<div class="arrangement-row"><span>${escapeHtml(a.layout)} · ${a.items.length} items · ${a.around != null ? `around ${escapeHtml(whoName(a.around))}` : 'fixed centre'}</span><button class="chip" data-unarrange="${a.id}" title="Stop maintaining this layout">✕</button></div>`).join('')
+  const controls = targets.length ? `<details class="arrangement-create"><summary>Arrange around ${escapeHtml(whoName(self))}</summary>
+    <div class="arrangement-items">${targets.map((w) => `<label><input type="checkbox" data-layout-item="${escapeHtml(JSON.stringify(w))}" ${chosen.includes(w) ? 'checked' : ''}>${escapeHtml(whoName(w))}</label>`).join('')}</div>
+    <label class="row small">Layout<select id="layout-kind">${['row', 'grid', 'circle'].map((k) => `<option value="${k}" ${k === (app.layoutKind ?? 'circle') ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
+    <label class="row small">Spacing (m)<input id="layout-spacing" type="number" min="0" max="100" step="any" required value="${app.layoutSpacing ?? 0.25}"></label>
+    <label class="row small">Circle radius (m)<input id="layout-radius" type="number" min="0" max="100" step="any" placeholder="Auto" value="${app.layoutRadius ?? ''}"></label>
+    <button class="small-btn" data-keep-layout>Keep layout</button></details>` : ''
+  return rows || controls ? `<div class="card arrangements"><div class="card-title">Arrangements <span class="muted small">kept through every edit</span></div>${rows}${controls}</div>` : ''
 }
 
 function constraintCard(o) {
@@ -1353,6 +1372,13 @@ $('properties').addEventListener('change', (e) => {
     app.constraintAxes = target.value
     return
   }
+  if (target.matches('[data-layout-item]')) {
+    app.layoutItems = [...document.querySelectorAll('[data-layout-item]:checked')].map((x) => JSON.parse(x.dataset.layoutItem))
+    return
+  }
+  if (target.id === 'layout-kind') { app.layoutKind = target.value; return }
+  if (target.id === 'layout-spacing') { app.layoutSpacing = Number(target.value); return }
+  if (target.id === 'layout-radius') { app.layoutRadius = target.value; return }
   if (target.id === 'bool-with') {
     app.boolWith = Number(target.value)
     return render()
@@ -1420,6 +1446,15 @@ $('properties').addEventListener('click', (e) => {
   const build = e.target.closest('[data-build]')
   if (build) return run([{ op: 'build', template: build.dataset.build, translation: [freeSpot(0.7), 0, 0] }]).then((r) => r && select(r.created[0])).catch(() => {})
   const o0 = objectById(app.selected)
+  if (e.target.closest('[data-keep-layout]') && o0) {
+    if (!$('layout-spacing').reportValidity() || !$('layout-radius').reportValidity()) return
+    const ids = [...document.querySelectorAll('[data-layout-item]:checked')].map((x) => JSON.parse(x.dataset.layoutItem))
+    if (!ids.length) return toast('Choose at least one item to arrange.', 'error')
+    const radius = $('layout-radius').value
+    return run([{op: 'arrange', ids, layout: $('layout-kind').value, around: subjectOf(o0), spacing: Number($('layout-spacing').value), ...(radius === '' ? {} : {radius: Number(radius)}), keep: true}]).catch(() => {})
+  }
+  const unarrange = e.target.closest('[data-unarrange]')
+  if (unarrange) return run([{op: 'unarrange', id: Number(unarrange.dataset.unarrange)}]).catch(() => {})
   if (e.target.closest('[data-constrain]') && o0) {
     const kind = $('c-kind').value
     const target = JSON.parse($('c-target').value)

@@ -892,6 +892,102 @@ mod tests {
     use super::*;
 
     #[test]
+    fn maintained_layout_proposals_undo_history_and_atomic_errors_share_one_path() {
+        let mut ed = Editor::new();
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[
+                {"op":"add","name":"Anchor","primitive":{"kind":"cube"}},
+                {"op":"add","name":"A","primitive":{"kind":"cube"},"translation":[-3,0,0]},
+                {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[3,0,0]}
+            ]}),
+        );
+        assert_eq!(status, 200);
+        let command = json!({"op":"arrange","ids":["A","B"],"layout":"row","around":"Anchor","spacing":2,"keep":true});
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Keep the row", "commands":[command]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        let id = out["ids"][0].as_u64().unwrap();
+        let (_, preview) = call(&mut ed, "GET", &format!("/proposal?id={id}"), Value::Null);
+        assert_eq!(preview["scene"]["arrangements"][0]["layout"], "row");
+        assert!(
+            preview["proposal"]["diff"]["scene"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("arrangements"))
+        );
+        assert!(ed.scene().arrangements.is_empty());
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                &format!("/proposal/accept?id={id}"),
+                json!({})
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[{"op":"move","id":"Anchor","offset":[2,0,3]}]})
+            )
+            .0,
+            200
+        );
+        assert_eq!(ed.scene().objects[1].transform.translation, [0.5, 0.5, 3.]);
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        assert_eq!(ed.scene().objects[1].transform.translation, [-1.5, 0.5, 0.]);
+        assert_eq!(call(&mut ed, "POST", "/redo", json!({})).0, 200);
+        let mut revised = command;
+        revised["spacing"] = json!(4);
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/history/revise",
+            json!({"step":2,"commands":[revised]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        assert_eq!(ed.scene().objects[1].transform.translation, [-0.5, 0.5, 3.]);
+        let (_, report) = call(&mut ed, "GET", "/inspect", Value::Null);
+        assert!(
+            !report["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "arrangement_violation")
+        );
+        let before = ed.scene().clone();
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"material","id":"A","color":"#ffffff"},{"op":"arrange","ids":["A","A"],"layout":"row","keep":true}]}),
+        );
+        assert_eq!(status, 422);
+        assert_eq!(*ed.scene(), before);
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[{"op":"unarrange","id":1}]})
+            )
+            .0,
+            200
+        );
+        assert!(ed.scene().arrangements.is_empty());
+    }
+
+    #[test]
     fn alignment_commands_preview_undo_revise_and_reject_atomically() {
         let mut ed = Editor::new();
         let setup = json!([

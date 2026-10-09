@@ -1389,4 +1389,29 @@ export const alignment = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment }
+export const keepLayout = {
+  title: 'Keep the whole layout', width: 800, gizmo: false,
+  setup: [
+    {op: 'build', template: 'table', name: 'Table'},
+    {op: 'build', template: 'chair', name: 'Chair A', translation: [-2,0,0]},
+    {op: 'build', template: 'chair', name: 'Chair B', translation: [2,0,0]},
+    {op: 'build', template: 'chair', name: 'Chair C', translation: [0,0,2]},
+    {op: 'build', template: 'chair', name: 'Chair D', translation: [0,0,-2]},
+  ],
+  camera: {azimuth: 35, elevation: 40, distance: 8, target: [0.4,0.2,0.25]},
+  steps: [
+    {caption: 'Keep the layout, not just its first placement', hint: 'objects and whole groups · circle, row or grid'},
+    {pick: 'Table top', after: 200},
+    {click: '.arrangement-create summary', after: 200},
+    {click: '[data-keep-layout]', after: 1000},
+    {caption: 'The table moves; every chair follows', hint: 'arrange · keep true · around Table'},
+    {run: [{op: 'move', id: 'Table', offset: [0.8,0,0.5]}], after: 1500},
+    {caption: 'Make more room by revising the spacing', hint: 'the same typed commands in proposals and history'},
+    {run: [{op: 'arrange', ids: ['Chair A','Chair B','Chair C','Chair D'], layout: 'circle', around: 'Table', spacing: 0.65, keep: true}], after: 1500},
+    {click: '[data-action=undo]', after: 1000},
+    {caption: 'One Undo restores the whole arrangement', hint: 'reference-led · maintained after every edit'},
+    {cursor: false}, {wait: 1000},
+  ],
+}
+
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout }

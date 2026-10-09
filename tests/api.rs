@@ -529,6 +529,29 @@ async fn mcp_bridge_edits_the_shared_scene() {
     assert_eq!(a["transform"]["translation"], json!([20.0, 6.0, 0.0]));
     let r = call(json!({"jsonrpc":"2.0","id":56,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"constrain","id":"Aligned A","align":"y","from":"Aligned A"}]}}})).await;
     assert_eq!(r["result"]["isError"], true, "{r}");
+    // Maintained layouts use the same command schema and shared scene.
+    let r = call(json!({"jsonrpc":"2.0","id":57,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"add","name":"Layout anchor","primitive":{"kind":"cube"},"translation":[40,0,0]},
+        {"op":"add","name":"Layout A","primitive":{"kind":"cube"},"translation":[37,0,0]},
+        {"op":"add","name":"Layout B","primitive":{"kind":"cube"},"translation":[43,0,0]},
+        {"op":"arrange","ids":["Layout A","Layout B"],"layout":"row","around":"Layout anchor","spacing":2,"keep":true}
+    ]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc":"2.0","id":58,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"move","id":"Layout anchor","offset":[2,0,2]}]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let r = call(json!({"jsonrpc":"2.0","id":59,"method":"tools/call","params":{"name":"get_scene","arguments":{}}})).await;
+    let scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(scene["arrangements"].as_array().unwrap().len(), 1);
+    let b = scene["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Layout B")
+        .unwrap();
+    assert_eq!(b["transform"]["translation"], json!([43.5, 0.5, 2.0]));
+    let r = call(json!({"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"unarrange","id":scene["arrangements"][0]["id"]}]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
     child.kill().await.unwrap();
 }
 

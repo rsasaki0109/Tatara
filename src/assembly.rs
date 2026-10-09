@@ -544,7 +544,10 @@ pub fn arrange(
     for (g, (spot, facing)) in groups.iter().zip(spots) {
         if let Some(angle) = facing {
             let (lo, hi) = bounds_of(scene, g)?;
-            turn(scene, g, (lo + hi) * 0.5, angle);
+            let [rx, ry, rz] = scene.objects[g[0]].transform.rotation;
+            let front = DQuat::from_euler(EulerRot::XYZ, rx, ry, rz) * DVec3::Z;
+            let heading = front.x.atan2(front.z);
+            turn(scene, g, (lo + hi) * 0.5, angle - heading);
         }
         let (lo, hi) = bounds_of(scene, g)?;
         let mid = (lo + hi) * 0.5;

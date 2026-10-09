@@ -162,6 +162,12 @@ pub fn diff(before: &Scene, after: &Scene) -> Diff {
     if before.images != after.images {
         d.scene.push("images");
     }
+    if before.constraints != after.constraints {
+        d.scene.push("constraints");
+    }
+    if before.arrangements != after.arrangements {
+        d.scene.push("arrangements");
+    }
     d
 }
 
