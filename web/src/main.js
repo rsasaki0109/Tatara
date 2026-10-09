@@ -1245,7 +1245,7 @@ function constraintCard(o) {
   const add = targets.length
     ? `<div class="row constraint-add"><select id="c-kind">${Object.entries(RULES).map(([k, label]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${label}</option>`).join('')}</select><select id="c-target">${targets.map((w) => `<option value="${escapeHtml(JSON.stringify(w))}">${escapeHtml(whoName(w))}</option>`).join('')}</select><button class="small-btn" data-constrain>Keep</button></div>`
     : ''
-  return `<div class="card constraints"><div class="card-title">Constraints <span class="muted small">${o.group ? `the whole ${escapeHtml(o.group)} · ` : ''}kept through every edit</span></div>${rows}${kind === 'distance' && targets.length ? `<label class="row small">Distance (m)<input id="c-distance" type="number" min="0" step="0.1" required value="${app.constraintDistance ?? 2}"></label>` : ''}${add}</div>`
+  return `<div class="card constraints"><div class="card-title">Constraints <span class="muted small">${o.group ? `the whole ${escapeHtml(o.group)} · ` : ''}kept through every edit</span></div>${rows}${kind === 'distance' && targets.length ? `<label class="row small">Distance (m)<input id="c-distance" type="number" min="0" step="any" required value="${app.constraintDistance ?? 2}"></label>` : ''}${add}</div>`
 }
 
 function rigCard(o) {
