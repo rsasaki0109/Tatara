@@ -30,6 +30,7 @@ pub enum Property {
     CameraFov,
     CameraAperture,
     CameraFocus,
+    CameraHeight,
     LightColor,
     LightIntensity,
 }
@@ -46,7 +47,7 @@ impl Property {
             Property::EmissiveStrength => Some((0.0, 20.0)),
             Property::CameraFov => Some((1.0, 170.0)),
             Property::CameraAperture => Some((0.0, 1.0)),
-            Property::CameraFocus => Some((0.001, 1e4)),
+            Property::CameraFocus | Property::CameraHeight => Some((0.001, 1e4)),
             Property::LightIntensity => Some((0.0, 100_000.0)),
             _ => None,
         }
@@ -233,6 +234,12 @@ pub fn rest_value(o: &Object, property: Property) -> Vec<f64> {
         Property::CameraFov => vec![o.camera.as_ref().map_or(36.0, |c| c.fov)],
         Property::CameraAperture => vec![o.camera.as_ref().map_or(0.0, |c| c.aperture)],
         Property::CameraFocus => vec![o.camera.as_ref().map_or(10.0, |c| c.focus)],
+        Property::CameraHeight => vec![
+            o.camera
+                .as_ref()
+                .and_then(|c| c.ortho_height)
+                .unwrap_or(4.0),
+        ],
         Property::LightColor => {
             hex_to_rgb(o.light.as_ref().map_or("#ffffff", |l| l.color.as_str())).to_vec()
         }
@@ -314,6 +321,9 @@ pub fn lens_at(o: &Object, frame: Option<f64>) -> Option<crate::camera::Lens> {
         lens.fov = value_at(o, Property::CameraFov, f)[0];
         lens.aperture = value_at(o, Property::CameraAperture, f)[0];
         lens.focus = value_at(o, Property::CameraFocus, f)[0];
+        if lens.ortho_height.is_some() {
+            lens.ortho_height = Some(value_at(o, Property::CameraHeight, f)[0]);
+        }
     }
     Some(lens)
 }
@@ -330,9 +340,10 @@ pub fn lamp_at(o: &Object, frame: Option<f64>) -> Option<crate::light::Lamp> {
 
 pub fn validate_property(o: &Object, property: Property) -> Result<(), EngineError> {
     let valid = match property {
-        Property::CameraFov | Property::CameraAperture | Property::CameraFocus => {
-            o.camera.is_some()
-        }
+        Property::CameraFov
+        | Property::CameraAperture
+        | Property::CameraFocus
+        | Property::CameraHeight => o.camera.is_some(),
         Property::LightColor | Property::LightIntensity => o.light.is_some(),
         _ => true,
     };
@@ -448,6 +459,7 @@ pub fn validate_tracks(o: &Object) -> Result<(), EngineError> {
                 Property::CameraFov
                     | Property::CameraAperture
                     | Property::CameraFocus
+                    | Property::CameraHeight
                     | Property::LightColor
                     | Property::LightIntensity
             ) {

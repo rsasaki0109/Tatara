@@ -11,6 +11,9 @@ pub struct Lens {
     pub fov: f64,
     pub aperture: f64,
     pub focus: f64,
+    /// Vertical orthographic view height in metres; absent means perspective.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ortho_height: Option<f64>,
 }
 impl Default for Lens {
     fn default() -> Self {
@@ -18,6 +21,7 @@ impl Default for Lens {
             fov: 36.0,
             aperture: 0.0,
             focus: 10.0,
+            ortho_height: None,
         }
     }
 }
@@ -29,9 +33,12 @@ impl Lens {
             || !(0.0..=1.0).contains(&self.aperture)
             || !self.focus.is_finite()
             || !(0.001..=1e4).contains(&self.focus)
+            || self
+                .ortho_height
+                .is_some_and(|h| !h.is_finite() || !(0.001..=1e4).contains(&h))
         {
             return Err(EngineError::new(
-                "camera lens needs fov 1-170 degrees, aperture 0-1 m and focus 0.001-10000 m",
+                "camera lens needs fov 1-170 degrees, aperture 0-1 m and focus 0.001-10000 m and optional ortho_height 0.001-10000 m",
             ));
         }
         Ok(())
@@ -94,6 +101,7 @@ pub fn resolve(
     c.up = q * DVec3::Y;
     c.aperture = lens.aperture;
     c.focus = lens.focus;
+    c.ortho_height = lens.ortho_height;
     Ok(c)
 }
 
@@ -181,5 +189,105 @@ mod tests {
         invalid.objects[0].camera.as_mut().unwrap().focus = f64::NAN;
         assert!(validate_scene(&invalid).is_err());
         assert_eq!(crate::inspect::scene_solids(ed.scene()).unwrap().len(), 1);
+    }
+    #[test]
+    fn orthographic_height_samples_keys_and_legacy_cameras_stay_perspective() {
+        let mut ed = Editor::new();
+        ed.apply(&serde_json::from_value(serde_json::json!({"commands":[
+            {"op":"add_camera","name":"Ortho","lens":{"ortho_height":4}},
+            {"op":"set_keyframe","id":"Ortho","property":"camera_height","frame":1,"value":2,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Ortho","property":"camera_height","frame":3,"value":6},
+            {"op":"add_camera","name":"Legacy"}
+        ]})).unwrap()).unwrap();
+        assert_eq!(
+            resolve(&ed, &ObjRef::Name("Ortho".into()), Some(2.), 16, 8)
+                .unwrap()
+                .ortho_height,
+            Some(4.)
+        );
+        assert_eq!(
+            resolve(&ed, &ObjRef::Name("Ortho".into()), None, 16, 8)
+                .unwrap()
+                .ortho_height,
+            Some(4.)
+        );
+        assert_eq!(
+            resolve(&ed, &ObjRef::Name("Legacy".into()), Some(2.), 16, 8)
+                .unwrap()
+                .ortho_height,
+            None
+        );
+        let mut scene = ed.scene().clone();
+        scene.objects[0].tracks[0].keys[0].value = vec![0.];
+        assert!(ed.load(scene).is_err());
+    }
+
+    #[test]
+    fn invalid_orthographic_lenses_reject_the_entire_batch_and_loaded_scene() {
+        let mut ed = Editor::new();
+        ed.apply(
+            &serde_json::from_value(
+                serde_json::json!({"commands":[{"op":"add_camera","name":"Shot"}]}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let before = ed.scene().clone();
+        for h in [0., -1., 10001.] {
+            assert!(ed.apply(&serde_json::from_value(serde_json::json!({"commands":[{"op":"move","id":"Shot","offset":[1,0,0]},{"op":"camera_settings","id":"Shot","lens":{"ortho_height":h}}]})).unwrap()).is_err());
+            assert_eq!(*ed.scene(), before);
+        }
+        let mut bad = before;
+        bad.objects[0].camera.as_mut().unwrap().ortho_height = Some(f64::NAN);
+        assert!(ed.load(bad).is_err());
+    }
+
+    #[test]
+    fn projection_settings_follow_proposal_review_and_history_revision() {
+        use serde_json::json;
+        let mut ed = Editor::new();
+        let batch = |commands| serde_json::from_value(json!({"commands":commands})).unwrap();
+        ed.apply(&batch(
+            json!([{"op":"add_camera","name":"Shot","lens":{"ortho_height":4}}]),
+        ))
+        .unwrap();
+        ed.apply(&batch(json!([{"op":"move","id":"Shot","offset":[0,0,1]}])))
+            .unwrap();
+        let id=ed.propose(&serde_json::from_value(json!({"title":"Tighter drawing","commands":[{"op":"camera_settings","id":"Shot","lens":{"ortho_height":2}}]})).unwrap()).unwrap()[0];
+        assert_eq!(
+            resolve(
+                &ed.preview(id).unwrap(),
+                &ObjRef::Name("Shot".into()),
+                None,
+                8,
+                8
+            )
+            .unwrap()
+            .ortho_height,
+            Some(2.)
+        );
+        assert_eq!(
+            ed.scene().objects[0].camera.as_ref().unwrap().ortho_height,
+            Some(4.)
+        );
+        ed.accept(id).unwrap();
+        ed.undo().unwrap();
+        let commands = serde_json::from_value(
+            json!([{"op":"add_camera","name":"Shot","lens":{"ortho_height":6}}]),
+        )
+        .unwrap();
+        ed.revise(1, commands).unwrap();
+        assert_eq!(
+            resolve(&ed, &ObjRef::Name("Shot".into()), None, 8, 8)
+                .unwrap()
+                .ortho_height,
+            Some(6.)
+        );
+        assert_eq!(ed.scene().objects[0].transform.translation[2], 1.);
+        ed.undo().unwrap();
+        assert_eq!(
+            ed.scene().objects[0].camera.as_ref().unwrap().ortho_height,
+            Some(4.)
+        );
     }
 }

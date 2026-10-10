@@ -1437,6 +1437,26 @@ export const rebase = {
 }
 
 
+export const orthographicCamera = {
+  title:'Equal size at different depths',width:800,gizmo:false,
+  setup:[
+    {op:'add',name:'Near',primitive:{kind:'cube'},translation:[-.8,.4,0],scale:[.65,.8,.65],color:'#769c8b'},
+    {op:'add',name:'Far',primitive:{kind:'cube'},translation:[.8,.4,-2],scale:[.65,.8,.65],color:'#be6651'},
+    {op:'add_camera',name:'Drawing',translation:[0,1.2,4],rotation:[-.12,0,0],lens:{fov:42,focus:4.6}},
+  ],
+  camera:{azimuth:15,elevation:22,distance:6,target:[0,.4,-1]},
+  steps:[
+    {pick:'Drawing',after:200},{click:'[data-look-camera]',after:700},
+    {caption:'Depth changes apparent size',hint:'two equal cubes · different distances'},
+    {choose:'#camera-projection',value:'Orthographic',after:700},
+    {into:'#camera-ortho_height',type:'2.5',after:900},
+    {caption:'Orthographic keeps the same scale',hint:'parallel rays · height in world metres'},
+    {wait:1400},{click:'[data-action=undo]',after:800},{click:'[data-action=undo]',after:900},
+    {caption:'Undo restores the original camera',hint:'the same command, proposal and history path'},
+    {cursor:false},{wait:1000},
+  ],
+}
+
 export const opticalAnimation = {
   title:'Animate the shot and lighting',width:800,gizmo:false,
   setup:[
@@ -1568,4 +1588,4 @@ export const sceneLight = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

@@ -223,6 +223,20 @@ try {
   check(optics.context.objects[0].camera.fov===40 && optics.context.objects[1].light.intensity===20,'WebAssembly samples lens and light properties at the requested frame')
   check(optics.status===200 && optics.signature.join(',')==='137,80,78,71','WebAssembly renders an animated named camera')
   check(optics.bad===422 && optics.unchanged,'WebAssembly rejects optical keys on the wrong object atomically')
+  const orthographic=await page.evaluate(async()=>{
+    const post=commands=>fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands})})
+    await post([{op:'clear'},{op:'add_camera',name:'Drawing',translation:[0,1,4],lens:{ortho_height:4}},
+      {op:'set_keyframe',id:'Drawing',property:'camera_height',frame:1,value:2,interpolation:'linear'},
+      {op:'set_keyframe',id:'Drawing',property:'camera_height',frame:3,value:6},{op:'add',primitive:{kind:'cube'}}])
+    const context=await(await fetch('/api/context?frame=2')).json()
+    const image=await fetch('/api/render/image?camera=Drawing&frame=2&w=8&h=8&samples=1')
+    const signature=Array.from(new Uint8Array(await image.arrayBuffer()).slice(0,4))
+    const before=await(await fetch('/api/scene')).json(),bad=await post([{op:'camera_settings',id:'Drawing',lens:{ortho_height:0}}]),after=await(await fetch('/api/scene')).json()
+    return {context,status:image.status,signature,bad:bad.status,unchanged:JSON.stringify(before)===JSON.stringify(after)}
+  })
+  check(orthographic.context.objects[0].camera.ortho_height===4,'WebAssembly samples orthographic world-space view height')
+  check(orthographic.status===200 && orthographic.signature.join(',')==='137,80,78,71','WebAssembly renders the named orthographic projection')
+  check(orthographic.bad===422 && orthographic.unchanged,'WebAssembly rejects invalid orthographic height atomically')
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

@@ -426,6 +426,7 @@ export class Viewport {
     scene.add(this.root)
 
     const cam = (this.camera = new THREE.PerspectiveCamera(36, 1, 0.05, 200))
+    this.perspectiveCamera = cam
     this.controls = new OrbitControls(cam, r.domElement)
     this.controls.enableDamping = !capture
     this.controls.dampingFactor = 0.12
@@ -525,7 +526,8 @@ export class Viewport {
     this.renderer.domElement.style.width = `${w}px`
     this.renderer.domElement.style.height = `${h}px`
     this.camera.aspect = w / h
-    this.camera.updateProjectionMatrix()
+    if (this.camera.isOrthographicCamera) this.setOrthoExtent(this.orthoHeight)
+    else this.camera.updateProjectionMatrix()
   }
 
   // -- scene sync -----------------------------------------------------------
@@ -893,8 +895,8 @@ export class Viewport {
     const studio = w.sky === 'studio' && !w.image
     const source = studio ? 'studio' : w.image ? `image:${w.image}:${this.images[w.image]?.hash}` : `sky:${w.sky}`
     const prev = this.world
-    this.world = w
     if (prev && prev.source === source && JSON.stringify(prev.settings) === JSON.stringify(w)) return
+    this.world = w
     w.source = source
     w.settings = { ...w }
     delete w.settings.source
@@ -926,7 +928,7 @@ export class Viewport {
       this.worldMap?.texture.dispose()
       this.worldMap?.env?.dispose()
       const sun = f[3] + f[4] + f[5] > 0 ? { dir: new THREE.Vector3(f[0], f[1], f[2]), power: [f[3], f[4], f[5]] } : null
-      this.worldMap = { source, texture: tex, env: studio ? null : this.pmrem.fromEquirectangular(tex).texture, sun }
+      this.worldMap = { source, texels, width, height, texture: tex, env: studio ? null : this.pmrem.fromEquirectangular(tex).texture, sun }
       this.applyWorld()
     })
     this.applyWorld()
@@ -968,6 +970,27 @@ export class Viewport {
     scene.backgroundIntensity = w.strength
     scene.backgroundRotation.set(0, -turn, 0)
     this.grid.visible = !shown
+  }
+
+  // Parallel rays see one environment direction across an orthographic frame.
+  updateProjectionBackground() {
+    const w = this.world, map = this.worldMap
+    if (!w?.background || map?.source !== w.source) return
+    if (!this.camera.isOrthographicCamera) { this.scene.background = map.texture; return }
+    const d = this.camera.getWorldDirection(new THREE.Vector3())
+      .applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(w.rotation))
+    const x = (Math.atan2(d.z, d.x) / (2 * Math.PI) + .5) * map.width - .5
+    const y = (.5 + Math.asin(THREE.MathUtils.clamp(d.y, -1, 1)) / Math.PI) * map.height - .5
+    const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0
+    const at = (i, j, c) => map.texels[(THREE.MathUtils.clamp(j, 0, map.height - 1) * map.width + ((i % map.width) + map.width) % map.width) * 4 + c]
+    const rgb = [0, 1, 2].map(c => (1-fy)*((1-fx)*at(x0,y0,c)+fx*at(x0+1,y0,c)) + fy*((1-fx)*at(x0,y0+1,c)+fx*at(x0+1,y0+1,c)))
+    if (!this.orthoBackground) {
+      this.orthoBackground = new THREE.DataTexture(new Uint16Array(4), 1, 1, THREE.RGBAFormat, THREE.HalfFloatType)
+      this.orthoBackground.colorSpace = THREE.LinearSRGBColorSpace
+    }
+    this.orthoBackground.image.data.set([...rgb, 1].map(v => THREE.DataUtils.toHalfFloat(v)))
+    this.orthoBackground.needsUpdate = true
+    this.scene.background = this.orthoBackground
   }
 
   loadImage(url) {
@@ -1518,6 +1541,7 @@ export class Viewport {
   shownMesh(o) {
     // Viewport-only camera body and viewing pyramid; not part of scene geometry.
     if (o.light) return {vertices:[[0,.08,0],[.08,0,0],[0,0,.08],[-.08,0,0],[0,0,-.08],[0,-.08,0]],faces:[[0,2,1],[0,3,2],[0,4,3],[0,1,4],[5,1,2],[5,2,3],[5,3,4],[5,4,1]]}
+    if (o.camera?.ortho_height != null) return {vertices:[[-.3,-.2,0],[.3,-.2,0],[.3,.2,0],[-.3,.2,0],[-.3,-.2,-.45],[.3,-.2,-.45],[.3,.2,-.45],[-.3,.2,-.45]],faces:[[0,3,2,1],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]]}
     if (o.camera) return { vertices: [[-.14,-.1,0],[.14,-.1,0],[.14,.1,0],[-.14,.1,0],[-.3,-.2,-.45],[.3,-.2,-.45],[.3,.2,-.45],[-.3,.2,-.45]], faces: [[0,3,2,1],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]] }
     return posedMesh(o, displayMesh(o), this.currentFrame)
   }
@@ -1681,27 +1705,63 @@ export class Viewport {
 
   // -- camera ---------------------------------------------------------------
 
-  viewPeerCamera({ eye, target, fov }) {
+  viewPeerCamera({ eye, target, fov, ortho_height, up }) {
     this.anim.items.get('camera')?.finish(false)
     this.spinRate = 0
     // Flush any residual orbit damping before installing the peer pose.
     const damping = this.controls.enableDamping
     this.controls.enableDamping = false
     this.controls.update()
+    this.switchProjection(ortho_height)
+    this.camera.up.fromArray(up || [0,1,0])
     this.camera.position.fromArray(eye)
     this.controls.target.fromArray(target)
-    this.camera.fov = fov
+    if (!this.camera.isOrthographicCamera) this.camera.fov = fov
     this.camera.updateProjectionMatrix()
     this.controls.update()
     this.controls.enableDamping = damping
+  }
+
+  effectiveOrthoHeight() {
+    return this.camera.isOrthographicCamera ? (this.camera.top-this.camera.bottom)/this.camera.zoom : null
+  }
+
+  cameraSnapshot() {
+    return {eye:this.camera.position.toArray(), target:this.controls.target.toArray(),
+      up:this.camera.up.toArray(), fov:this.camera.fov ?? 36, aspect:this.camera.aspect,
+      ...(this.camera.isOrthographicCamera ? {ortho_height:this.effectiveOrthoHeight()} : {})}
+  }
+
+  setOrthoExtent(height) {
+    this.orthoHeight = height
+    this.controls.minZoom=height/10000; this.controls.maxZoom=height/.001
+    this.camera.top=height/2; this.camera.bottom=-height/2
+    this.camera.left=-height*this.camera.aspect/2; this.camera.right=height*this.camera.aspect/2
+    this.camera.updateProjectionMatrix()
+  }
+
+  switchProjection(height) {
+    const old=this.camera
+    const next=height != null ? (this.orthographicCamera ||= new THREE.OrthographicCamera(-1,1,1,-1,.05,200)) : this.perspectiveCamera
+    if (next !== old) {
+      next.position.copy(old.position); next.quaternion.copy(old.quaternion); next.up.copy(old.up)
+      next.aspect=old.aspect; next.zoom=1
+      this.camera=next; this.controls.object=next; this.gizmo.camera=next
+      for (const composer of [this.composer,this.glowComposer]) {
+        for (const pass of composer?.passes || []) if (pass instanceof RenderPass) pass.camera=next
+      }
+    }
+    if (height != null) { next.zoom=1; this.setOrthoExtent(height) }
+    else next.updateProjectionMatrix()
   }
 
   /** Return to the saved orbit, or look through an animated scene camera. */
   lookThrough(id) {
     if (id == null) {
       this.sceneCameraId = null
-      this.camera.up.set(0, 1, 0)
-      this.camera.fov = this.savedCameraFov ?? 36
+      this.switchProjection(this.savedCameraHeight)
+      this.camera.up.fromArray(this.savedCameraUp || [0,1,0])
+      if (!this.camera.isOrthographicCamera) this.camera.fov = this.savedCameraFov ?? 36
       this.controls.enabled = true
       if (this.savedCameraOrbit) this.setOrbit(this.savedCameraOrbit)
       this.camera.updateProjectionMatrix()
@@ -1710,7 +1770,9 @@ export class Viewport {
     }
     if (this.sceneCameraId == null) {
       this.savedCameraOrbit = this.getOrbit()
-      this.savedCameraFov = this.camera.fov
+      this.savedCameraFov = this.camera.fov ?? 36
+      this.savedCameraHeight = this.effectiveOrthoHeight()
+      this.savedCameraUp = this.camera.up.toArray()
     }
     this.sceneCameraId = id
     this.gizmo.detach()
@@ -1723,12 +1785,13 @@ export class Viewport {
     if (!node?.data.camera) return this.lookThrough(null)
     const posed = pose(node.data, this.currentFrame)
     const t = posed.transform
+    this.switchProjection(posed.camera.ortho_height)
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(...t.rotation, 'XYZ'))
     this.camera.position.fromArray(t.translation)
     this.camera.up.copy(new THREE.Vector3(0, 1, 0).applyQuaternion(q))
     this.camera.quaternion.copy(q)
     this.controls.target.copy(this.camera.position).add(new THREE.Vector3(0, 0, -posed.camera.focus).applyQuaternion(q))
-    this.camera.fov = posed.camera.fov
+    if (!this.camera.isOrthographicCamera) this.camera.fov = posed.camera.fov
     this.camera.updateProjectionMatrix()
     this.controls.enabled = false
     this.gizmo.detach()
@@ -1795,7 +1858,11 @@ export class Viewport {
     const box = this.sceneBounds()
     if (box.isEmpty()) return this.orbitTo({ target: [0, 0.5, 0], distance: 6.5, elevation, azimuth }, ms)
     const sphere = box.getBoundingSphere(new THREE.Sphere())
-    const fov = Math.min(this.camera.fov, this.camera.fov * this.camera.aspect) * DEG
+    if (this.camera.isOrthographicCamera) {
+      this.camera.zoom=1
+      this.setOrthoExtent(Math.max(.001, Math.min(10000,sphere.radius*2*padding/Math.min(1,this.camera.aspect))))
+    }
+    const fov = Math.min(this.camera.fov ?? 36, (this.camera.fov ?? 36) * this.camera.aspect) * DEG
     const distance = Math.max(1.2, (sphere.radius * padding) / Math.sin(fov / 2))
     return this.orbitTo({ target: sphere.center.toArray(), distance, elevation, azimuth }, ms)
   }
@@ -1820,7 +1887,9 @@ export class Viewport {
         this.peerRoot.add(helper)
       }
       if (p.camera) {
-        const cam = new THREE.PerspectiveCamera(p.camera.fov, 1.6, 0.08, 0.45)
+        const h=p.camera.ortho_height, a=p.camera.aspect ?? 1.6
+        const cam = h != null ? new THREE.OrthographicCamera(-h*a/2,h*a/2,h/2,-h/2,.08,.45) : new THREE.PerspectiveCamera(p.camera.fov,a,.08,.45)
+        cam.up.fromArray(p.camera.up || [0,1,0])
         cam.position.fromArray(p.camera.eye)
         cam.lookAt(new THREE.Vector3(...p.camera.target))
         cam.updateMatrixWorld()
@@ -1929,6 +1998,7 @@ export class Viewport {
     }
     if (this.sceneCameraId != null) this.applySceneCamera()
     else this.controls.update()
+    this.updateProjectionBackground()
     this.flushStroke()
     this.syncSceneLights()
     this.placeLinks()

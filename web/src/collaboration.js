@@ -75,7 +75,7 @@ export class Collaboration {
   }
 
   payload() {
-    return { actor: this.actor, cursor: this.cursor, selection: this.selected() == null ? [] : [this.selected()], camera: { eye: this.viewport.camera.position.toArray(), target: this.viewport.controls.target.toArray(), fov: this.viewport.camera.fov }, editing: this.interacting && this.selected() != null ? [this.selected()] : [] }
+    return { actor: this.actor, cursor: this.cursor, selection: this.selected() == null ? [] : [this.selected()], camera: this.viewport.cameraSnapshot(), editing: this.interacting && this.selected() != null ? [this.selected()] : [] }
   }
 
   async send(force = false) {

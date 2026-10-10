@@ -75,7 +75,8 @@ export class PathPreview {
       h: String(h),
       eye: [eye.x, eye.y, eye.z].map(r).join(','),
       target: [target.x, target.y, target.z].map(r).join(','),
-      fov: cam.fov.toFixed(3),
+      ...(cam.isOrthographicCamera ? {ortho_height:String(this.viewport.effectiveOrthoHeight())} : {fov:cam.fov.toFixed(3)}),
+      up:cam.up.toArray().map(r).join(','),
       frame: String(this.viewport.currentFrame ?? 1),
     }
   }

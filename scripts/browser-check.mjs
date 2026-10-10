@@ -15,6 +15,8 @@ const TINY_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC',
   'base64',
 )
+// A 64x32 environment: red north hemisphere and blue south hemisphere.
+const PROJECTION_SKY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAEAAAAAgCAYAAACinX6EAAAAYUlEQVR4nO3QsQ0AIADDsP7/NJxhJDJ4j7KznZ9NB2gN0AFaA3SA1gAdoDVAB2gN0AFaA3SA1gAdoO2BBowHaDxA4wEaD9B4gMYDNB6g8QCNB2g8QOMBGg/QeIDGAzQeYF0oevDiS5YfgwAAAABJRU5ErkJggg==','base64')
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -898,7 +900,7 @@ try {
   await shot.click('[data-action=addCamera]'); await until(shot, () => document.querySelector('#camera-fov'))
   await shot.click('#key-btn'); await until(shot, () => document.querySelector('#camera-fov')?.closest('label').querySelector('.keyed'))
   const cameraKeys=await shot.evaluate(() => fetch('/api/scene').then(r=>r.json()))
-  check(cameraKeys.objects.find(o=>o.camera).tracks.length===6,'Key on a camera records transform and its three lens properties')
+  check(cameraKeys.objects.find(o=>o.camera).tracks.length===7,'Key on a camera records transform and its four lens properties')
   await shot.fill('#frame-input','3'); await shot.locator('#frame-input').blur()
   await shot.fill('#camera-fov','76'); await shot.locator('#camera-fov').blur()
   await until(shot, () => document.querySelector('#camera-fov')?.value==='76' && window.__tatara.debug().pending===0)
@@ -908,6 +910,76 @@ try {
   check(await shot.inputValue('#camera-fov')==='56','an inspector edit creates an optical key and Look through uses the interpolated FOV')
   const opticalRest=await shot.evaluate(() => fetch('/api/scene').then(r=>r.json()))
   check(opticalRest.objects.find(o=>o.camera).camera.fov===36 && opticalRest.objects[0].light.intensity===0,'optical animation preserves unanimated rest settings')
+  await shot.selectOption('#camera-projection','orthographic')
+  await until(shot, () => window.__tatara.debug().renderCamera.orthographic && window.__tatara.debug().renderCamera.ortho_height===4)
+  check(await shot.isVisible('#camera-ortho_height') && await shot.locator('#camera-fov').count()===0,'the Projection selector installs a real orthographic camera and exposes world-space view height')
+  await shot.fill('#frame-input','3');await shot.locator('#frame-input').blur()
+  await shot.fill('#camera-ortho_height','6');await shot.locator('#camera-ortho_height').blur()
+  await until(shot, () => window.__tatara.debug().renderCamera.ortho_height===6 && window.__tatara.debug().pending===0)
+  await shot.fill('#frame-input','2');await shot.locator('#frame-input').blur()
+  await until(shot, () => window.__tatara.debug().renderCamera.ortho_height===5)
+  check(await shot.inputValue('#camera-ortho_height')==='5','orthographic view height interpolates through typed camera keys in the inspector and viewport')
+  await shot.click('[data-action=undo]');await until(shot, () => window.__tatara.debug().renderCamera.ortho_height===4)
+  check(true,'one Undo restores the height track and the active orthographic projection')
+  await shot.click('[data-action=undo]');await until(shot, () => !window.__tatara.debug().renderCamera.orthographic && window.__tatara.debug().renderCamera.fov===56)
+  check(true,'Undo of a projection change restores the real perspective camera and its sampled FOV')
+  await shot.selectOption('#camera-projection','orthographic');await until(shot, () => window.__tatara.debug().renderCamera.orthographic)
+  const orthoImage=await shot.evaluate(async()=>{
+    const scene=await(await fetch('/api/scene')).json(),camera=scene.objects.find(o=>o.camera)
+    const r=await fetch(`/api/render/image?camera=${camera.id}&w=8&h=8&samples=1`)
+    return {status:r.status,signature:Array.from(new Uint8Array(await r.arrayBuffer()).slice(0,4))}
+  })
+  check(orthoImage.status===200 && orthoImage.signature.join(',')==='137,80,78,71','the named orthographic camera renders through the shared Rust core')
+  await shot.evaluate(async()=>{
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[{op:'world',sky:'sunset',background:true}]})});if(!r.ok)throw new Error(await r.text())
+  })
+  await until(shot,()=>window.__tatara.debug().worldParallelBackground)
+  check(true,'orthographic environment backgrounds use the parallel viewing direction across the full frame')
+  await shot.click('[data-action=undo]');await until(shot,()=>!window.__tatara.debug().worldBackground)
+  // The native environment packet is bottom-up for GPU texture upload.
+  // Compare actual 1x1 HDR texture texels against a red-north/blue-south fixture.
+  await shot.evaluate(async data=>{
+    const scene=await(await fetch('/api/scene')).json(),o=scene.objects.find(o=>o.camera)
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
+      {op:'add_image',name:'Projection sky',data},{op:'world',image:'Projection sky',strength:1,background:true},
+      {op:'set_keyframe',id:o.id,property:'rotation',frame:2,value:[Math.PI/2,0,0]}
+    ]})});if(!r.ok)throw new Error(await r.text())
+  },PROJECTION_SKY_PNG.toString('base64'))
+  await until(shot,()=>window.__tatara.debug().world?.startsWith('image:Projection sky:') && window.__tatara.debug().renderCamera.up[2]>.99 && window.__tatara.debug().worldParallelBackgroundTexels?.[2]===0)
+  const north=await shot.evaluate(()=>window.__tatara.debug().worldParallelBackgroundTexels)
+  await shot.evaluate(async()=>{
+    const scene=await(await fetch('/api/scene')).json(),o=scene.objects.find(o=>o.camera)
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[{op:'set_keyframe',id:o.id,property:'rotation',frame:2,value:[-Math.PI/2,0,0]}]})});if(!r.ok)throw new Error(await r.text())
+  })
+  await until(shot,()=>window.__tatara.debug().renderCamera.up[2]<-.99 && window.__tatara.debug().worldParallelBackgroundTexels?.[2]===15360)
+  const south=await shot.evaluate(()=>window.__tatara.debug().worldParallelBackgroundTexels)
+  check(north[0]===15360 && north[2]===0 && south[0]===0 && south[2]===15360,'orthographic HDR background samples the actual bottom-up environment texture without reversing its poles')
+  await shot.click('[data-action=undo]');await shot.click('[data-action=undo]')
+  await until(shot,()=>!window.__tatara.debug().worldBackground && window.__tatara.debug().pending===0)
+
+  const sourceUp=await shot.evaluate(async()=>{
+    const s=await(await fetch('/api/scene')).json(),o=s.objects.find(o=>o.camera),rotation=[...o.transform.rotation];rotation[2]+=.25
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[{op:'set_keyframe',id:o.id,property:'rotation',frame:2,value:rotation}]})});if(!r.ok)throw new Error(await r.text())
+    const [x,y,z]=rotation
+    return [-Math.cos(y)*Math.sin(z),Math.cos(x)*Math.cos(z)-Math.sin(x)*Math.sin(y)*Math.sin(z),Math.sin(x)*Math.cos(z)+Math.cos(x)*Math.sin(y)*Math.sin(z)]
+  })
+  await until(shot, up => window.__tatara.debug().renderCamera.up.every((v,i)=>Math.abs(v-up[i])<1e-6), sourceUp)
+  const observer=await browser.newPage({viewport:{width:1280,height:720}})
+  await observer.goto(`${url}/?participant=Projection%20observer`);await observer.evaluate(()=>window.__tatara.ready)
+  await until(observer, up => window.__tatara.presence().some(p=>p.camera?.ortho_height===4 && p.camera?.up?.every((v,i)=>Math.abs(v-up[i])<1e-6)), sourceUp)
+  const orthoPeer=await observer.evaluate(()=>window.__tatara.presence().find(p=>p.camera?.ortho_height===4))
+  check(orthoPeer.camera.up.every((v,i)=>Math.abs(v-sourceUp[i])<1e-6),'shared camera presence preserves orthographic height and camera roll')
+  await observer.locator('.session-peer').filter({hasText:orthoPeer.actor.name}).getByRole('button',{name:'View camera'}).click()
+  await until(observer, () => window.__tatara.debug().renderCamera.orthographic && window.__tatara.debug().renderCamera.ortho_height===4)
+  const viewedUp=await observer.evaluate(()=>window.__tatara.debug().renderCamera.up)
+  check(viewedUp.every((v,i)=>Math.abs(v-sourceUp[i])<1e-6),'View camera uses the peer orthographic projection and roll')
+  await observer.click('[data-action=addCamera]');await until(observer, () => document.querySelector('#camera-projection')?.value==='orthographic')
+  check(await observer.inputValue('#camera-ortho_height')==='4','Camera captures an orthographic peer view with its world-space height')
+  await observer.close()
+  await shot.click('[data-exit-camera]');await until(shot, () => window.__tatara.debug().sceneCamera==null && !window.__tatara.debug().renderCamera.orthographic)
+  await shot.click('[data-look-camera]');await until(shot, () => window.__tatara.debug().renderCamera.orthographic)
+  await shot.keyboard.press('Escape');await until(shot, () => window.__tatara.debug().sceneCamera==null && !window.__tatara.debug().renderCamera.orthographic)
+  check(true,'Return to orbit and Escape restore the saved perspective orbit after an orthographic camera')
   await shot.close()
 
   // Every scenario must finish without errors (the MCP one falls back to HTTP).

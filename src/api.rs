@@ -594,6 +594,30 @@ fn lens(query: &str, max: f64) -> Result<(usize, usize, f64, f64, f64), Response
     Ok((w as usize, h as usize, fov, aperture, focus))
 }
 
+fn ortho_height(query: &str) -> Result<Option<f64>, Response> {
+    if query_param(query, "ortho_height").is_none() {
+        return Ok(None);
+    }
+    let height = number(query, "ortho_height", None)?;
+    if !(0.001..=1e4).contains(&height) {
+        return Err(Response::error(400, "ortho_height must be 0.001-10000 m"));
+    }
+    Ok(Some(height))
+}
+
+fn projection_query(camera: &mut crate::pathtrace::Camera, query: &str) -> Result<(), Response> {
+    if let Some(height) = ortho_height(query)? {
+        camera.ortho_height = Some(height);
+    }
+    if camera.ortho_height.is_some() && query_param(query, "fov").is_some() {
+        return Err(Response::error(
+            400,
+            "set ortho_height to change an orthographic view",
+        ));
+    }
+    Ok(())
+}
+
 /// A camera at `eye` looking at `target`, from the query.
 fn query_camera(
     ed: &Editor,
@@ -607,6 +631,12 @@ fn query_camera(
             return Err(Response::error(
                 400,
                 "give a scene camera or eye/target, not both",
+            ));
+        }
+        if query_param(query, "up").is_some() {
+            return Err(Response::error(
+                400,
+                "change the scene camera rotation to change its up vector",
             ));
         }
         let id = id
@@ -623,6 +653,7 @@ fn query_camera(
         if query_param(query, "focus").is_some() {
             c.focus = focus;
         }
+        projection_query(&mut c, query)?;
         return Ok(c);
     }
     let (eye, target) = (point(query, "eye")?, point(query, "target")?);
@@ -643,12 +674,14 @@ fn query_camera(
             "up must be nonzero and not parallel to the view",
         ));
     }
-    Ok(crate::pathtrace::Camera {
+    let mut c = crate::pathtrace::Camera {
         up,
         aperture,
         focus,
         ..crate::pathtrace::Camera::new(eye, target, fov, w, h)
-    })
+    };
+    projection_query(&mut c, query)?;
+    Ok(c)
 }
 
 /// Parse a path tracing request: the camera (`w`, `h`, `eye`, `target`,
@@ -719,23 +752,25 @@ pub fn image_job(ed: &Editor, query: &str) -> Result<ImageJob, Response> {
         .iter()
         .map(|f| crate::pathtrace::traced_uncached(ed, *f))
         .collect::<Result<Vec<_>, _>>()?;
-    let camera = if query_param(query, "eye").is_some() || query_param(query, "camera").is_some() {
-        query_camera(ed, query, 4096.0, frames[0])?
-    } else {
-        let (w, h, fov, aperture, focus) = lens(query, 4096.0)?;
-        let view = crate::render::parse_views(
-            &query_param(query, "view").unwrap_or_else(|| "iso".into()),
-        )?;
-        let [view] = &view[..] else {
-            return Err(Response::error(400, "view names one view"));
+    let mut camera =
+        if query_param(query, "eye").is_some() || query_param(query, "camera").is_some() {
+            query_camera(ed, query, 4096.0, frames[0])?
+        } else {
+            let (w, h, fov, aperture, focus) = lens(query, 4096.0)?;
+            let view = crate::render::parse_views(
+                &query_param(query, "view").unwrap_or_else(|| "iso".into()),
+            )?;
+            let [view] = &view[..] else {
+                return Err(Response::error(400, "view names one view"));
+            };
+            let (eye, target) = scenes[0].frame_view(view, fov, w as f64 / h as f64);
+            crate::pathtrace::Camera {
+                aperture,
+                focus,
+                ..crate::pathtrace::Camera::new(eye, target, fov, w, h)
+            }
         };
-        let (eye, target) = scenes[0].frame_view(view, fov, w as f64 / h as f64);
-        crate::pathtrace::Camera {
-            aperture,
-            focus,
-            ..crate::pathtrace::Camera::new(eye, target, fov, w, h)
-        }
-    };
+    projection_query(&mut camera, query)?;
     let work = camera.width as f64 * camera.height as f64 * samples * scenes.len() as f64;
     if work > 4e9 {
         return Err(Response::error(
@@ -2036,5 +2071,60 @@ mod tests {
             422
         );
         assert_eq!(ed.scene().revision, before);
+    }
+    #[test]
+    fn orthographic_render_queries_sample_height_and_reject_ineffective_fov_overrides() {
+        let mut ed = Editor::new();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[
+            {"op":"add_camera","name":"Ortho","translation":[0,1,4],"lens":{"ortho_height":4}},
+            {"op":"set_keyframe","id":"Ortho","property":"camera_height","frame":1,"value":2,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Ortho","property":"camera_height","frame":3,"value":6},
+            {"op":"add","primitive":{"kind":"cube"}}
+        ]})).0,200);
+        assert_eq!(
+            path_job(&ed, "camera=Ortho&frame=2&w=16&h=8")
+                .unwrap_or_else(|r| panic!("{}", r.status))
+                .camera
+                .ortho_height,
+            Some(4.)
+        );
+        assert_eq!(
+            path_job(&ed, "camera=Ortho&ortho_height=3&w=16&h=8")
+                .unwrap_or_else(|r| panic!("{}", r.status))
+                .camera
+                .ortho_height,
+            Some(3.)
+        );
+        assert!(path_job(&ed, "camera=Ortho&fov=40&w=16&h=8").is_err());
+        assert_eq!(
+            path_job(&ed, "eye=0,1,4&target=0,1,0&ortho_height=2&w=16&h=8")
+                .unwrap_or_else(|r| panic!("{}", r.status))
+                .camera
+                .ortho_height,
+            Some(2.)
+        );
+        for h in ["0", "-1", "NaN", "10001"] {
+            assert!(
+                path_job(
+                    &ed,
+                    &format!("eye=0,1,4&target=0,1,0&ortho_height={h}&w=16&h=8")
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(
+            image_job(&ed, "camera=Ortho&frames=1-3&w=8&h=8&samples=1")
+                .unwrap_or_else(|r| panic!("{}", r.status))
+                .run()
+                .status,
+            200
+        );
+        assert_eq!(
+            image_job(&ed, "view=front&ortho_height=2&w=8&h=8&samples=1")
+                .unwrap_or_else(|r| panic!("{}", r.status))
+                .run()
+                .status,
+            200
+        );
     }
 }

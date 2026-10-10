@@ -169,7 +169,7 @@ app.preview = preview
 
 // The Render panel: a finished image of this view.
 const finalRender = new FinalRender($('final-render'), {
-  camera: () => ({ camera: viewport.sceneCameraId, eye: viewport.camera.position.toArray(), target: viewport.controls.target.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov }),
+  camera: () => ({ camera: viewport.sceneCameraId, ...viewport.cameraSnapshot() }),
   focusPoint: () => {
     const node = viewport.nodes.get(app.selected)
     if (!node) return null
@@ -591,7 +591,7 @@ const actions = {
   },
   async addCamera() {
     const c = viewport.camera
-    const r = await run([{ op: 'add_camera', translation: c.position.toArray(), rotation: [c.rotation.x, c.rotation.y, c.rotation.z], lens: { fov: c.fov, aperture: 0, focus: c.position.distanceTo(viewport.controls.target) } }])
+    const r = await run([{ op: 'add_camera', translation: c.position.toArray(), rotation: [c.rotation.x, c.rotation.y, c.rotation.z], lens: { fov: c.fov ?? 36, aperture: 0, focus: c.position.distanceTo(viewport.controls.target), ...(c.isOrthographicCamera ? {ortho_height:viewport.effectiveOrthoHeight()} : {}) } }])
     select(r.created[0])
     return r
   },
@@ -1068,8 +1068,9 @@ function renderProperties(o) {
       <div class="card"><div class="card-title">Transform</div>
       <div class="vec-row"><span>Location${keyed('translation')}</span>${vec('translation', t.translation, .1)}</div>
       <div class="vec-row"><span>Rotation°${keyed('rotation')}</span>${vec('rotation', t.rotation, 5, r => r * 180 / Math.PI)}</div></div>
-      <div class="card"><div class="card-title">Perspective lens</div>
-      ${[['fov','Vertical FOV°',1,170,.1],['aperture','Lens radius m',0,1,.01],['focus','Focus m',.001,10000,.1]].map(([f,label,min,max,step]) => `<label class="vec-row"><span>${label}${keyed(`camera_${f}`)}</span><input type="number" id="camera-${f}" data-camera-lens="${f}" min="${min}" max="${max}" step="${step}" value="${shown.camera[f]}"></label>`).join('')}
+      <div class="card"><div class="card-title">Lens</div>
+      <label class="row">Projection<select id="camera-projection"><option value="perspective" ${o.camera.ortho_height == null ? 'selected' : ''}>Perspective</option><option value="orthographic" ${o.camera.ortho_height != null ? 'selected' : ''}>Orthographic</option></select></label>
+      ${[o.camera.ortho_height != null ? ['ortho_height','View height m',.001,10000,.1] : ['fov','Vertical FOV°',1,170,.1],['aperture','Lens radius m',0,1,.01],['focus','Focus m',.001,10000,.1]].map(([f,label,min,max,step]) => `<label class="vec-row"><span>${label}${keyed(f==='ortho_height'?'camera_height':`camera_${f}`)}</span><input type="number" id="camera-${f}" data-camera-lens="${f}" min="${min}" max="${max}" step="${step}" value="${shown.camera[f]}"></label>`).join('')}
       <p class="muted small">Looks along local −Z. Press Key to animate transform and lens. Editing a marked property keys the current frame. Render samples the same lens.</p></div>${constraintCard(o)}`
     return
   }
@@ -1413,8 +1414,14 @@ $('properties').addEventListener('change', (e) => {
     const property = `light_${field}`
     return run(trackOf(o,property) ? [{op:'set_keyframe',id:o.id,property,frame:Math.round(app.frame),value}] : [{op:'light_settings',id:o.id,lamp:{...o.light,[field]:value}}]).catch(() => {})
   }
+  if (target.id==='camera-projection') {
+    const lens={...o.camera}
+    if(target.value==='orthographic') lens.ortho_height ??= 4
+    else delete lens.ortho_height
+    return run([{op:'camera_settings',id:o.id,lens}]).catch(()=>{})
+  }
   if (target.dataset.cameraLens) {
-    const field=target.dataset.cameraLens, property=`camera_${field}`, value=Number(target.value)
+    const field=target.dataset.cameraLens, property=field==='ortho_height'?'camera_height':`camera_${field}`, value=Number(target.value)
     return run(trackOf(o,property) ? [{op:'set_keyframe',id:o.id,property,frame:Math.round(app.frame),value}] : [{op:'camera_settings',id:o.id,lens:{...o.camera,[field]:value}}]).catch(() => {})
   }
   if (target.id === 'p-name') return run([{ op: 'rename', id: o.id, name: target.value }]).catch(() => {})
@@ -2008,7 +2015,7 @@ window.__tatara = {
         status.done = true
       })
   },
-  debug: () => ({ sceneLightValues: [...viewport.nodes.values()].filter(n=>n.light).map(n=>({intensity:n.light.intensity,color:n.light.color.getHexString()})), sceneLights: [...viewport.nodes.values()].filter(n=>n.light?.visible).length, sceneCamera: viewport.sceneCameraId ?? null, renderCamera: { eye: viewport.camera.position.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov }, pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
+  debug: () => ({ sceneLightValues: [...viewport.nodes.values()].filter(n=>n.light).map(n=>({intensity:n.light.intensity,color:n.light.color.getHexString()})), sceneLights: [...viewport.nodes.values()].filter(n=>n.light?.visible).length, sceneCamera: viewport.sceneCameraId ?? null, renderCamera: { eye: viewport.camera.position.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov ?? 36, orthographic:Boolean(viewport.camera.isOrthographicCamera), ortho_height:viewport.effectiveOrthoHeight() }, pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
     pathSamples: preview.active ? preview.samples : null,
     finalSamples: finalRender.open ? finalRender.samples : null,
@@ -2016,6 +2023,8 @@ window.__tatara = {
     proposals: proposalTray.pending.length,
     previewing: app.previewing,
     worldBackground: Boolean(viewport.scene.background),
+    worldParallelBackground: Boolean(viewport.orthoBackground && viewport.scene.background === viewport.orthoBackground),
+    worldParallelBackgroundTexels: viewport.orthoBackground && viewport.scene.background === viewport.orthoBackground ? Array.from(viewport.orthoBackground.image.data) : null,
     bonesShown: [...viewport.nodes.values()].filter((n) => n.bones.visible).length,
     reachHandle: viewport.ikHandle.visible,
     triplanar: [...viewport.nodes.values()].filter((n) => 'TRIPLANAR' in n.mesh.material.defines).length,
