@@ -10,11 +10,15 @@ export const hasRig = (o) => Boolean(o.bones?.length)
 /** The bone keyed by a `bone` track, or null. */
 export const boneTrack = (o, name) => (o.tracks || []).find((t) => t.property === 'bone' && t.bone === name && t.keys.length) || null
 
+export const limitRotation = (bone, rotation) => bone.limits
+  ? rotation.map((v,k)=>Math.max(bone.limits.min[k],Math.min(bone.limits.max[k],v)))
+  : rotation
+
 /** Each bone's rotation at `frame`: keyed bones follow their tracks. */
 export function boneRotations(o, frame) {
   return o.bones.map((b) => {
     const t = boneTrack(o, b.name)
-    return t ? sampleTrack(t, frame) : b.rotation || [0, 0, 0]
+    return limitRotation(b, t ? sampleTrack(t, frame) : b.rotation || [0, 0, 0])
   })
 }
 
@@ -76,7 +80,7 @@ const parentIndex = (bones, k) => (bones[k].parent ? bones.findIndex((b) => b.na
  * cyclic coordinate descent in small steps. Returns new rotations.
  */
 export function reach(bones, rotations, end, chain, target) {
-  const rot = rotations.map((r) => r.slice())
+  const rot = rotations.map((r,i) => limitRotation(bones[i],r.slice()))
   const joints = [end]
   while (joints.length < Math.max(1, chain)) {
     const p = parentIndex(bones, joints[joints.length - 1])
@@ -102,7 +106,7 @@ export function reach(bones, rotations, end, chain, target) {
       const own = new THREE.Quaternion().setFromEuler(new THREE.Euler(rot[j][0], rot[j][1], rot[j][2], 'XYZ'))
       const next = parent.clone().invert().multiply(turn).multiply(parent).multiply(own).normalize()
       const e = new THREE.Euler().setFromQuaternion(next, 'XYZ')
-      rot[j] = [e.x, e.y, e.z]
+      rot[j] = limitRotation(bones[j], [e.x, e.y, e.z])
     }
   }
   return rot

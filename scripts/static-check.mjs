@@ -5,6 +5,7 @@
 
 import { checkCurves } from './curve-check.mjs'
 import { checkPoles } from './pole-check.mjs'
+import { checkJointLimits } from './limits-check.mjs'
 import { motionTip } from './gltf-motion-check.mjs'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -300,6 +301,7 @@ try {
   check(JSON.stringify(await page.evaluate(()=>fetch('/api/scene').then(r=>r.json())))===JSON.stringify(motionBefore),'WebAssembly motion export leaves the authored scene unchanged')
   await checkCurves(page,check)
   await checkPoles(page,check)
+  await checkJointLimits(page,check)
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

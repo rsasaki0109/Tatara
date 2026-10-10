@@ -380,6 +380,23 @@ pub fn inspect(ed: &Editor) -> Value {
         ed.scene(),
         &ed.scene().constraints,
     ));
+    for error in crate::rig::target_errors(ed.scene()) {
+        let distance = error["distance"].as_f64().unwrap_or(0.);
+        if distance > TOLERANCE {
+            let id = error["rig"].as_u64().unwrap_or(0);
+            let name = ed
+                .scene()
+                .objects
+                .iter()
+                .find(|o| o.id == id)
+                .map_or("Rig", |o| o.name.as_str());
+            issues.push(
+                json!({"kind":"ik_target","objects":[error["rig"],error["target"]],
+                "distance":distance,"limited":error["limited"],
+                "message":format!("{name}: IK target remains {} away",cm(distance))}),
+            );
+        }
+    }
     let summary = match issues.len() {
         0 => "no issues".to_string(),
         1 => "1 issue".to_string(),

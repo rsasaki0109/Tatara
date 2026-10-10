@@ -874,6 +874,13 @@ pub enum Command {
         bone: String,
         rotation: [f64; 3],
     },
+    /// Set or clear local Euler XYZ bounds, in radians, for posing and IK.
+    SetBoneLimits {
+        id: ObjRef,
+        bone: String,
+        #[serde(default)]
+        limits: Option<rig::JointLimits>,
+    },
     /// Inverse kinematics: bend `bone` and its parents (at most `chain`
     /// bones, default all) so the bone's tip reaches `target`, a world
     /// point. With `frame`, the turned bones are keyed at that frame (the
@@ -2424,6 +2431,19 @@ fn apply_command(
                 .ok_or_else(|| EngineError::new(format!("{name} has no bone {bone:?}")))?;
             b.rotation = *rotation;
         }
+        Command::SetBoneLimits { id, bone, limits } => {
+            let i = resolve(scene, id)?;
+            if let Some(limits) = limits {
+                limits.validate()?;
+            }
+            let o = &mut scene.objects[i];
+            let b = o
+                .bones
+                .iter_mut()
+                .find(|b| &b.name == bone)
+                .ok_or_else(|| EngineError::new(format!("{} has no bone {bone:?}", o.name)))?;
+            b.limits = limits.clone();
+        }
         Command::Reach {
             id,
             bone,
@@ -3023,6 +3043,7 @@ pub fn context_at_checked(
         "constraints": scene.constraints,
         "arrangements": scene.arrangements,
         "ik_targets": scene.ik_targets,
+        "ik_errors": rig::target_errors(sampled.as_ref().unwrap_or(scene)),
         "frame": frame,
         "bounds": bounds,
         "objects": objects,

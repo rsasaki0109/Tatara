@@ -1047,6 +1047,64 @@ mod tests {
     }
 
     #[test]
+    fn joint_limits_preview_accept_sample_and_undo() {
+        let mut ed = Editor::new();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[
+            {"op":"add","name":"Arm","primitive":{"kind":"cylinder","height":2}},
+            {"op":"rig","id":"Arm","chain":2},
+            {"op":"set_keyframe","id":"Arm","property":"bone","bone":"Bone 2","frame":1,"value":[0,0,-1],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Arm","property":"bone","bone":"Bone 2","frame":3,"value":[0,0,2]}
+        ]})).0,200);
+        let before = ed.scene().clone();
+        let (status, p) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Limit elbow","commands":[
+                {"op":"set_bone_limits","id":"Arm","bone":"Bone 2","limits":{"min":[0,0,0],"max":[0,0,1]}}
+            ]}),
+        );
+        assert_eq!(status, 200, "{p}");
+        let id = p["ids"][0].as_u64().unwrap();
+        let (status, preview) = call(&mut ed, "GET", &format!("/proposal?id={id}"), Value::Null);
+        assert_eq!(status, 200);
+        assert_eq!(
+            preview["scene"]["objects"][0]["bones"][1]["limits"]["max"],
+            json!([0.0, 0.0, 1.0])
+        );
+        let (_, frame) = call(&mut ed, "POST", "/frame?frame=3", preview["scene"].clone());
+        assert_eq!(
+            frame["objects"][0]["bones"][1]["rotation"],
+            json!([0.0, 0.0, 1.0])
+        );
+        assert_eq!(*ed.scene(), before);
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                &format!("/proposal/accept?id={id}"),
+                json!({})
+            )
+            .0,
+            200
+        );
+        for (f, expected) in [(1., 0.), (3., 1.)] {
+            let (status, frame) = call(&mut ed, "GET", &format!("/frame?frame={f}"), Value::Null);
+            assert_eq!(status, 200);
+            assert_eq!(frame["objects"][0]["bones"][1]["rotation"][2], expected);
+        }
+        let accepted = ed.scene().clone();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[
+            {"op":"move","id":"Arm","offset":[1,0,0]},
+            {"op":"set_bone_limits","id":"Arm","bone":"Bone 2","limits":{"min":[0,0,2],"max":[0,0,1]}}
+        ]})).0,422);
+        assert_eq!(*ed.scene(), accepted);
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        assert!(ed.scene().objects[0].bones[1].limits.is_none());
+        assert_eq!(ed.scene_at(3.).unwrap().objects[0].bones[1].rotation[2], 2.);
+    }
+
+    #[test]
     fn pole_target_frames_and_previews_preserve_authored_state() {
         let mut ed = Editor::new();
         let (status, _) = call(
