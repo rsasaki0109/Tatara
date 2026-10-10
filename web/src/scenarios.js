@@ -1668,4 +1668,25 @@ export const motionExport = {
   ]
 }
 
-export const SCENARIOS = { motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const animationCurves = {
+  title:'Shape the timing, keep the intent',
+  camera:{azimuth:28,elevation:20,distance:7,target:[1,1,0]},
+  setup:[
+    {op:'set_animation',start:1,end:48},
+    {op:'add',name:'Ball',primitive:{kind:'sphere',radius:.65},translation:[0,1,0],color:'#eb9566'},
+    {op:'set_keyframe',id:'Ball',property:'translation',frame:1,value:[0,1,0],interpolation:'linear'},
+    {op:'set_keyframe',id:'Ball',property:'translation',frame:25,value:[2,1,0]}
+  ],
+  steps:[
+    {pick:'Ball',after:500},{reveal:'#curve-editor',after:600},
+    {caption:'Shape the authored motion curve',hint:'same typed commands for humans and agents'},
+    {curveDrag:{frame:25,new_frame:37,value:3},ms:1800,after:800},
+    {caption:'One drag, one Undo',hint:'time and value move together'},
+    {click:'[data-action=undo]',after:800},{click:'[data-action=redo]',after:800},
+    {caption:'Preview the revised timing',hint:'constraints and IK still solve each frame'},
+    {scrub:37,ms:2200,after:700},{scrub:1,ms:1200,after:500},
+    {cursor:false},{wait:800}
+  ]
+}
+
+export const SCENARIOS = { animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

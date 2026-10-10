@@ -12,6 +12,7 @@ import { ProposalTray } from './proposals.js'
 let chatBusy = false
 import { Collaboration } from './collaboration.js'
 import { HistoryPanel } from './history.js'
+import { CurveEditor } from './curves.js'
 import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
@@ -270,6 +271,7 @@ const historyPanel = new HistoryPanel($('history'), {
   onError: (message) => toast(message, 'error'),
 })
 app.historyPanel = historyPanel
+const curveEditor = new CurveEditor({run:commands=>run(commands,'UI'),setFrame,onError:message=>toast(message,'error')})
 
 async function decideProposal(id, accept) {
   const p = proposalTray.pending.find((x) => x.id === id)
@@ -942,6 +944,7 @@ function render() {
   $('chat-review').disabled = chatBusy
   $('chat-status').textContent = app.ai || app.replaying ? $('chat-status').textContent : 'Set TATARA_AI_* on the server to enable'
   renderProperties(sel)
+  curveEditor.render(sel,app.frame,animRange(),app.playing)
   syncNodeEditor()
   syncUvEditor()
 }

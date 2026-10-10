@@ -1234,6 +1234,71 @@ mod tests {
     }
 
     #[test]
+    fn key_edits_preview_accept_undo_and_validate_atomically() {
+        let mut ed = Editor::new();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[
+            {"op":"add_camera","name":"Shot"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":1,"value":20,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":3,"value":60}
+        ]})).0,200);
+        let original = ed.scene().clone();
+        let edit = json!({"op":"edit_keyframe","id":"Shot","property":"camera_fov","frame":3,"new_frame":5,"value":80,"interpolation":"step"});
+        let (status, proposal) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Retime lens","commands":[edit]}),
+        );
+        assert_eq!(status, 200, "{proposal}");
+        let id = proposal["ids"][0].as_u64().unwrap();
+        let (status, preview) = call(&mut ed, "GET", &format!("/proposal?id={id}"), Value::Null);
+        assert_eq!(status, 200);
+        assert_eq!(
+            preview["scene"]["objects"][0]["tracks"][0]["keys"][1]["frame"],
+            5.0
+        );
+        assert_eq!(*ed.scene(), original);
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                &format!("/proposal/accept?id={id}"),
+                json!({})
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            path_job(&ed, "camera=Shot&frame=3&w=8&h=8")
+                .unwrap_or_else(|r| panic!("status {}", r.status))
+                .camera
+                .fov,
+            50.
+        );
+        let accepted = ed.scene().clone();
+        for command in [
+            json!({"op":"edit_keyframe","id":"Shot","property":"camera_fov","frame":5,"new_frame":1}),
+            json!({"op":"edit_keyframe","id":"Shot","property":"camera_fov","frame":5,"value":180}),
+        ] {
+            assert_eq!(
+                call(
+                    &mut ed,
+                    "POST",
+                    "/commands",
+                    json!({"commands":[{"op":"move","id":"Shot","offset":[1,0,0]},command]})
+                )
+                .0,
+                422
+            );
+            assert_eq!(*ed.scene(), accepted);
+        }
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        assert_eq!(ed.scene().objects, original.objects);
+        assert_eq!(call(&mut ed, "POST", "/redo", json!({})).0, 200);
+        assert_eq!(ed.scene().objects, accepted.objects);
+    }
+
+    #[test]
     fn optical_animation_reaches_named_camera_render_and_validates_atomically() {
         let mut ed = Editor::new();
         let commands = json!([

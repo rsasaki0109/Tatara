@@ -404,6 +404,64 @@ pub fn set_key(
     Ok(())
 }
 
+/// Edit one existing channel key, rejecting a destination-key collision.
+pub fn edit_key(
+    o: &mut Object,
+    property: Property,
+    bone: Option<&str>,
+    frame: f64,
+    new_frame: Option<f64>,
+    value: Option<&KeyValue>,
+    interpolation: Option<Interpolation>,
+) -> Result<(), EngineError> {
+    check_frame(frame)?;
+    validate_property(o, property)?;
+    if new_frame.is_none() && value.is_none() && interpolation.is_none() {
+        return Err(EngineError::new(
+            "edit_keyframe needs new_frame, value or interpolation",
+        ));
+    }
+    match (property, bone) {
+        (Property::Bone, Some(name)) if o.bones.iter().any(|b| b.name == name) => {}
+        (Property::Bone, _) => return Err(EngineError::new("bone keys need an existing `bone`")),
+        (_, Some(_)) => return Err(EngineError::new("only property `bone` takes `bone`")),
+        _ => {}
+    }
+    let track = o
+        .tracks
+        .iter_mut()
+        .find(|t| t.property == property && t.bone.as_deref() == bone)
+        .ok_or_else(|| EngineError::new("no matching animation channel"))?;
+    let index = track
+        .keys
+        .iter()
+        .position(|k| (k.frame - frame).abs() < 1e-9)
+        .ok_or_else(|| EngineError::new(format!("no keyframe at frame {frame}")))?;
+    let old = &track.keys[index];
+    let destination = check_frame(new_frame.unwrap_or(old.frame))?;
+    if track
+        .keys
+        .iter()
+        .enumerate()
+        .any(|(i, k)| i != index && (k.frame - destination).abs() < 1e-9)
+    {
+        return Err(EngineError::new(format!(
+            "a key already exists at frame {destination}; choose another frame"
+        )));
+    }
+    let key = Key {
+        frame: destination,
+        value: value
+            .map(|v| key_value(property, v))
+            .transpose()?
+            .unwrap_or_else(|| old.value.clone()),
+        interpolation: interpolation.unwrap_or(old.interpolation),
+    };
+    track.keys[index] = key;
+    track.keys.sort_by(|a, b| a.frame.total_cmp(&b.frame));
+    Ok(())
+}
+
 /// Remove keys at `frame` (from one property or all, and for bones from
 /// one bone or all); returns how many.
 pub fn delete_key(
