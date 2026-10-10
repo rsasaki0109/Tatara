@@ -310,9 +310,16 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         if let Some(lens) = &o.camera {
             let [x, y, z] = o.transform.rotation;
             let q = DQuat::from_euler(EulerRot::XYZ, x, y, z);
-            cameras.push(json!({ "name":o.name, "type":"perspective",
-                "perspective": {"yfov":lens.fov.to_radians(),"znear":0.01},
-                "extras":{"tataraLens":lens} }));
+            let mut camera = json!({"name":o.name,"extras":{"tataraLens":lens}});
+            if let Some(h) = lens.ortho_height {
+                camera["type"] = json!("orthographic");
+                camera["orthographic"] =
+                    json!({"xmag":h/2.0,"ymag":h/2.0,"znear":0.01,"zfar":1000.0});
+            } else {
+                camera["type"] = json!("perspective");
+                camera["perspective"] = json!({"yfov":lens.fov.to_radians(),"znear":0.01});
+            }
+            cameras.push(camera);
             node = nodes.len();
             nodes.push(json!({"name":o.name,"camera":cameras.len()-1,
                 "translation":o.transform.translation,"rotation":[q.x,q.y,q.z,q.w],
@@ -612,6 +619,7 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
                         Property::CameraFov
                             | Property::CameraAperture
                             | Property::CameraFocus
+                            | Property::CameraHeight
                             | Property::LightColor
                             | Property::LightIntensity
                     )
@@ -1254,20 +1262,44 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
         }
         if let Some(ci) = node["camera"].as_u64() {
             let camera = &doc["cameras"][ci as usize];
-            if camera["type"].as_str() != Some("perspective") {
-                return err("only perspective scene cameras are supported");
-            }
-            let fov = camera["perspective"]["yfov"]
-                .as_f64()
-                .ok_or_else(|| EngineError::new("camera yfov is missing"))?
-                .to_degrees();
             let mut lens: crate::camera::Lens = camera["extras"]
                 .get("tataraLens")
                 .map(|v| serde_json::from_value(v.clone()))
                 .transpose()
                 .map_err(|_| EngineError::new("invalid Tatara camera lens"))?
                 .unwrap_or_default();
-            lens.fov = fov;
+            match camera["type"].as_str() {
+                Some("perspective") => {
+                    lens.fov = camera["perspective"]["yfov"]
+                        .as_f64()
+                        .ok_or_else(|| EngineError::new("camera yfov is missing"))?
+                        .to_degrees();
+                    lens.ortho_height = None;
+                }
+                Some("orthographic") => {
+                    let o = &camera["orthographic"];
+                    let value = |k: &str| {
+                        o[k].as_f64()
+                            .ok_or_else(|| EngineError::new(format!("orthographic {k} is missing")))
+                    };
+                    let (x, y, n, f) = (
+                        value("xmag")?,
+                        value("ymag")?,
+                        value("znear")?,
+                        value("zfar")?,
+                    );
+                    if ![x, y, n, f].iter().all(|v| v.is_finite())
+                        || x <= 0.0
+                        || y <= 0.0
+                        || n < 0.0
+                        || f <= n
+                    {
+                        return err("invalid orthographic extent or clip planes");
+                    }
+                    lens.ortho_height = Some(y * 2.0);
+                }
+                _ => return err("unsupported glTF camera projection"),
+            }
             lens.validate()?;
             let (scale, q, t) = world.to_scale_rotation_translation();
             if !DMat4::from_scale_rotation_translation(scale, q, t).abs_diff_eq(world, 1e-6) {
@@ -1480,14 +1512,17 @@ fn import_optical_tracks(
     };
     let tracks: Vec<crate::anim::Track> = serde_json::from_value(raw.clone())
         .map_err(|_| EngineError::new("invalid Tatara optical tracks"))?;
-    if tracks.len() > if camera { 3 } else { 2 } {
+    if tracks.len() > if camera { 4 } else { 2 } {
         return err("too many optical tracks");
     }
     for (i, t) in tracks.iter().enumerate() {
         let valid = if camera {
             matches!(
                 t.property,
-                Property::CameraFov | Property::CameraAperture | Property::CameraFocus
+                Property::CameraFov
+                    | Property::CameraAperture
+                    | Property::CameraFocus
+                    | Property::CameraHeight
             )
         } else {
             matches!(t.property, Property::LightColor | Property::LightIntensity)
@@ -2052,5 +2087,41 @@ mod tests {
         assert!(import_optical_tracks(&bad, "Shot", true, &mut Vec::new()).is_err());
         bad["extras"]["tataraOpticalTracks"][0]["property"] = json!("light_intensity");
         assert!(import_optical_tracks(&bad, "Shot", true, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn orthographic_gltf_preserves_height_tracks_and_validates_projection_numbers() {
+        let mut ed = Editor::new();
+        ed.apply(&serde_json::from_value(json!({"commands":[{"op":"add_camera","name":"Drawing","lens":{"ortho_height":4}},
+            {"op":"set_keyframe","id":"Drawing","property":"camera_height","frame":1,"value":2,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Drawing","property":"camera_height","frame":3,"value":6}]})).unwrap()).unwrap();
+        let bytes = export_glb(&ed);
+        let (doc, _) = parse_glb(&bytes).unwrap();
+        assert_eq!(doc["cameras"][0]["type"], "orthographic");
+        assert_eq!(doc["cameras"][0]["orthographic"]["ymag"], 2.);
+        let commands = import(&bytes).unwrap();
+        let mut round = Editor::new();
+        round
+            .apply(&serde_json::from_value(json!({"commands":commands})).unwrap())
+            .unwrap();
+        assert_eq!(
+            round.scene().objects[0].camera,
+            ed.scene().objects[0].camera
+        );
+        assert_eq!(
+            round.scene().objects[0].tracks,
+            ed.scene().objects[0].tracks
+        );
+        for (key, value) in [
+            ("xmag", 0.),
+            ("ymag", 0.),
+            ("ymag", 10001.),
+            ("znear", -1.),
+            ("zfar", 0.),
+        ] {
+            let mut bad = doc.clone();
+            bad["cameras"][0]["orthographic"][key] = json!(value);
+            assert!(import(&serde_json::to_vec(&bad).unwrap()).is_err());
+        }
     }
 }

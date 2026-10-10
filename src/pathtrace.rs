@@ -36,6 +36,7 @@ pub struct Camera {
     pub height: usize,
     pub aperture: f64,
     pub focus: f64,
+    pub ortho_height: Option<f64>,
 }
 
 impl Camera {
@@ -50,6 +51,7 @@ impl Camera {
             height,
             aperture: 0.0,
             focus: 0.0,
+            ortho_height: None,
         }
     }
 }
@@ -486,11 +488,10 @@ impl Traced {
     pub(crate) fn features(&self, camera: &Camera) -> Vec<Feature> {
         let (w, h) = (camera.width, camera.height);
         let frame = Frame::new(camera);
-        let floor_visible = camera.eye.y > 0.0;
         rows(w, h, |x, y| {
             let d = frame.ray((x as f64 + 0.5) / w as f64, (y as f64 + 0.5) / h as f64);
-            let o = camera.eye;
-            let ground = (floor_visible && d.y < -1e-9)
+            let o = frame.origin((x as f64 + 0.5) / w as f64, (y as f64 + 0.5) / h as f64);
+            let ground = (o.y > 0.0 && d.y < -1e-9)
                 .then(|| -o.y / d.y)
                 .filter(|t| *t > EPS);
             match self.hit(o, d, ground.unwrap_or(f64::INFINITY)) {
@@ -938,8 +939,14 @@ impl Traced {
                 if d.y >= -1e-9 {
                     continue;
                 }
-                let t = -camera.eye.y / d.y;
-                let (g, a) = grid(camera.eye + d * t, t * frame.pixel);
+                let o = frame.origin((x as f64 + sx) / w as f64, (y as f64 + sy) / h as f64);
+                let t = -o.y / d.y;
+                let footprint = if frame.orthographic {
+                    frame.pixel
+                } else {
+                    t * frame.pixel
+                };
+                let (g, a) = grid(o + d * t, footprint);
                 colour += g * a * 0.25;
                 line += a * 0.25;
             }
@@ -1153,6 +1160,7 @@ struct Frame {
     forward: DVec3,
     right: DVec3,
     up: DVec3,
+    orthographic: bool,
     half_h: f64,
     half_w: f64,
     pixel: f64,
@@ -1163,7 +1171,9 @@ impl Frame {
         let forward = (c.target - c.eye).normalize_or(DVec3::NEG_Z);
         let right = forward.cross(c.up).normalize_or(DVec3::X);
         let up = right.cross(forward);
-        let half_h = (c.fov.to_radians() / 2.0).tan();
+        let half_h = c
+            .ortho_height
+            .map_or_else(|| (c.fov.to_radians() / 2.0).tan(), |h| h / 2.0);
         let aspect = c.width as f64 / c.height.max(1) as f64;
         let focus = if c.focus > 0.0 {
             c.focus
@@ -1177,6 +1187,7 @@ impl Frame {
             forward,
             right,
             up,
+            orthographic: c.ortho_height.is_some(),
             half_h,
             half_w: half_h * aspect,
             pixel: 2.0 * half_h / c.height.max(1) as f64,
@@ -1187,18 +1198,32 @@ impl Frame {
     /// from a point on the lens towards where that ray is in focus.
     fn shoot(&self, x: f64, y: f64, rng: &mut Rng) -> (DVec3, DVec3) {
         let d = self.ray(x, y);
+        let origin = self.origin(x, y);
         if self.aperture <= 0.0 {
-            return (self.eye, d);
+            return (origin, d);
         }
-        let focal = self.eye + d * (self.focus / d.dot(self.forward).max(1e-6));
+        let focal = origin + d * (self.focus / d.dot(self.forward).max(1e-6));
         let r = self.aperture * rng.next().sqrt();
         let phi = std::f64::consts::TAU * rng.next();
-        let o = self.eye + self.right * (r * phi.cos()) + self.up * (r * phi.sin());
+        let o = origin + self.right * (r * phi.cos()) + self.up * (r * phi.sin());
         (o, (focal - o).normalize())
     }
 
     /// The ray through (x, y) in 0..1 from the top left.
+    fn origin(&self, x: f64, y: f64) -> DVec3 {
+        if self.orthographic {
+            self.eye
+                + self.right * ((2.0 * x - 1.0) * self.half_w)
+                + self.up * ((1.0 - 2.0 * y) * self.half_h)
+        } else {
+            self.eye
+        }
+    }
+
     fn ray(&self, x: f64, y: f64) -> DVec3 {
+        if self.orthographic {
+            return self.forward;
+        }
         (self.forward
             + self.right * ((2.0 * x - 1.0) * self.half_w)
             + self.up * ((1.0 - 2.0 * y) * self.half_h))
@@ -1862,5 +1887,90 @@ mod tests {
         let sky = corner(true);
         assert_eq!(sky[3], 1.0);
         assert!(sky[0] > sky[2], "a warm sunset sky: {sky:?}");
+    }
+    #[test]
+    fn orthographic_rays_are_parallel_with_world_space_origins_and_roll() {
+        let mut c = Camera::new(DVec3::new(0., 0., 5.), DVec3::ZERO, 36., 160, 80);
+        c.ortho_height = Some(2.);
+        let f = Frame::new(&c);
+        assert!(f.ray(0., 0.).abs_diff_eq(f.ray(1., 1.), 1e-12));
+        assert!(f.origin(0., 0.).abs_diff_eq(DVec3::new(-2., 1., 5.), 1e-12));
+        assert!(f.origin(1., 1.).abs_diff_eq(DVec3::new(2., -1., 5.), 1e-12));
+        assert!((f.pixel - 0.025).abs() < 1e-12);
+        c.up = DVec3::X;
+        let rolled = Frame::new(&c);
+        assert!(
+            rolled
+                .origin(0.5, 0.)
+                .abs_diff_eq(DVec3::new(1., 0., 5.), 1e-12)
+        );
+        c.ortho_height = None;
+        let perspective = Frame::new(&c);
+        assert_eq!(perspective.origin(0., 0.), c.eye);
+        assert!(
+            !perspective
+                .ray(0., 0.)
+                .abs_diff_eq(perspective.ray(1., 1.), 1e-9)
+        );
+    }
+
+    #[test]
+    fn orthographic_depth_of_field_rays_meet_the_same_focal_plane_point() {
+        let mut c = Camera::new(DVec3::new(0., 0., 5.), DVec3::ZERO, 36., 160, 80);
+        c.ortho_height = Some(2.);
+        c.aperture = 0.1;
+        c.focus = 5.;
+        let f = Frame::new(&c);
+        let target = f.origin(0.25, 0.75) + f.forward * c.focus;
+        let mut rng = Rng::new(77);
+        for _ in 0..16 {
+            let (o, d) = f.shoot(0.25, 0.75, &mut rng);
+            let hit = o + d * (c.focus / d.dot(f.forward));
+            assert!(hit.abs_diff_eq(target, 1e-9));
+        }
+    }
+
+    #[test]
+    fn orthographic_primary_hits_and_denoiser_features_keep_equal_size_at_different_depths() {
+        let ed = editor(serde_json::json!([
+            {"op":"add","name":"Near","primitive":{"kind":"cube"},"translation":[-0.75,1,0],"scale":[0.5,0.5,0.5]},
+            {"op":"add","name":"Far","primitive":{"kind":"cube"},"translation":[0.75,1,-3],"scale":[0.5,0.5,0.5]}
+        ]));
+        let t = traced(&ed, None).unwrap();
+        let mut c = Camera::new(DVec3::new(0., 1., 5.), DVec3::new(0., 1., 0.), 36., 128, 64);
+        c.ortho_height = Some(2.);
+        let features = t.features(&c);
+        let near = features.iter().filter(|f| f.id == 0).count();
+        let far = features.iter().filter(|f| f.id == 1).count();
+        assert!(near > 100);
+        assert_eq!(near, far);
+        let pixels = t.render(&c, 1, 1);
+        let sums = |right: bool| {
+            pixels
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| (*i % 128 >= 64) == right)
+                .map(|(_, p)| p[3] as f64)
+                .sum::<f64>()
+        };
+        assert!(sums(false) > 200.);
+        assert!((sums(false) - sums(true)).abs() < 16.);
+        c.ortho_height = None;
+        let f = t.features(&c);
+        assert!(f.iter().filter(|f| f.id == 0).count() > f.iter().filter(|f| f.id == 1).count());
+    }
+
+    #[test]
+    fn projection_and_extent_changes_restart_progressive_rendering() {
+        let ed = editor(serde_json::json!([{"op":"add","primitive":{"kind":"cube"}}]));
+        let t = traced(&ed, None).unwrap();
+        let mut c = camera(8, 8);
+        assert_eq!(t.pass(&c, 1).0, 1);
+        assert_eq!(t.pass(&c, 1).0, 2);
+        c.ortho_height = Some(4.);
+        assert_eq!(t.pass(&c, 1).0, 1);
+        assert_eq!(t.pass(&c, 1).0, 2);
+        c.ortho_height = Some(2.);
+        assert_eq!(t.pass(&c, 1).0, 1);
     }
 }

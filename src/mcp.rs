@@ -49,7 +49,7 @@ pub fn tools() -> Value {
             .expect("schema serializes");
     json!([
         { "name": "get_presence", "description": "Read participants in this local shared session: their selections, cursors, camera and advisory editing locks. Presence expires after 30 seconds without a heartbeat.", "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false } },
-        { "name": "update_presence", "description": "Join or heartbeat a shared session with actor {id,name}, optional selection, cursor (0..1), camera {eye,target,fov} and editing object IDs. Heartbeat every 5-10 seconds; editing is advisory, not an exclusive lock. Pass the same actor to apply_commands to attribute edits, and expected_revision to prevent lost updates.", "inputSchema": presence_schema },
+        { "name": "update_presence", "description": "Join or heartbeat a shared session with actor {id,name}, optional selection, cursor (0..1), camera {eye,target,fov, optional up/aspect/ortho_height} and editing object IDs. Heartbeat every 5-10 seconds; editing is advisory, not an exclusive lock. Pass the same actor to apply_commands to attribute edits, and expected_revision to prevent lost updates.", "inputSchema": presence_schema },
         { "name": "leave_presence", "description": "Leave the session and release your advisory editing locks.", "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"], "additionalProperties": false } },
         {
             "name": "get_scene",
@@ -109,7 +109,9 @@ pub fn tools() -> Value {
                     "view": { "type": "string", "description": "front, back, left, right, top, bottom, iso or \"azimuth:elevation\"; ignored with eye/target" },
                     "eye": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Camera position (world, metres)" },
                     "target": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Point the camera looks at" },
+                    "up": {"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3,"description":"Free-view camera up vector, for roll"},
                     "size": { "type": "array", "items": { "type": "integer", "minimum": 8, "maximum": 4096 }, "minItems": 2, "maxItems": 2, "description": "[width, height] in pixels, default [1280, 720]" },
+                    "ortho_height": {"type":"number","minimum":0.001,"maximum":10000,"description":"Orthographic vertical view height in metres; omit fov"},
                     "fov": { "type": "number", "minimum": 1, "maximum": 170, "description": "Vertical field of view in degrees (default 36)" },
                     "samples": { "type": "integer", "minimum": 1, "maximum": 4096, "description": "Samples per pixel (default 128)" },
                     "aperture": { "type": "number", "minimum": 0, "maximum": 1, "description": "Lens radius in metres for depth of field (0: everything sharp)" },
@@ -347,7 +349,10 @@ async fn image_tool(http: &reqwest::Client, base: &str, args: &Value) -> Value {
     }
     let triple = |v: &Value| -> Option<String> {
         let a = v.as_array()?;
-        let n: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+        if a.len() != 3 {
+            return None;
+        }
+        let n: Vec<f64> = a.iter().map(Value::as_f64).collect::<Option<Vec<_>>>()?;
         (n.len() == 3).then(|| format!("{},{},{}", n[0], n[1], n[2]))
     };
     let size = args["size"]
@@ -387,7 +392,19 @@ async fn image_tool(http: &reqwest::Client, base: &str, args: &Value) -> Value {
         }
         _ => return tool_result("give both eye and target, or neither".into(), true),
     }
-    for key in ["fov", "aperture", "focus", "frame"] {
+    if args.get("up").is_some() {
+        if args.get("camera").is_some() {
+            return tool_result(
+                "change the scene camera rotation to change its up vector".into(),
+                true,
+            );
+        }
+        let Some(up) = triple(&args["up"]) else {
+            return tool_result("up must be [x,y,z]".into(), true);
+        };
+        query.push(("up", up));
+    }
+    for key in ["fov", "aperture", "focus", "ortho_height", "frame"] {
         if let Some(v) = args[key].as_f64() {
             query.push((key, v.to_string()));
         }

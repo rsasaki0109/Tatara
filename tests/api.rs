@@ -671,6 +671,25 @@ async fn mcp_bridge_edits_the_shared_scene() {
     assert_ne!(r["result"]["isError"], true, "{r}");
     assert!(std::fs::read(&output).unwrap().starts_with(b"\x89PNG"));
     std::fs::remove_file(output).unwrap();
+    let r=call(json!({"jsonrpc":"2.0","id":81,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"camera_settings","id":"MCP Shot","lens":{"ortho_height":4}},{"op":"set_keyframe","id":"MCP Shot","property":"camera_height","frame":1,"value":2,"interpolation":"linear"},{"op":"set_keyframe","id":"MCP Shot","property":"camera_height","frame":3,"value":6}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":82,"method":"tools/call","params":{"name":"get_scene","arguments":{"frame":2}}})).await;
+    let scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        scene["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["name"] == "MCP Shot")
+            .unwrap()["camera"]["ortho_height"],
+        4.
+    );
+    let output = std::env::temp_dir().join(format!("tatara-ortho-{}.png", std::process::id()));
+    let r=call(json!({"jsonrpc":"2.0","id":83,"method":"tools/call","params":{"name":"render_image","arguments":{"camera":"MCP Shot","frame":2,"size":[8,8],"samples":1,"path":output}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\x89PNG"));
+    std::fs::remove_file(output).unwrap();
     child.kill().await.unwrap();
 }
 

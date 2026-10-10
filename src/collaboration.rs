@@ -43,6 +43,12 @@ pub struct Camera {
     pub eye: [f64; 3],
     pub target: [f64; 3],
     pub fov: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ortho_height: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -83,7 +89,22 @@ impl Presence {
                 .any(|v| !v.is_finite() || v.abs() > 1e6)
                 || !c.fov.is_finite()
                 || !(1.0..=179.0).contains(&c.fov)
-                || c.eye == c.target)
+                || c.eye == c.target
+                || c.ortho_height
+                    .is_some_and(|h| !h.is_finite() || !(0.001..=1e4).contains(&h))
+                || c.aspect
+                    .is_some_and(|a| !a.is_finite() || !(0.01..=100.0).contains(&a))
+                || c.up.is_some_and(|u| {
+                    let up = glam::DVec3::from(u);
+                    let forward = glam::DVec3::from(c.target) - glam::DVec3::from(c.eye);
+                    !up.is_finite()
+                        || up.length() < 1e-9
+                        || forward
+                            .normalize_or_zero()
+                            .cross(up.normalize_or_zero())
+                            .length()
+                            < 1e-9
+                }))
         {
             return Err(EngineError::new(
                 "camera needs finite, distinct eye/target positions and fov 1-179",
@@ -194,7 +215,36 @@ mod tests {
             eye: [0.0; 3],
             target: [0.0; 3],
             fov: 36.0,
+            ortho_height: None,
+            up: None,
+            aspect: None,
         });
         assert!(r.update(bad, 1).is_err());
+    }
+
+    #[test]
+    fn presence_retains_orthographic_projection_and_roll_and_rejects_invalid_metadata() {
+        let mut p = peer("ortho");
+        p.camera = Some(Camera {
+            eye: [0., 1., 4.],
+            target: [0., 1., 0.],
+            fov: 36.,
+            ortho_height: Some(3.),
+            up: Some([1., 0., 0.]),
+            aspect: Some(2.),
+        });
+        assert!(p.validate().is_ok());
+        let encoded = serde_json::to_value(&p).unwrap();
+        assert_eq!(encoded["camera"]["ortho_height"], 3.);
+        assert_eq!(serde_json::from_value::<Presence>(encoded).unwrap(), p);
+        let mut bad = p.clone();
+        bad.camera.as_mut().unwrap().ortho_height = Some(0.);
+        assert!(bad.validate().is_err());
+        bad = p.clone();
+        bad.camera.as_mut().unwrap().up = Some([0., 0., 1.]);
+        assert!(bad.validate().is_err());
+        bad = p;
+        bad.camera.as_mut().unwrap().aspect = Some(f64::INFINITY);
+        assert!(bad.validate().is_err());
     }
 }
