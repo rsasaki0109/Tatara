@@ -90,10 +90,10 @@ pub fn tools() -> Value {
         },
         {
             "name": "export_gltf",
-            "description": "Write the shared scene, with modifiers applied, to a local binary glTF (.glb) file.",
+            "description": "Write the shared scene, with modifiers applied, to a local binary glTF (.glb) file. Optional frames [start, end] bake constraint-resolved transforms and IK bone poses into standard animation channels (at most 240 samples, including fractional keys). This does not edit the scene or bake material/optical properties.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "path": { "type": "string", "description": "Destination path ending in .glb" } },
+                "properties": { "path": { "type": "string", "description": "Destination path ending in .glb" }, "frames": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "Inclusive frame range for solved motion baking" } },
                 "required": ["path"],
                 "additionalProperties": false
             }
@@ -258,7 +258,20 @@ async fn file_tool(http: &reqwest::Client, base: &str, name: &str, args: &Value)
     if !has_extension(path, &["glb"]) {
         return tool_result("path must end in .glb".into(), true);
     }
-    let bytes = match http.get(format!("{base}/api/export/glb")).send().await {
+    let mut request = http.get(format!("{base}/api/export/glb"));
+    if let Some(frames) = args.get("frames") {
+        let Some(range) = frames.as_array().filter(|r| r.len() == 2) else {
+            return tool_result("frames must be [start, end]".into(), true);
+        };
+        let (Some(a), Some(b)) = (range[0].as_f64(), range[1].as_f64()) else {
+            return tool_result("frames must contain two numbers".into(), true);
+        };
+        request = request.query(&[("frames", format!("{a}-{b}"))]);
+    }
+    let bytes = match request.send().await {
+        Ok(resp) if !resp.status().is_success() => {
+            return tool_result(resp.text().await.unwrap_or_default(), true);
+        }
         Ok(resp) => match resp.bytes().await {
             Ok(b) => b,
             Err(e) => return unreachable(e),

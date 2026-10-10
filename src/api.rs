@@ -967,7 +967,15 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
         ("GET", "/export/glb") => Ok(Response {
             status: 200,
             content_type: "model/gltf-binary",
-            body: crate::gltf::export_glb(ed),
+            body: if let Some(range) = query_param(query, "frames") {
+                let (a, b) = range
+                    .split_once('-')
+                    .and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))
+                    .ok_or_else(|| Response::error(400, "frames must be start-end"))?;
+                crate::gltf::export_glb_frames(ed, a, b)?
+            } else {
+                crate::gltf::export_glb(ed)
+            },
             changed: None,
             disposition: Some("attachment; filename=\"scene.glb\""),
         }),
@@ -1003,6 +1011,41 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn motion_glb_is_bounded_and_read_only() {
+        let mut ed = Editor::new();
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[
+                {"op":"add","name":"Anchor","primitive":{"kind":"cube"}},
+                {"op":"add","name":"Follower","primitive":{"kind":"cube"},"translation":[2,0,0]},
+                {"op":"constrain","id":"Follower","align":"y","from":"Anchor"},
+                {"op":"set_keyframe","id":"Anchor","property":"translation","frame":1,"value":[0,0,0]},
+                {"op":"set_keyframe","id":"Anchor","property":"translation","frame":3,"value":[0,2,0]}
+            ]}),
+        );
+        assert_eq!(status, 200);
+        let rest = serde_json::to_value(ed.scene()).unwrap();
+        let response = handle(&mut ed, "GET", "/export/glb?frames=1-3", &[], false);
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "model/gltf-binary");
+        assert_eq!(response.changed, None);
+        assert_eq!(
+            response.body,
+            crate::gltf::export_glb_frames(&ed, 1.0, 3.0).unwrap()
+        );
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), rest);
+        for query in ["frames=3-1", "frames=0-240", "frames=nan-3", "frames=bad"] {
+            let response = handle(&mut ed, "GET", &format!("/export/glb?{query}"), &[], false);
+            assert!(response.status >= 400);
+        }
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), rest);
+        ed.undo().unwrap();
+        assert!(ed.scene().objects.is_empty(), "export adds no undo step");
+    }
+
     #[test]
     fn persistent_ik_packets_previews_and_rendering_share_the_same_pose() {
         let mut ed = Editor::new();
