@@ -980,6 +980,27 @@ try {
   await shot.click('[data-look-camera]');await until(shot, () => window.__tatara.debug().renderCamera.orthographic)
   await shot.keyboard.press('Escape');await until(shot, () => window.__tatara.debug().sceneCamera==null && !window.__tatara.debug().renderCamera.orthographic)
   check(true,'Return to orbit and Escape restore the saved perspective orbit after an orthographic camera')
+  await shot.click('[data-action=addLight]');await until(shot,()=>document.querySelector('#light-kind')?.value==='point')
+  await shot.selectOption('#light-kind','spot');await until(shot,()=>window.__tatara.debug().sceneLightValues.some(l=>l.kind==='spot'))
+  check(await shot.isVisible('#light-inner_cone') && await shot.isVisible('#light-outer_cone'),'the inspector creates a production SpotLight with editable cones')
+  await shot.fill('#light-inner_cone','20');await shot.locator('#light-inner_cone').blur();await until(shot,()=>window.__tatara.debug().pending===0)
+  await shot.fill('#light-outer_cone','50');await shot.locator('#light-outer_cone').blur();await until(shot,()=>window.__tatara.debug().pending===0)
+  await shot.fill('#light-range','8');await shot.locator('#light-range').blur()
+  await until(shot,()=>window.__tatara.debug().sceneLightValues.some(l=>l.kind==='spot' && Math.abs(l.angle-50*Math.PI/180)<1e-6 && l.distance===8))
+  const spotValue=await shot.evaluate(()=>window.__tatara.debug().sceneLightValues.find(l=>l.kind==='spot'))
+  check(Math.abs(spotValue.penumbra-.6)<1e-6 && spotValue.target[0]===1 && spotValue.target[1]===1.7 && spotValue.target[2]===0 && await shot.inputValue('#light-inner_cone')==='20' && await shot.inputValue('#light-outer_cone')==='50','spot cones, range and negative-Z target reach the viewport light')
+  const attenuation=await shot.evaluate(()=>{const o=Math.cos(.8),i=Math.cos(.2);return[o-.01,o,(o+i)/2,i,i+.01].map(a=>window.__tatara.spotAttenuationProbe(o,i,a)[0])})
+  const narrow=await shot.evaluate(()=>{const o=Math.cos(.04);return window.__tatara.spotAttenuationProbe(o,1,(o+1)/2)[0]})
+  check(attenuation[0]===0 && attenuation[1]===0 && Math.abs(attenuation[2]-64)<=1 && attenuation[3]===255 && attenuation[4]===255 && Math.abs(narrow-41)<=1,'the actual production GPU shader follows the KHR squared spot ramp and narrow-cone denominator')
+  await shot.click('[data-action=undo]');await until(shot,()=>document.querySelector('#light-range')?.value==='')
+  check(true,'one Undo restores unlimited spot range')
+  const invalidSpot=await shot.evaluate(async()=>{
+    const before=await(await fetch('/api/scene')).json(),o=before.objects.filter(o=>o.light).at(-1)
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[{op:'light_settings',id:o.id,lamp:{...o.light,inner_cone:o.light.outer_cone}}]})})
+    return{status:r.status,unchanged:JSON.stringify(before)===JSON.stringify(await(await fetch('/api/scene')).json())}
+  })
+  check(invalidSpot.status===422 && invalidSpot.unchanged,'equal spot cones are rejected atomically')
+
   await shot.close()
 
   // Every scenario must finish without errors (the MCP one falls back to HTTP).

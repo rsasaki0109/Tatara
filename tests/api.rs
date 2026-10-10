@@ -690,6 +690,27 @@ async fn mcp_bridge_edits_the_shared_scene() {
     assert_ne!(r["result"]["isError"], true, "{r}");
     assert!(std::fs::read(&output).unwrap().starts_with(b"\x89PNG"));
     std::fs::remove_file(output).unwrap();
+    let r=call(json!({"jsonrpc":"2.0","id":84,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"light_settings","id":"MCP Key","lamp":{"kind":"spot","inner_cone":0.2,"outer_cone":0.8,"range":8,"intensity":40}}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":85,"method":"tools/call","params":{"name":"get_scene","arguments":{}}})).await;
+    let scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let spot = scene["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "MCP Key")
+        .unwrap();
+    assert_eq!(spot["light"]["kind"], "spot");
+    assert_eq!(spot["light"]["range"], 8.);
+    let r=call(json!({"jsonrpc":"2.0","id":86,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"light_settings","id":"MCP Key","lamp":{"kind":"spot","inner_cone":0.8,"outer_cone":0.8}}]}}})).await;
+    assert_eq!(r["result"]["isError"], true);
+    let output = std::env::temp_dir().join(format!("tatara-spot-{}.png", std::process::id()));
+    let r=call(json!({"jsonrpc":"2.0","id":87,"method":"tools/call","params":{"name":"render_image","arguments":{"camera":"MCP Shot","size":[8,8],"samples":1,"path":output}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\x89PNG"));
+    std::fs::remove_file(output).unwrap();
+
     child.kill().await.unwrap();
 }
 

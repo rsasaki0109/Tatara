@@ -237,6 +237,18 @@ try {
   check(orthographic.context.objects[0].camera.ortho_height===4,'WebAssembly samples orthographic world-space view height')
   check(orthographic.status===200 && orthographic.signature.join(',')==='137,80,78,71','WebAssembly renders the named orthographic projection')
   check(orthographic.bad===422 && orthographic.unchanged,'WebAssembly rejects invalid orthographic height atomically')
+  const spotlight=await page.evaluate(async()=>{
+    const post=commands=>fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands})})
+    await post([{op:'clear'},{op:'add_light',name:'Spot',translation:[0,2,3],rotation:[-.4,0,0],lamp:{kind:'spot',inner_cone:.2,outer_cone:.8,range:8,intensity:80}},{op:'add',primitive:{kind:'cube'}}])
+    const before=await(await fetch('/api/scene')).json()
+    const image=await fetch('/api/render/image?view=front&w=8&h=8&samples=1'),signature=Array.from(new Uint8Array(await image.arrayBuffer()).slice(0,4))
+    const bad=await post([{op:'light_settings',id:'Spot',lamp:{kind:'spot',inner_cone:.8,outer_cone:.8}}])
+    return{before,status:image.status,signature,bad:bad.status,unchanged:JSON.stringify(before)===JSON.stringify(await(await fetch('/api/scene')).json())}
+  })
+  check(spotlight.before.objects[0].light.kind==='spot' && spotlight.before.objects[0].light.range===8,'WebAssembly retains spot cones and finite range')
+  check(spotlight.status===200 && spotlight.signature.join(',')==='137,80,78,71','WebAssembly renders spot lights without a server')
+  check(spotlight.bad===422 && spotlight.unchanged,'WebAssembly rejects equal spot cones atomically')
+
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

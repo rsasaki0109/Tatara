@@ -1437,6 +1437,26 @@ export const rebase = {
 }
 
 
+export const spotlight = {
+  title:'Direct the light',width:800,gizmo:false,
+  setup:[
+    {op:'world',sky:'studio',strength:.08},
+    {op:'add',name:'Subject',primitive:{kind:'sphere',radius:.55},translation:[0,.6,0],color:'#ae7551'},
+    {op:'add',name:'Neighbour',primitive:{kind:'cube'},translation:[1.6,.5,0],color:'#657e92'},
+    {op:'add_light',name:'Stage light',translation:[0,3,2],rotation:[-.98,0,0],lamp:{intensity:120,color:'#ffe8c4'}},
+  ],
+  camera:{azimuth:20,elevation:22,distance:7,target:[.5,.6,0]},
+  steps:[
+    {pick:'Stage light',after:700},{caption:'Point light spreads in every direction',hint:'editable light · shared command path'},
+    {choose:'#light-kind',value:'Spot',after:900},
+    {into:'#light-inner_cone',type:'15',after:500},{into:'#light-outer_cone',type:'30',after:900},
+    {caption:'Focus on the subject',hint:'local −Z · squared angular falloff'},
+    {into:'#light-range',type:'8',after:900},{wait:1000},
+    {click:'[data-action=undo]',after:700},{click:'[data-action=undo]',after:700},{click:'[data-action=undo]',after:700},{click:'[data-action=undo]',after:900},
+    {caption:'Undo restores the point light',hint:'cones, range and type remain reviewable'},{cursor:false},{wait:900},
+  ],
+}
+
 export const orthographicCamera = {
   title:'Equal size at different depths',width:800,gizmo:false,
   setup:[
@@ -1588,4 +1608,4 @@ export const sceneLight = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

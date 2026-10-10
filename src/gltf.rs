@@ -331,8 +331,19 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
             let kind = match lamp.kind {
                 crate::light::Kind::Point => "point",
                 crate::light::Kind::Sun => "directional",
+                crate::light::Kind::Spot => "spot",
             };
-            lights.push(json!({"name":o.name,"type":kind,"color":hex_to_linear(&lamp.color),"intensity":lamp.intensity}));
+            let mut value = json!({"name":o.name,"type":kind,"color":hex_to_linear(&lamp.color),"intensity":lamp.intensity});
+            if lamp.kind == crate::light::Kind::Spot {
+                value["spot"] =
+                    json!({"innerConeAngle":lamp.inner_cone,"outerConeAngle":lamp.outer_cone});
+            }
+            if lamp.kind != crate::light::Kind::Sun
+                && let Some(range) = lamp.range
+            {
+                value["range"] = json!(range);
+            }
+            lights.push(value);
             node = nodes.len();
             nodes.push(json!({"name":o.name,"translation":o.transform.translation,"rotation":[q.x,q.y,q.z,q.w],"scale":o.transform.scale,
                 "extensions":{"KHR_lights_punctual":{"light":lights.len()-1}}}));
@@ -1327,16 +1338,44 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
             let kind = match light["type"].as_str() {
                 Some("point") => crate::light::Kind::Point,
                 Some("directional") => crate::light::Kind::Sun,
-                _ => return err("only point and directional glTF lights are supported"),
+                Some("spot") => crate::light::Kind::Spot,
+                _ => return err("only point, spot and directional glTF lights are supported"),
             };
             let rgb = light["color"]
                 .as_array()
                 .map(|v| [0, 1, 2].map(|i| v.get(i).and_then(Value::as_f64).unwrap_or(1.)))
                 .unwrap_or([1.; 3]);
+            let scalar = |value: Option<&Value>, default: f64| -> Result<f64, EngineError> {
+                match value {
+                    None => Ok(default),
+                    Some(value) => value
+                        .as_f64()
+                        .ok_or_else(|| EngineError::new("glTF light settings must be numbers")),
+                }
+            };
+            let range = if light.get("range").is_some() {
+                Some(
+                    light["range"]
+                        .as_f64()
+                        .ok_or_else(|| EngineError::new("glTF light range must be a number"))?,
+                )
+            } else {
+                None
+            };
+            if kind == crate::light::Kind::Spot && light.get("spot").is_some_and(|v| !v.is_object())
+            {
+                return err("glTF spot settings must be an object");
+            }
             let lamp = crate::light::Lamp {
                 kind,
                 color: linear_to_hex(rgb),
-                intensity: light["intensity"].as_f64().unwrap_or(1.),
+                intensity: scalar(light.get("intensity"), 1.)?,
+                inner_cone: scalar(light["spot"].get("innerConeAngle"), 0.)?,
+                outer_cone: scalar(
+                    light["spot"].get("outerConeAngle"),
+                    std::f64::consts::FRAC_PI_4,
+                )?,
+                range,
             };
             lamp.validate()?;
             let (scale, q, t) = world.to_scale_rotation_translation();
@@ -2121,6 +2160,57 @@ mod tests {
         ] {
             let mut bad = doc.clone();
             bad["cameras"][0]["orthographic"][key] = json!(value);
+            assert!(import(&serde_json::to_vec(&bad).unwrap()).is_err());
+        }
+    }
+    #[test]
+    fn spot_gltf_round_trips_cones_range_rotation_and_optical_tracks() {
+        let mut ed = Editor::new();
+        ed.apply(&serde_json::from_value(json!({"commands":[{"op":"add_light","name":"Spot","translation":[1,2,3],"rotation":[0.2,0.3,0.4],"lamp":{"kind":"spot","inner_cone":0.2,"outer_cone":0.7,"range":12,"color":"#ff6633","intensity":80}},
+            {"op":"set_keyframe","id":"Spot","property":"light_intensity","frame":1,"value":10,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Spot","property":"light_intensity","frame":3,"value":90},
+            {"op":"add_light","name":"Fill","lamp":{"range":8}},
+            {"op":"add_light","name":"Sun","lamp":{"kind":"sun","range":5}}]})).unwrap()).unwrap();
+        let bytes = export_glb(&ed);
+        let (doc, _) = parse_glb(&bytes).unwrap();
+        let lights = &doc["extensions"]["KHR_lights_punctual"]["lights"];
+        assert_eq!(lights[0]["type"], "spot");
+        assert_eq!(lights[0]["spot"]["innerConeAngle"], 0.2);
+        assert_eq!(lights[0]["spot"]["outerConeAngle"], 0.7);
+        assert_eq!(lights[0]["range"], 12.);
+        assert_eq!(lights[1]["range"], 8.);
+        assert!(lights[2].get("range").is_none());
+        let mut round = Editor::new();
+        round
+            .apply(&serde_json::from_value(json!({"commands":import(&bytes).unwrap()})).unwrap())
+            .unwrap();
+        assert_eq!(round.scene().objects[0].light, ed.scene().objects[0].light);
+        assert_eq!(
+            round.scene().objects[0].tracks,
+            ed.scene().objects[0].tracks
+        );
+        for i in 0..3 {
+            assert!(
+                (round.scene().objects[0].transform.rotation[i]
+                    - ed.scene().objects[0].transform.rotation[i])
+                    .abs()
+                    < 1e-9
+            );
+        }
+        for (key, value) in [
+            ("innerConeAngle", json!(0.7)),
+            ("innerConeAngle", json!(-0.1)),
+            ("outerConeAngle", json!(1.6)),
+            ("outerConeAngle", json!("bad")),
+            ("outerConeAngle", json!(null)),
+        ] {
+            let mut bad = doc.clone();
+            bad["extensions"]["KHR_lights_punctual"]["lights"][0]["spot"][key] = value;
+            assert!(import(&serde_json::to_vec(&bad).unwrap()).is_err());
+        }
+        for value in [json!(0), json!(-1), json!("bad"), json!(null)] {
+            let mut bad = doc.clone();
+            bad["extensions"]["KHR_lights_punctual"]["lights"][0]["range"] = value;
             assert!(import(&serde_json::to_vec(&bad).unwrap()).is_err());
         }
     }
