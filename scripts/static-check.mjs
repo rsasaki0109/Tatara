@@ -265,6 +265,11 @@ try {
   check(frames.position[1]===1 && frames.frame.objects[1].transform.translation[1]===1,'WebAssembly solves constraints per frame and updates the unkeyed viewport follower')
   check(JSON.stringify(frames.rest)===JSON.stringify(frameRest),'WebAssembly frame reads preserve the authored scene and revision')
 
+  await page.evaluate(()=>window.__tatara.refresh(true))
+  await page.waitForFunction(()=>window.__tatara.resolvedFrame()===2)
+  await page.waitForTimeout(750)
+  check(Math.abs((await page.evaluate(id=>window.__tatara.position(id),frameRest.objects[1].id))[1]-1)<1e-8,'a delayed animated refresh cannot replace a WebAssembly constraint-solved pose')
+
   const ikRest=await page.evaluate(async()=>{
     const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
       {op:'clear'}, {op:'add',name:'Arm',primitive:{kind:'cylinder',height:2,rings:8},translation:[0,1,0]},

@@ -1028,6 +1028,11 @@ try {
   check(JSON.stringify(frameMotion.rest)===JSON.stringify(restMotion),'frame evaluation preserves rest transforms, keys and scene revision')
   const followerFrame=frameMotion.frame.objects.find(o=>o.id===followerId),followerContext=frameMotion.context.objects.find(o=>o.id===followerId)
   check(JSON.stringify(followerFrame.transform)===JSON.stringify(followerContext.pose.transform),'frame packets and agent contexts expose the same solved pose')
+  await motion.evaluate(()=>window.__tatara.refresh(true))
+  await until(motion,id=>window.__tatara.resolvedFrame()===2 && Math.abs(window.__tatara.position(id)[1]-1)<1e-8,followerId)
+  // Let a cosmetic sync tween finish: it must not overwrite the solved pose.
+  await motion.waitForTimeout(750)
+  check(Math.abs((await motion.evaluate(id=>window.__tatara.position(id),followerId))[1]-1)<1e-8,'a late animated scene refresh cannot overwrite the solved follower pose')
   await motion.close()
 
   // Persistent IK comes from the core, including the mesh and bone overlay.

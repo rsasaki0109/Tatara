@@ -1734,6 +1734,12 @@ export class Viewport {
   applyFrame() {
     for (const node of this.nodes.values()) {
       if ((!this.frameConstrained && !isAnimated(node.data)) || (!this.frameConstrained && this.anim.has(`tf:${node.id}`))) continue
+      // A delayed SSE refresh may start a cosmetic tween back to rest.
+      // Once the core frame arrives, it owns the transform and material.
+      if (this.frameConstrained) {
+        this.anim.items.get(`tf:${node.id}`)?.finish(false)
+        this.anim.items.get(`mat:${node.id}`)?.finish(false)
+      }
       const p = this.objectPose(node.data)
       this.setTransform(node.group, p.transform)
       this.setMaterial(node, p.material)
