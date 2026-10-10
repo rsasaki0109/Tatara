@@ -15,6 +15,8 @@ const TINY_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC',
   'base64',
 )
+// A 64x32 environment: red north hemisphere and blue south hemisphere.
+const PROJECTION_SKY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAEAAAAAgCAYAAACinX6EAAAAYUlEQVR4nO3QsQ0AIADDsP7/NJxhJDJ4j7KznZ9NB2gN0AFaA3SA1gAdoDVAB2gN0AFaA3SA1gAdoO2BBowHaDxA4wEaD9B4gMYDNB6g8QCNB2g8QOMBGg/QeIDGAzQeYF0oevDiS5YfgwAAAABJRU5ErkJggg==','base64')
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -934,6 +936,27 @@ try {
   await until(shot,()=>window.__tatara.debug().worldParallelBackground)
   check(true,'orthographic environment backgrounds use the parallel viewing direction across the full frame')
   await shot.click('[data-action=undo]');await until(shot,()=>!window.__tatara.debug().worldBackground)
+  // The native environment packet is bottom-up for GPU texture upload.
+  // Compare actual 1x1 HDR texture texels against a red-north/blue-south fixture.
+  await shot.evaluate(async data=>{
+    const scene=await(await fetch('/api/scene')).json(),o=scene.objects.find(o=>o.camera)
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
+      {op:'add_image',name:'Projection sky',data},{op:'world',image:'Projection sky',strength:1,background:true},
+      {op:'set_keyframe',id:o.id,property:'rotation',frame:2,value:[Math.PI/2,0,0]}
+    ]})});if(!r.ok)throw new Error(await r.text())
+  },PROJECTION_SKY_PNG.toString('base64'))
+  await until(shot,()=>window.__tatara.debug().world?.startsWith('image:Projection sky:') && window.__tatara.debug().renderCamera.up[2]>.99 && window.__tatara.debug().worldParallelBackgroundTexels?.[2]===0)
+  const north=await shot.evaluate(()=>window.__tatara.debug().worldParallelBackgroundTexels)
+  await shot.evaluate(async()=>{
+    const scene=await(await fetch('/api/scene')).json(),o=scene.objects.find(o=>o.camera)
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[{op:'set_keyframe',id:o.id,property:'rotation',frame:2,value:[-Math.PI/2,0,0]}]})});if(!r.ok)throw new Error(await r.text())
+  })
+  await until(shot,()=>window.__tatara.debug().renderCamera.up[2]<-.99 && window.__tatara.debug().worldParallelBackgroundTexels?.[2]===15360)
+  const south=await shot.evaluate(()=>window.__tatara.debug().worldParallelBackgroundTexels)
+  check(north[0]===15360 && north[2]===0 && south[0]===0 && south[2]===15360,'orthographic HDR background samples the actual bottom-up environment texture without reversing its poles')
+  await shot.click('[data-action=undo]');await shot.click('[data-action=undo]')
+  await until(shot,()=>!window.__tatara.debug().worldBackground && window.__tatara.debug().pending===0)
+
   const previousUp=await shot.evaluate(()=>window.__tatara.debug().renderCamera.up)
   await shot.evaluate(async()=>{
     const s=await(await fetch('/api/scene')).json(),o=s.objects.find(o=>o.camera),rotation=[...o.transform.rotation];rotation[2]+=.25

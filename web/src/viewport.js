@@ -895,8 +895,8 @@ export class Viewport {
     const studio = w.sky === 'studio' && !w.image
     const source = studio ? 'studio' : w.image ? `image:${w.image}:${this.images[w.image]?.hash}` : `sky:${w.sky}`
     const prev = this.world
-    this.world = w
     if (prev && prev.source === source && JSON.stringify(prev.settings) === JSON.stringify(w)) return
+    this.world = w
     w.source = source
     w.settings = { ...w }
     delete w.settings.source
@@ -980,7 +980,7 @@ export class Viewport {
     const d = this.camera.getWorldDirection(new THREE.Vector3())
       .applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(w.rotation))
     const x = (Math.atan2(d.z, d.x) / (2 * Math.PI) + .5) * map.width - .5
-    const y = (.5 - Math.asin(THREE.MathUtils.clamp(d.y, -1, 1)) / Math.PI) * map.height - .5
+    const y = (.5 + Math.asin(THREE.MathUtils.clamp(d.y, -1, 1)) / Math.PI) * map.height - .5
     const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0
     const at = (i, j, c) => map.texels[(THREE.MathUtils.clamp(j, 0, map.height - 1) * map.width + ((i % map.width) + map.width) % map.width) * 4 + c]
     const rgb = [0, 1, 2].map(c => (1-fy)*((1-fx)*at(x0,y0,c)+fx*at(x0+1,y0,c)) + fy*((1-fx)*at(x0,y0+1,c)+fx*at(x0+1,y0+1,c)))

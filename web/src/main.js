@@ -2024,6 +2024,7 @@ window.__tatara = {
     previewing: app.previewing,
     worldBackground: Boolean(viewport.scene.background),
     worldParallelBackground: Boolean(viewport.orthoBackground && viewport.scene.background === viewport.orthoBackground),
+    worldParallelBackgroundTexels: viewport.orthoBackground && viewport.scene.background === viewport.orthoBackground ? Array.from(viewport.orthoBackground.image.data) : null,
     bonesShown: [...viewport.nodes.values()].filter((n) => n.bones.visible).length,
     reachHandle: viewport.ikHandle.visible,
     triplanar: [...viewport.nodes.values()].filter((n) => 'TRIPLANAR' in n.mesh.material.defines).length,
