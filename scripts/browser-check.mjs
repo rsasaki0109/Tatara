@@ -3,6 +3,7 @@
 // editing, history and files, then every demo scenario in capture mode.
 // Requires `npm --prefix web run build` and `cargo build --release`.
 
+import { checkCurves } from './curve-check.mjs'
 import { motionTip } from './gltf-motion-check.mjs'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -1080,6 +1081,11 @@ try {
   await until(ik,()=>fetch('/api/scene').then(r=>r.json()).then(s=>s.ik_targets?.length===1))
   check(true,'unbinding the IK target is one undoable typed command')
   await ik.close()
+
+  const curves=await browser.newPage({viewport:{width:1280,height:720}})
+  await curves.goto(url);await curves.evaluate(()=>window.__tatara.ready)
+  await checkCurves(curves,check)
+  await curves.close()
 
   // Every scenario must finish without errors (the MCP one falls back to HTTP).
   const cap = await browser.newPage({ viewport: { width: 1280, height: 720 } })

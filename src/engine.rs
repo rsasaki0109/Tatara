@@ -839,6 +839,20 @@ pub enum Command {
         #[serde(default)]
         bone: Option<String>,
     },
+    /// Edit an existing key without overwriting another key in its channel.
+    EditKeyframe {
+        id: ObjRef,
+        property: Property,
+        frame: f64,
+        #[serde(default)]
+        new_frame: Option<f64>,
+        #[serde(default)]
+        value: Option<KeyValue>,
+        #[serde(default)]
+        interpolation: Option<Interpolation>,
+        #[serde(default)]
+        bone: Option<String>,
+    },
     /// Give an object bones: an explicit list (`bones`; empty removes the
     /// rig) or a `chain` of that many bones end to end through the mesh
     /// along `axis` (default its longest side). The displayed mesh bends
@@ -2338,6 +2352,26 @@ fn apply_command(
                 frame,
                 value,
                 interpolation.unwrap_or_default(),
+            )?;
+        }
+        Command::EditKeyframe {
+            id,
+            property,
+            frame,
+            new_frame,
+            value,
+            interpolation,
+            bone,
+        } => {
+            let i = resolve(scene, id)?;
+            anim::edit_key(
+                &mut scene.objects[i],
+                *property,
+                bone.as_deref(),
+                *frame,
+                *new_frame,
+                value.as_ref(),
+                *interpolation,
             )?;
         }
         Command::DeleteKeyframe {
@@ -3840,6 +3874,76 @@ mod tests {
         let o = &ed.scene().objects[0];
         assert!(o.modifiers.is_empty());
         assert_eq!(o.mesh.faces.len(), 72);
+    }
+
+    fn apply_key_edit(ed: &mut Editor, command: serde_json::Value) -> Result<(), EngineError> {
+        ed.apply(&batch(serde_json::json!({"commands":[command]})))
+            .map(|_| ())
+    }
+
+    #[test]
+    fn key_edits_retime_one_channel_atomically_and_keep_other_keys() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands":[
+            {"op":"add","name":"Ball","primitive":{"kind":"sphere"}},
+            {"op":"set_keyframe","id":"Ball","property":"translation","frame":1,"value":[0,1,0],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Ball","property":"translation","frame":25,"value":[2,1,0]},
+            {"op":"set_keyframe","id":"Ball","property":"color","frame":25,"value":"#ff0000"}
+        ]}))).unwrap();
+        let rest = ed.scene().clone();
+        apply_key_edit(&mut ed,serde_json::json!({"op":"edit_keyframe","id":"Ball","property":"translation","frame":25,"new_frame":37,"value":[3,1,0],"interpolation":"step"})).unwrap();
+        let o = &ed.scene().objects[0];
+        assert_eq!(o.tracks[0].keys[1].frame, 37.0);
+        assert_eq!(o.tracks[0].keys[1].interpolation, Interpolation::Step);
+        assert_eq!(o.tracks[1], rest.objects[0].tracks[1]);
+        assert_eq!(
+            anim::value_at(o, Property::Translation, 19.0),
+            vec![1.5, 1.0, 0.0]
+        );
+        let changed = ed.scene().clone();
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().objects, rest.objects);
+        ed.redo().unwrap();
+        assert_eq!(ed.scene().objects, changed.objects);
+        let before = ed.scene().clone();
+        for command in [
+            serde_json::json!({"op":"edit_keyframe","id":"Ball","property":"translation","frame":37,"new_frame":1}),
+            serde_json::json!({"op":"edit_keyframe","id":"Ball","property":"translation","frame":2,"new_frame":4}),
+            serde_json::json!({"op":"edit_keyframe","id":"Ball","property":"translation","frame":37,"new_frame":-1}),
+            serde_json::json!({"op":"edit_keyframe","id":"Ball","property":"translation","frame":37,"value":1}),
+            serde_json::json!({"op":"edit_keyframe","id":"Ball","property":"translation","frame":37}),
+        ] {
+            assert!(apply_key_edit(&mut ed, command).is_err());
+            assert_eq!(ed.scene(), &before);
+        }
+        let bad = batch(serde_json::json!({"commands":[
+            {"op":"move","id":"Ball","offset":[1,0,0]},
+            {"op":"edit_keyframe","id":"Ball","property":"translation","frame":37,"new_frame":1}
+        ]}));
+        assert!(ed.apply(&bad).is_err());
+        assert_eq!(ed.scene(), &before);
+    }
+
+    #[test]
+    fn key_edits_scope_bones_and_preserve_fractional_keys() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands":[
+            {"op":"add","name":"Arm","primitive":{"kind":"cylinder","height":2,"rings":8}},
+            {"op":"rig","id":"Arm","chain":2},
+            {"op":"set_keyframe","id":"Arm","property":"bone","bone":"Bone 1","frame":1.25,"value":[0,0,0.3]},
+            {"op":"set_keyframe","id":"Arm","property":"bone","bone":"Bone 2","frame":1.25,"value":[0,0,0.5]}
+        ]}))).unwrap();
+        let other = ed.scene().objects[0].tracks[1].clone();
+        apply_key_edit(&mut ed,serde_json::json!({"op":"edit_keyframe","id":"Arm","property":"bone","bone":"Bone 1","frame":1.25,"new_frame":2.75})).unwrap();
+        assert_eq!(ed.scene().objects[0].tracks[0].keys[0].frame, 2.75);
+        assert_eq!(
+            ed.scene().objects[0].tracks[0].keys[0].value,
+            vec![0.0, 0.0, 0.3]
+        );
+        assert_eq!(ed.scene().objects[0].tracks[1], other);
+        for bone in [serde_json::Value::Null, serde_json::json!("Missing")] {
+            assert!(apply_key_edit(&mut ed,serde_json::json!({"op":"edit_keyframe","id":"Arm","property":"bone","bone":bone,"frame":2.75,"value":[0,0,0]})).is_err());
+        }
     }
 
     #[test]

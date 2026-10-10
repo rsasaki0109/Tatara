@@ -799,6 +799,26 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let r=call(json!({"jsonrpc":"2.0","id":93,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"clear_target","id":"IK arm"}]}}})).await;
     assert_ne!(r["result"]["isError"], true, "{r}");
 
+    // Agents use the same collision-checked key edit as the curve UI.
+    let r=call(json!({"jsonrpc":"2.0","id":96,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"edit_keyframe","id":"Animated anchor","property":"translation","frame":3,"new_frame":5,"value":[90,4,0]}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":97,"method":"tools/call","params":{"name":"get_scene","arguments":{"frame":3}}})).await;
+    let sampled: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let anchor = sampled["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Animated anchor")
+        .unwrap();
+    assert_eq!(anchor["animation"][0]["frames"][1], 5.0);
+    assert_eq!(
+        anchor["pose"]["transform"]["translation"],
+        json!([90., 2., 0.])
+    );
+    let r=call(json!({"jsonrpc":"2.0","id":98,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"edit_keyframe","id":"Animated anchor","property":"translation","frame":5,"new_frame":1}]}}})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+
     child.kill().await.unwrap();
 }
 
