@@ -1003,6 +1003,33 @@ try {
 
   await shot.close()
 
+  // The shared Rust evaluator drives unkeyed followers, not just keyed nodes.
+  const motion=await browser.newPage({viewport:{width:1280,height:720}})
+  await motion.goto(url);await motion.evaluate(()=>window.__tatara.ready)
+  const restMotion=await motion.evaluate(async()=>{
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
+      {op:'clear'},
+      {op:'add',name:'Anchor',primitive:{kind:'cube'}},
+      {op:'add',name:'Follower',primitive:{kind:'cube'},translation:[2,0,0]},
+      {op:'constrain',id:'Follower',align:'y',from:'Anchor'},
+      {op:'set_keyframe',id:'Anchor',property:'translation',frame:1,value:[0,0,0],interpolation:'linear'},
+      {op:'set_keyframe',id:'Anchor',property:'translation',frame:3,value:[0,2,0]}
+    ]})});if(!r.ok)throw new Error(await r.text())
+    await window.__tatara.refresh(false)
+    const rest=await(await fetch('/api/scene')).json();document.querySelector(`#outliner li[data-id="${rest.objects.find(o=>o.name==='Follower').id}"]`).click();window.__tatara.setFrame(2);return rest
+  })
+  const followerId=restMotion.objects.find(o=>o.name==='Follower').id
+  await until(motion,id=>window.__tatara.resolvedFrame()===2 && Math.abs(window.__tatara.position(id)[1]-1)<1e-8 && document.querySelector('[data-field=translation][data-i="1"]')?.value==='1',followerId)
+  check(true,'an unkeyed constrained follower follows the animated anchor in the viewport and properties')
+  await motion.evaluate(()=>{window.__tatara.setFrame(3);window.__tatara.setFrame(1);window.__tatara.setFrame(2)})
+  await until(motion,id=>window.__tatara.resolvedFrame()===2 && Math.abs(window.__tatara.position(id)[1]-1)<1e-8,followerId)
+  check(true,'rapid backwards and forwards seeking discards obsolete frame replies')
+  const frameMotion=await motion.evaluate(async()=>({frame:await(await fetch('/api/frame?frame=2')).json(),context:await(await fetch('/api/context?frame=2')).json(),rest:await(await fetch('/api/scene')).json()}))
+  check(JSON.stringify(frameMotion.rest)===JSON.stringify(restMotion),'frame evaluation preserves rest transforms, keys and scene revision')
+  const followerFrame=frameMotion.frame.objects.find(o=>o.id===followerId),followerContext=frameMotion.context.objects.find(o=>o.id===followerId)
+  check(JSON.stringify(followerFrame.transform)===JSON.stringify(followerContext.pose.transform),'frame packets and agent contexts expose the same solved pose')
+  await motion.close()
+
   // Every scenario must finish without errors (the MCP one falls back to HTTP).
   const cap = await browser.newPage({ viewport: { width: 1280, height: 720 } })
   await cap.goto(`${url}/?capture=1`)

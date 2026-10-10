@@ -1608,4 +1608,26 @@ export const sceneLight = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const constrainedAnimation = {
+  title:'Keep intent through every frame',width:800,gizmo:false,
+  setup:[
+    {op:'set_animation',start:1,end:48},
+    {op:'add',name:'Tray',primitive:{kind:'cube'},scale:[2.4,.18,1.5],translation:[-.8,.8,0],color:'#769c8b'},
+    {op:'add',name:'Cup',primitive:{kind:'cylinder',radius:.2,height:.45},translation:[-.5,1.5,0],color:'#bd7962'},
+    {op:'constrain',id:'Cup',on:'Tray'},
+    {op:'set_keyframe',id:'Tray',property:'translation',frame:1,value:[-.8,.8,0],interpolation:'linear'},
+    {op:'set_keyframe',id:'Tray',property:'translation',frame:48,value:[.8,1.5,0]}
+  ],
+  camera:{azimuth:25,elevation:22,distance:5,target:[0,1.2,0]},
+  steps:[
+    {pick:'Tray',after:600},
+    {caption:'Key the tray; keep the cup on it',hint:'one authored relation · solved at every frame'},
+    {scrub:48,ms:2200,after:800},
+    {caption:'The cup follows without extra keys',hint:'Rust core · viewport · agent and final renders'},
+    {scrub:1,ms:2200,after:800},
+    {caption:'Seek backwards to the same result',hint:'rest pose, keys and Undo history stay unchanged'},
+    {scrub:24,ms:1200,after:900},{cursor:false},{wait:700}
+  ]
+}
+
+export const SCENARIOS = { constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

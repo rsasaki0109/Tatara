@@ -16,7 +16,7 @@ import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
 import { installWasmBackend } from './backend.js'
-import { propertiesFor, isAnimated, keyFrames, pose, track as trackOf } from './anim.js'
+import { propertiesFor, isAnimated, keyFrames, track as trackOf } from './anim.js'
 import { boneRotations, boneTrack } from './rig.js'
 
 const params = new URLSearchParams(location.search)
@@ -231,7 +231,7 @@ async function showProposal(id) {
     scene.objects.push({ ...o, material: { ...o.material, color: '#ff5a5a', opacity: 0.28, transmission: 0, metalness: 0, emissive: '#000000', emissive_strength: 0, texture: null } })
     marks.set(o.id, MARK.removed)
   }
-  viewport.sync(scene, true)
+  viewport.sync(scene, true, true)
   viewport.setHighlights(marks)
   const label = document.querySelector('.view-label')
   label.innerHTML = `<span class="dot proposal"></span>Proposal · ${escapeHtml(p.title)}`
@@ -257,7 +257,7 @@ const historyPanel = new HistoryPanel($('history'), {
       if (was == null) marks.set(o.id, MARK.added)
       else if (was !== JSON.stringify([o.transform, o.material, o.mesh.vertices.length, o.modifiers])) marks.set(o.id, MARK.changed)
     }
-    viewport.sync(scene, false)
+    viewport.sync(scene, false, true)
     viewport.setHighlights(marks)
     document.querySelector('.view-label').innerHTML = `<span class="dot proposal"></span>History · step ${step} replayed`
   },
@@ -896,7 +896,7 @@ function render() {
   $('object-count').textContent = objects.length ? String(objects.length) : ''
   $('outliner-empty').style.display = objects.length ? 'none' : ''
   const row = (o, cls = '') =>
-    `<li data-id="${o.id}" class="${cls} ${o.id === app.selected ? 'selected' : ''}">${icon(KIND_ICON[o.kind] || 'cube')}<span class="name">${escapeHtml(o.group ? o.name.slice(o.group.length + 1) || o.name : o.name)}</span>${isAnimated(o) ? '<span class="keyed" title="Animated">◆</span>' : ''}<span class="swatch" style="background:${pose(o, app.frame).material.color}"></span></li>`
+    `<li data-id="${o.id}" class="${cls} ${o.id === app.selected ? 'selected' : ''}">${icon(KIND_ICON[o.kind] || 'cube')}<span class="name">${escapeHtml(o.group ? o.name.slice(o.group.length + 1) || o.name : o.name)}</span>${isAnimated(o) ? '<span class="keyed" title="Animated">◆</span>' : ''}<span class="swatch" style="background:${viewport.objectPose(o).material.color}"></span></li>`
   // Assemblies collapse into one row; it opens while one of its parts is selected.
   const rows = []
   const listed = new Set()
@@ -911,7 +911,7 @@ function render() {
     const active = parts.some((p) => p.id === app.selected)
     const open = active || app.openGroups.has(o.group)
     rows.push(
-      `<li data-group="${escapeHtml(o.group)}" class="group-row ${active ? 'active' : ''}"><span class="twisty" data-twisty>${open ? '▾' : '▸'}</span>${icon('group')}<span class="name">${escapeHtml(o.group)}</span><span class="muted count">${parts.length}</span><span class="swatch" style="background:${pose(parts[0], app.frame).material.color}"></span></li>`,
+      `<li data-group="${escapeHtml(o.group)}" class="group-row ${active ? 'active' : ''}"><span class="twisty" data-twisty>${open ? '▾' : '▸'}</span>${icon('group')}<span class="name">${escapeHtml(o.group)}</span><span class="muted count">${parts.length}</span><span class="swatch" style="background:${viewport.objectPose(parts[0]).material.color}"></span></li>`,
     )
     if (open) for (const p of parts) rows.push(row(p, 'part'))
   }
@@ -1027,8 +1027,9 @@ let renderedKey = ''
 
 function renderProperties(o) {
   const el = $('properties')
+  const shown = o && viewport.objectPose(o)
   const key = o
-    ? JSON.stringify([o.id, o.name, o.camera, o.light, viewport.sceneCameraId, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, app.ik, app.scene.constraints, app.scene.arrangements, app.constraintKind, o.group, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
+    ? JSON.stringify([o.id, o.name, shown, o.camera, o.light, viewport.sceneCameraId, o.transform, o.material, o.tracks, app.playing ? 'playing' : app.frame, o.mesh.faces.length, displayMesh(o).faces.length, Boolean(o.mesh.uvs?.length), o.mesh.seams?.length, o.bones, app.bone, app.ik, app.scene.constraints, app.scene.arrangements, app.constraintKind, o.group, o.modifiers, o.smooth, app.face, app.mode, app.selectMode, app.sel, app.brush, app.boolWith, app.boolKeep, app.scene.objects.map((x) => x.name)])
     : `none:${JSON.stringify([app.scene.world, Object.keys(app.scene.images || {})])}`
   if (key === renderedKey) return
   if (o && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && renderedKey.startsWith(`[${o.id},`)) return
@@ -1041,7 +1042,6 @@ function renderProperties(o) {
     return
   }
   // Animated properties show their value at the current frame, marked ◆.
-  const shown = pose(o, app.frame)
   const t = shown.transform
   const keyed = (p) => (trackOf(o, p) ? ' <span class="keyed" title="Animated: edits key this frame">◆</span>' : '')
   const vec = (field, values, step, conv = (x) => x) =>
@@ -1485,7 +1485,7 @@ $('properties').addEventListener('change', (e) => {
   if (target.id === 'p-opacity') return run(editCommands(o.id, { opacity: Number(target.value) })).catch(() => {})
   if (target.id === 'p-emissive') {
     // A colour on its own would barely show, so give it a visible glow.
-    const strength = pose(o, app.frame).material.emissive_strength
+    const strength = viewport.objectPose(o).material.emissive_strength
     return run(editCommands(o.id, { emissive: target.value, emissive_strength: strength > 0 ? undefined : 2 })).catch(() => {})
   }
   if (target.id === 'p-color2' || target.id === 'p-tscale' || target.id === 'p-relief') {
@@ -1498,7 +1498,7 @@ $('properties').addEventListener('change', (e) => {
   if (target.id === 'p-emit') return run(editCommands(o.id, { emissive_strength: Number(target.value) })).catch(() => {})
   const field = target.dataset.field
   if (field) {
-    const values = [...pose(o, app.frame).transform[field]]
+    const values = [...viewport.objectPose(o).transform[field]]
     let v = Number(target.value)
     if (!Number.isFinite(v)) return render()
     if (field === 'rotation') v = (v * Math.PI) / 180
@@ -1844,6 +1844,7 @@ function setFrame(f, { fromPlayback = false } = {}) {
   const { start, end } = animRange()
   app.frame = Math.min(end, Math.max(start, f))
   if (!fromPlayback) app.playFrom = app.playing ? { t: clock.now(), f: app.frame } : null
+  viewport.playing = app.playing
   viewport.setFrame(app.frame)
   renderTimeline()
   if (!app.playing) render()
@@ -1949,6 +1950,12 @@ function loop() {
   requestAnimationFrame(loop)
 }
 
+viewport.onFrameResolved = () => { if (!app.playing) render() }
+viewport.onFrameError = (message) => {
+  if (app.playing) togglePlay(false)
+  toast(message, 'error')
+}
+
 const status = { done: false, error: null, started: false }
 const ready = (async () => {
   if (browserOnly) {
@@ -1998,6 +2005,8 @@ window.__tatara = {
   actor: () => collaboration?.actor ?? null,
   selection: () => ({ id: app.selected, face: app.face }),
   frame: () => app.frame,
+  resolvedFrame: () => viewport.resolvedFrame,
+  setFrame: (f) => setFrame(f),
   position: (id) => viewport.nodes.get(id)?.group.position.toArray(),
   camera: () => viewport.getOrbit(),
   refresh: (animate = false) => refresh(animate),
@@ -2037,6 +2046,10 @@ window.__tatara = {
     clock.advance(ms)
     await clock.settle()
     stepFrame()
+    if (viewport.frameInFlight) {
+      while (viewport.frameInFlight) await viewport.framePromise
+      viewport.frame()
+    }
     // Wait for the GPU (reading a pixel blocks until the frame is drawn), so
     // heavy frames (glass, bloom) cannot pile up behind a caller that does
     // not screenshot every tick.

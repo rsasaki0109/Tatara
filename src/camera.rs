@@ -75,8 +75,9 @@ pub fn resolve(
     width: usize,
     height: usize,
 ) -> Result<crate::pathtrace::Camera, EngineError> {
-    let o = ed
-        .scene()
+    let sampled = frame.map(|f| ed.scene_at(f)).transpose()?;
+    let scene = sampled.as_ref().unwrap_or_else(|| ed.scene());
+    let o = scene
         .objects
         .iter()
         .find(|o| match id {

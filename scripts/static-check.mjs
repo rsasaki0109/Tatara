@@ -249,6 +249,22 @@ try {
   check(spotlight.status===200 && spotlight.signature.join(',')==='137,80,78,71','WebAssembly renders spot lights without a server')
   check(spotlight.bad===422 && spotlight.unchanged,'WebAssembly rejects equal spot cones atomically')
 
+  const frameRest=await page.evaluate(async()=>{
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
+      {op:'clear'}, {op:'add',name:'Anchor',primitive:{kind:'cube'}},
+      {op:'add',name:'Follower',primitive:{kind:'cube'},translation:[2,0,0]},
+      {op:'constrain',id:'Follower',align:'y',from:'Anchor'},
+      {op:'set_keyframe',id:'Anchor',property:'translation',frame:1,value:[0,0,0],interpolation:'linear'},
+      {op:'set_keyframe',id:'Anchor',property:'translation',frame:3,value:[0,2,0]}
+    ]})});if(!r.ok)throw new Error(await r.text())
+    await window.__tatara.refresh(false)
+    const rest=await(await fetch('/api/scene')).json();window.__tatara.setFrame(2);return rest
+  })
+  await page.waitForFunction(()=>window.__tatara.resolvedFrame()===2)
+  const frames=await page.evaluate(async id=>({position:window.__tatara.position(id),frame:await(await fetch('/api/frame?frame=2')).json(),rest:await(await fetch('/api/scene')).json()}),frameRest.objects[1].id)
+  check(frames.position[1]===1 && frames.frame.objects[1].transform.translation[1]===1,'WebAssembly solves constraints per frame and updates the unkeyed viewport follower')
+  check(JSON.stringify(frames.rest)===JSON.stringify(frameRest),'WebAssembly frame reads preserve the authored scene and revision')
+
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

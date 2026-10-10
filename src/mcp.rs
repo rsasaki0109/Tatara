@@ -58,7 +58,7 @@ pub fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "include_mesh": { "type": "boolean", "default": false },
-                    "frame": { "type": "number", "description": "Also report each animated object's pose at this frame" }
+                    "frame": { "type": "number", "description": "Report every object's animation and constraint-solved pose at this frame, including unkeyed followers" }
                 },
                 "additionalProperties": false
             }
@@ -116,7 +116,7 @@ pub fn tools() -> Value {
                     "samples": { "type": "integer", "minimum": 1, "maximum": 4096, "description": "Samples per pixel (default 128)" },
                     "aperture": { "type": "number", "minimum": 0, "maximum": 1, "description": "Lens radius in metres for depth of field (0: everything sharp)" },
                     "focus": { "type": "number", "minimum": 0, "description": "Focus distance in metres (default: distance to target)" },
-                    "frame": { "type": "number", "description": "Pose animation at this frame" },
+                    "frame": { "type": "number", "description": "Sample animation and solve persistent constraints at this frame" },
                     "frames": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[start, end]: an animated PNG of that range (at most 240 frames)" },
                     "background": { "type": "string", "enum": ["studio", "transparent"], "description": "Default studio" }
                 },
@@ -138,7 +138,7 @@ pub fn tools() -> Value {
                     },
                     "size": { "type": "integer", "minimum": 64, "maximum": 1024, "default": 512, "description": "Pixel size of each view" },
                     "object": { "type": "string", "description": "Frame one object (name or numeric id) instead of the whole scene" },
-                    "frame": { "type": "number", "description": "Render animated objects as posed at this frame" },
+                    "frame": { "type": "number", "description": "Render the animation and constraint-solved scene at this frame" },
                     "samples": { "type": "integer", "minimum": 1, "maximum": 256, "description": "Path trace with this many samples per pixel for realistic light: soft shadows, reflections, refraction through glass and light cast by glowing surfaces. Slower; 16-64 is a good preview." }
                 },
                 "additionalProperties": false

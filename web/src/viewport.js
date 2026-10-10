@@ -541,7 +541,13 @@ export class Viewport {
 
   // -- scene sync -----------------------------------------------------------
 
-  sync(scene, animate) {
+  sync(scene, animate, preview = false) {
+    this.framePreview = preview ? scene : null
+    this.frameEpoch = (this.frameEpoch || 0) + 1
+    this.frameRevision = scene.revision
+    this.frameConstrained = !!(scene.constraints?.length || scene.arrangements?.length)
+    this.framePoses = null
+    this.frameRequested = null
     this.images = scene.images || {}
     this.setWorld(scene.world)
     const seen = new Set()
@@ -569,6 +575,7 @@ export class Viewport {
     }
     this.setSelection(this.selected, this.face)
     this.applyWireframe()
+    this.setFrame(this.currentFrame)
   }
 
   create(o, animate) {
@@ -1170,7 +1177,7 @@ export class Viewport {
           m.userData[`${slot}Url`] = undefined
         }
       }
-      this.applyMaterial(m, pose(node.data, this.currentFrame).material)
+      this.applyMaterial(m, this.objectPose(node.data).material)
       m.needsUpdate = true
       this.setSeams(node, node.baseMesh || node.data.mesh)
     }
@@ -1552,7 +1559,7 @@ export class Viewport {
     if (o.light) return {vertices:[[0,.08,0],[.08,0,0],[0,0,.08],[-.08,0,0],[0,0,-.08],[0,-.08,0]],faces:[[0,2,1],[0,3,2],[0,4,3],[0,1,4],[5,1,2],[5,2,3],[5,3,4],[5,4,1]]}
     if (o.camera?.ortho_height != null) return {vertices:[[-.3,-.2,0],[.3,-.2,0],[.3,.2,0],[-.3,.2,0],[-.3,-.2,-.45],[.3,-.2,-.45],[.3,.2,-.45],[-.3,.2,-.45]],faces:[[0,3,2,1],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]]}
     if (o.camera) return { vertices: [[-.14,-.1,0],[.14,-.1,0],[.14,.1,0],[-.14,.1,0],[-.3,-.2,-.45],[.3,-.2,-.45],[.3,.2,-.45],[-.3,.2,-.45]], faces: [[0,3,2,1],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]] }
-    return posedMesh(o, displayMesh(o), this.currentFrame)
+    return posedMesh(o, displayMesh(o), this.displayFrame())
   }
 
   /** Draw a rigged object's bones (posed), the chosen one highlighted. */
@@ -1562,13 +1569,13 @@ export class Viewport {
     const show = Boolean(hasRig(o) && (node.id === this.selected || this.showBones))
     node.bones.visible = node.boneEdges.visible = show
     if (!show) return
-    const key = JSON.stringify([o.bones, this.currentFrame, (o.tracks || []).filter((t) => t.property === 'bone'), this.bone])
+    const key = JSON.stringify([o.bones, this.displayFrame(), (o.tracks || []).filter((t) => t.property === 'bone'), this.bone])
     if (key === node.boneKey) return
     node.boneKey = key
     const pos = []
     const col = []
     const edges = []
-    const segments = boneSegments(o, this.currentFrame)
+    const segments = boneSegments(o, this.displayFrame())
     o.bones.forEach((b, i) => {
       const [head, tail] = segments[i]
       const axis = tail.clone().sub(head)
@@ -1628,7 +1635,7 @@ export class Viewport {
     this.ikHandle.visible = k >= 0
     if (k < 0 || this.gizmo.dragging) return
     node.group.updateMatrixWorld(true)
-    const [, tail] = boneSegments(node.data, this.currentFrame)[k]
+    const [, tail] = boneSegments(node.data, this.displayFrame())[k]
     this.ikHandle.position.copy(tail.applyMatrix4(node.group.matrixWorld))
   }
 
@@ -1670,12 +1677,58 @@ export class Viewport {
     if (node) this.setBones(node)
   }
 
-  /** Pose every animated object at `frame`. */
+  displayFrame() { return this.frameConstrained && this.framePoses ? this.resolvedFrame : this.currentFrame }
+
+  objectPose(o) {
+    return this.framePoses?.get(o.id) || pose(o, this.currentFrame)
+  }
+
+  /** Keep one frame request in flight, coalescing playback to the latest frame. */
   setFrame(frame) {
     this.currentFrame = frame
+    if (this.frameConstrained) {
+      const key = `${this.frameEpoch}:${this.frameRevision}:${frame}`
+      if (this.frameRequested !== key) {
+        this.frameRequested = key
+        this.pendingFrame = { frame, revision: this.frameRevision, key, epoch: this.frameEpoch, preview: this.framePreview }
+        if (!this.frameInFlight) this.framePromise = this.requestFrame()
+      }
+      return
+    }
+    this.applyFrame()
+  }
+
+  async requestFrame() {
+    if (this.frameInFlight || !this.pendingFrame) return
+    const request = this.pendingFrame
+    this.pendingFrame = null
+    this.frameInFlight = true
+    try {
+      const response = await fetch(`/api/frame?frame=${request.frame}`, request.preview ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request.preview)} : {})
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Cannot evaluate animation frame')
+      if (this.frameConstrained && result.revision === this.frameRevision && request.revision === this.frameRevision && request.epoch === this.frameEpoch) {
+        // Playback may advance during the request. Show the whole solved frame
+        // atomically, then fetch the newest one; seeking discards older replies.
+        if (!this.pendingFrame || this.playing) {
+          this.framePoses = new Map(result.objects.map(o => [o.id, o]))
+          this.resolvedFrame = result.frame
+          this.applyFrame()
+          this.onFrameResolved?.()
+        }
+      }
+    } catch (e) {
+      if (request.epoch === this.frameEpoch && (request.key === this.frameRequested || this.playing)) this.onFrameError?.(e.message)
+    } finally {
+      this.frameInFlight = false
+      if (this.pendingFrame) this.framePromise = this.requestFrame()
+    }
+  }
+
+  applyFrame() {
     for (const node of this.nodes.values()) {
-      if (!isAnimated(node.data) || this.anim.has(`tf:${node.id}`)) continue
-      const p = pose(node.data, frame)
+      if ((!this.frameConstrained && !isAnimated(node.data)) || (!this.frameConstrained && this.anim.has(`tf:${node.id}`))) continue
+      const p = this.objectPose(node.data)
       this.setTransform(node.group, p.transform)
       this.setMaterial(node, p.material)
       if (hasRig(node.data)) {
@@ -1792,7 +1845,7 @@ export class Viewport {
     if (this.sceneCameraId == null) return
     const node = this.nodes.get(this.sceneCameraId)
     if (!node?.data.camera) return this.lookThrough(null)
-    const posed = pose(node.data, this.currentFrame)
+    const posed = this.objectPose(node.data)
     const t = posed.transform
     this.switchProjection(posed.camera.ortho_height)
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(...t.rotation, 'XYZ'))
@@ -1852,7 +1905,7 @@ export class Viewport {
   sceneBounds() {
     const box = new THREE.Box3()
     for (const node of this.nodes.values()) {
-      const tf = pose(node.data, this.currentFrame).transform
+      const tf = this.objectPose(node.data).transform
       const m = new THREE.Matrix4().compose(
         new THREE.Vector3(...tf.translation),
         new THREE.Quaternion().setFromEuler(new THREE.Euler(...tf.rotation, 'XYZ')),
@@ -1958,7 +2011,7 @@ export class Viewport {
   /** Scene lights are viewport helpers plus actual physically attenuated lights. */
   syncSceneLights() {
     for (const node of this.nodes.values()) {
-      const lamp = node.data.light ? pose(node.data,this.currentFrame).light : null
+      const lamp = node.data.light ? this.objectPose(node.data).light : null
       if (!lamp) continue
       if (!node.light || node.lightKind !== lamp.kind) {
         if (node.light) { this.scene.remove(node.light, node.light.target); node.light.dispose() }
@@ -1972,7 +2025,7 @@ export class Viewport {
         this.scene.add(node.light)
         if (node.light.target) this.scene.add(node.light.target)
       }
-      const t = pose(node.data,this.currentFrame).transform
+      const t = this.objectPose(node.data).transform
       const light = node.light
       light.color.set(lamp.color)
       light.intensity = lamp.intensity
