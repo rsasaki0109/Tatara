@@ -1437,6 +1437,24 @@ export const rebase = {
 }
 
 
+export const concurrentCreation = {
+  title: 'Build together from one context', width: 800, gizmo: false,
+  setup: [{op:'add',name:'Shared plinth',primitive:{kind:'cube'},translation:[0,.08,0],scale:[3,.16,1.5],color:'#769c8b'}],
+  camera: {azimuth:12,elevation:22,distance:4.5,target:[0,.5,0]},
+  steps: [
+    {caption:'Two creators start from the same revision',hint:'independent additions · shared command history'},
+    {rememberRevision:true},
+    {submitBatch:{actor:{id:'alice',name:'Alice'},source:'UI',commands:[{op:'add',name:'Alice tower',primitive:{kind:'cube'},translation:[-.8,.6,0],scale:[.6,1,.6],color:'#769c8b'}]},contextRevision:true,after:1000},
+    {caption:'Bob adds from his older scene',hint:'current IDs · no lost objects'},
+    {submitBatch:{actor:{id:'bob',name:'Bob'},source:'UI',rebase:true,commands:[{op:'add',name:'Bob sculpture',primitive:{kind:'torus'},translation:[.8,.65,0],rotation:[1.5707963267948966,0,0],color:'#be6651'}]},contextRevision:true,expectRebase:true,after:1200},
+    {click:'.tabs [data-tab=history]',after:700},
+    {caption:'Both creations survive with their authors',hint:'one batch · one Undo'},
+    {wait:1000},{click:'[data-action=undo]',after:1000},
+    {caption:'Undo Bob’s addition, keep Alice’s tower',hint:'ambiguous names are refused with a reason'},
+    {cursor:false},{wait:1000},
+  ],
+}
+
 export const sceneCamera = {
   title: 'Keep the shot inside the scene', width: 800, gizmo: false,
   setup: [
@@ -1480,4 +1498,4 @@ export const sceneLight = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, sceneCamera, sceneLight }
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, concurrentCreation, sceneCamera, sceneLight }

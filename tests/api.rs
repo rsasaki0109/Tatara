@@ -579,6 +579,16 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let r = call(json!({"jsonrpc":"2.0","id":66,"method":"tools/call","params":{"name":"apply_commands","arguments":{"expected_revision":context,"rebase":true,"commands":[{"op":"transform","id":"Rebase A","translation":[62,0,0]}]}}})).await;
     assert_eq!(r["result"]["isError"], true, "{r}");
 
+    // Creation rebase uses the current allocator through the same MCP tool.
+    let r = call(json!({"jsonrpc":"2.0","id":660,"method":"tools/call","params":{"name":"apply_commands","arguments":{"expected_revision":context,"rebase":true,"commands":[{"op":"add","name":"Rebased MCP creation","primitive":{"kind":"cube"}}]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let result: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(result["rebased_from"], context);
+    assert_eq!(result["created"].as_array().unwrap().len(), 1);
+    let r = call(json!({"jsonrpc":"2.0","id":661,"method":"tools/call","params":{"name":"apply_commands","arguments":{"expected_revision":context,"rebase":true,"commands":[{"op":"add_camera","name":"Rebased MCP creation"}]}}})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+
     let r = call(json!({"jsonrpc":"2.0","id":67,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"add_camera","name":"MCP Shot","translation":[0,1,4]},{"op":"camera_settings","id":"MCP Shot","lens":{"fov":50,"focus":4}}]}}})).await;
     assert_ne!(r["result"]["isError"], true, "{r}");
     let output = std::env::temp_dir().join(format!("tatara-camera-{}.png", std::process::id()));

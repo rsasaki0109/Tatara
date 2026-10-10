@@ -129,6 +129,16 @@ try {
   })
   check(JSON.stringify(layout.moved.objects[1].transform.translation) === '[0.5,0.5,3]' && JSON.stringify(layout.moved.objects[2].transform.translation) === '[3.5,0.5,3]', 'maintained layouts follow their reference in WebAssembly')
   check(JSON.stringify(layout.undone.objects[1].transform.translation) === '[-1.5,0.5,0]' && layout.undone.arrangements.length === 1, 'WebAssembly keeps layout intent through Undo')
+  const creations = await page.evaluate(async () => {
+    const post = body => fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json())
+    const base = await post({commands:[{op:'clear'},{op:'add_camera',name:'First shot'}]})
+    const first = await post({commands:[{op:'add_light',name:'First key'}]})
+    const second = await post({expected_revision:base.revision,rebase:true,commands:[{op:'add_camera',name:'Second shot'}]})
+    const rejected = await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:base.revision,rebase:true,commands:[{op:'add_light',name:'First key'}]})})
+    return {base,first,second,status:rejected.status}
+  })
+  check(creations.second.rebased_from === creations.base.revision && creations.second.created[0] > creations.first.created[0], 'WebAssembly rebases camera creations using current IDs')
+  check(creations.status === 409, 'WebAssembly rejects stale creation name collisions')
   const rebased = await page.evaluate(async () => {
     const post = (path, body = {}) => fetch(`/api/${path}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then((r) => r.json())
     const setup = await post('commands', {commands: [{op: 'clear'}, {op: 'add', name: 'A', primitive: {kind: 'cube'}}, {op: 'add', name: 'B', primitive: {kind: 'cube'}, translation: [3,0,0]}]})
