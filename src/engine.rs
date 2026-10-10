@@ -1182,6 +1182,31 @@ impl Editor {
         &self.scene
     }
 
+    /// Evaluate animation and persistent constraints without editing the authored scene.
+    /// Each frame starts from the same rest scene, so seeking is order independent.
+    pub fn scene_at(&self, frame: f64) -> Result<Scene, EngineError> {
+        anim::check_frame(frame)?;
+        let mut sampled = self.scene.clone();
+        for o in &mut sampled.objects {
+            o.mesh = self.posed(o, Some(frame)).into_owned();
+            o.modifiers.clear();
+        }
+        let before = constraint::snapshot(&sampled);
+        for o in &mut sampled.objects {
+            (o.transform, o.material) = anim::pose(o, frame);
+            o.camera = anim::lens_at(o, Some(frame));
+            o.light = anim::lamp_at(o, Some(frame));
+        }
+        constraint::solve_frame(&mut sampled, &before)?;
+        for (o, rest) in sampled.objects.iter_mut().zip(&self.scene.objects) {
+            o.mesh = rest.mesh.clone();
+            o.modifiers = rest.modifiers.clone();
+            // Bones are still sampled by the geometry renderer; other values are baked.
+            o.tracks.retain(|t| t.property == anim::Property::Bone);
+        }
+        Ok(sampled)
+    }
+
     pub(crate) fn trace_cache(&self) -> &crate::pathtrace::Cache {
         &self.traced
     }
@@ -2833,6 +2858,15 @@ pub fn context(ed: &Editor) -> serde_json::Value {
 /// Scene summary; with `frame`, objects also report their animated pose and
 /// bounds are measured at that frame.
 pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
+    context_at_checked(ed, frame).unwrap_or_else(|e| serde_json::json!({"error":e.message}))
+}
+
+/// Fallible context evaluation for HTTP/MCP callers; invalid frames are errors.
+pub fn context_at_checked(
+    ed: &Editor,
+    frame: Option<f64>,
+) -> Result<serde_json::Value, EngineError> {
+    let sampled = frame.map(|f| ed.scene_at(f)).transpose()?;
     let scene = ed.scene();
     let mut scene_min = [f64::INFINITY; 3];
     let mut scene_max = [f64::NEG_INFINITY; 3];
@@ -2842,9 +2876,8 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
         .map(|o| {
             let posed = ed.posed(o, frame);
             let mesh = &*posed;
-            let pose = frame
-                .filter(|_| !o.tracks.is_empty())
-                .map(|f| anim::pose(o, f));
+            let resolved = sampled.as_ref().and_then(|s| s.objects.iter().find(|p| p.id == o.id)).unwrap_or(o);
+            let pose = frame.map(|_| (resolved.transform.clone(), resolved.material.clone()));
             let bounds = world_bounds(pose.as_ref().map_or(&o.transform, |p| &p.0), mesh);
             if let Some(b) = &bounds {
                 for k in 0..3 {
@@ -2856,8 +2889,8 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
                 "id": o.id,
                 "name": o.name,
                 "kind": o.kind,
-                "camera": anim::lens_at(o, frame),
-                "light": anim::lamp_at(o, frame),
+                "camera": resolved.camera.clone(),
+                "light": resolved.light.clone(),
                 "transform": o.transform,
                 "material": o.material,
                 "modifiers": o.modifiers,
@@ -2869,7 +2902,7 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
                     "property": t.property,
                     "frames": t.keys.iter().map(|k| k.frame).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
-                "pose": pose.map(|(t, m)| serde_json::json!({ "transform": t, "material": m, "camera": anim::lens_at(o, frame), "light": anim::lamp_at(o, frame) })),
+                "pose": pose.map(|(t, m)| serde_json::json!({ "transform": t, "material": m, "camera": resolved.camera.clone(), "light": resolved.light.clone() })),
             })
         })
         .collect();
@@ -2877,7 +2910,7 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
         min: scene_min,
         max: scene_max,
     });
-    serde_json::json!({
+    Ok(serde_json::json!({
         "revision": scene.revision,
         "next_id": scene.next_id,
         "units": "meters, Y up, rotations in radians (XYZ euler)",
@@ -2891,7 +2924,7 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
         "images": scene.images.iter().map(|(name, i)| serde_json::json!({
             "name": name, "mime": i.mime, "width": i.width, "height": i.height,
         })).collect::<Vec<_>>(),
-    })
+    }))
 }
 
 pub fn export_obj(ed: &Editor) -> String {

@@ -1,5 +1,7 @@
 //! Editable analytic lights, sampled consistently by the shared path tracer.
-use crate::engine::{Editor, EngineError, Scene};
+#[cfg(test)]
+use crate::engine::Editor;
+use crate::engine::{EngineError, Scene};
 use glam::{DQuat, DVec3, EulerRot};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -142,8 +144,13 @@ impl Emitter {
         }
     }
 }
+#[cfg(test)]
 pub(crate) fn emitters(ed: &Editor, frame: Option<f64>) -> Vec<Emitter> {
-    ed.scene()
+    scene_emitters(ed.scene(), frame)
+}
+
+pub(crate) fn scene_emitters(scene: &Scene, frame: Option<f64>) -> Vec<Emitter> {
+    scene
         .objects
         .iter()
         .filter_map(|o| {

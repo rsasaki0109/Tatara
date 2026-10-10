@@ -376,6 +376,15 @@ enum Lead {
 
 /// Make every constraint true again after a batch.
 pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
+    solve_mode(scene, before, false)
+}
+
+/// Frame evaluation preserves authored support offsets, even when the passenger is keyed.
+pub(crate) fn solve_frame(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
+    solve_mode(scene, before, true)
+}
+
+fn solve_mode(scene: &mut Scene, before: &Snapshot, frame: bool) -> Result<(), EngineError> {
     if scene.constraints.is_empty() && scene.arrangements.is_empty() {
         return Ok(());
     }
@@ -401,6 +410,7 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
             let fresh = !before.constraints.contains(&c.id);
             if let Rule::On { support, offset } = &mut c.rule
                 && !fresh
+                && !frame
                 && touched(scene, &dirty, &c.subject)
             {
                 let d = centre(scene, &members(scene, &c.subject))?
@@ -415,7 +425,7 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
             )
         };
         let has_spatial = constraints.iter().any(spatial) || !scene.arrangements.is_empty();
-        for pass in 0..if has_spatial { 32 } else { 3 } {
+        for pass in 0..if has_spatial || frame { 32 } else { 3 } {
             for c in &constraints {
                 let fresh = !before.constraints.contains(&c.id);
                 let subject = touched(scene, &dirty, &c.subject);
@@ -430,7 +440,7 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
                 // Propagated spatial edits still need solving, even when
                 // neither endpoint was directly edited by the command batch.
                 let lead = match (fresh, subject, other) {
-                    (false, false, false) if !spatial(c) => continue,
+                    (false, false, false) if !spatial(c) && !frame => continue,
                     (false, false, false) => Lead::Other,
                     (false, true, false) => Lead::Subject,
                     _ => Lead::Other,
@@ -453,11 +463,13 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
                     }
                 }
             }
-            if has_spatial && pass >= 2 && violations(scene, &constraints).is_empty() {
+            if (has_spatial || frame) && pass >= 2 && violations(scene, &constraints).is_empty() {
                 break;
             }
         }
-        if has_spatial && let Some(issue) = violations(scene, &constraints).first() {
+        if (has_spatial || frame)
+            && let Some(issue) = violations(scene, &constraints).first()
+        {
             return err(issue["message"]
                 .as_str()
                 .unwrap_or("constraint cannot be satisfied"));

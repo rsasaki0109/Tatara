@@ -833,6 +833,28 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
     let result: Result<Response, Response> = (|| match (method, path) {
         ("GET", "/state") => Ok(Response::json(200, state(ed, ai))),
         ("GET", "/scene") => Ok(Response::json(200, json!(ed.scene()))),
+        ("GET" | "POST", "/frame") => {
+            let f = query_param(query, "frame")
+                .ok_or_else(|| Response::error(400, "frame is required"))?;
+            let f = f
+                .parse()
+                .map_err(|_| Response::error(400, "frame must be a number"))?;
+            // Detached proposal/history previews evaluate their own scene, without
+            // changing the shared editor or publishing a revision event.
+            let mut preview = Editor::new();
+            let (scene, revision) = if method == "POST" {
+                let scene: Scene = parse(body)?;
+                let revision = scene.revision;
+                preview.load(scene)?;
+                (preview.scene_at(f)?, revision)
+            } else {
+                (ed.scene_at(f)?, ed.scene().revision)
+            };
+            Ok(Response::json(
+                200,
+                json!({"revision": revision, "frame": f, "objects": scene.objects.iter().map(|o| json!({"id":o.id,"transform":o.transform,"material":o.material,"camera":o.camera,"light":o.light})).collect::<Vec<_>>()}),
+            ))
+        }
         ("GET", "/context") => {
             let frame = match query_param(query, "frame").filter(|s| !s.is_empty()) {
                 Some(f) => {
@@ -842,7 +864,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
                 }
                 None => None,
             };
-            Ok(Response::json(200, engine::context_at(ed, frame)))
+            Ok(Response::json(200, engine::context_at_checked(ed, frame)?))
         }
         ("GET", "/schema") => Ok(Response::json(200, engine::command_schema())),
         ("GET", "/inspect") => Ok(Response::json(200, crate::inspect::inspect(ed))),
@@ -981,6 +1003,75 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn frame_evaluation_is_read_only_and_rejects_conflicting_animation() {
+        let mut ed = Editor::new();
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[
+                {"op":"add","name":"A","primitive":{"kind":"cube"}},
+                {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[2,0,0]},
+                {"op":"add","name":"Follower","primitive":{"kind":"cube"},"translation":[4,0,0]},
+                {"op":"constrain","id":"Follower","align":"y","from":"A"},
+                {"op":"set_keyframe","id":"A","property":"translation","frame":1,"value":[0,0,0],"interpolation":"linear"},
+                {"op":"set_keyframe","id":"A","property":"translation","frame":3,"value":[0,2,0]}
+            ]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        let rest = ed.scene().clone();
+        let history = history(&ed);
+        let (status, frame) = call(&mut ed, "GET", "/frame?frame=2", Value::Null);
+        assert_eq!(status, 200, "{frame}");
+        assert_eq!(
+            frame["objects"][2]["transform"]["translation"],
+            json!([4.0, 1.0, 0.0])
+        );
+        let (_, ctx) = call(&mut ed, "GET", "/context?frame=2", Value::Null);
+        assert_eq!(
+            ctx["objects"][2]["pose"]["transform"],
+            frame["objects"][2]["transform"]
+        );
+        let mut detached = rest.clone();
+        detached.objects[0].tracks[0].keys[1].value = vec![0., 6., 0.];
+        let (status, preview) = call(&mut ed, "POST", "/frame?frame=2", json!(detached));
+        assert_eq!(status, 200, "{preview}");
+        assert_eq!(preview["objects"][2]["transform"]["translation"][1], 3.);
+        assert_eq!(preview["revision"], rest.revision);
+        assert_eq!(*ed.scene(), rest);
+        assert_eq!(super::history(&ed), history);
+        for query in [
+            "/frame",
+            "/frame?frame=no",
+            "/frame?frame=-1",
+            "/frame?frame=100001",
+        ] {
+            assert_ne!(call(&mut ed, "GET", query, Value::Null).0, 200);
+        }
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[
+            {"op":"constrain","id":"Follower","distance":2,"from":"B"},
+            {"op":"set_keyframe","id":"A","property":"translation","frame":3,"value":[0,10,0]},
+            {"op":"set_keyframe","id":"B","property":"translation","frame":1,"value":[2,0,0],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"B","property":"translation","frame":3,"value":[3,0,0]}
+        ]})).0,200);
+        let rest = ed.scene().clone();
+        for path in [
+            "/frame?frame=2",
+            "/context?frame=2",
+            "/render?frame=2&size=64",
+            "/render/image?frame=2&w=8&h=8&samples=1",
+        ] {
+            let (status, out) = call(&mut ed, "GET", path, Value::Null);
+            assert_eq!(status, 422, "{path}: {out}");
+            assert!(
+                out["error"].as_str().unwrap().contains("constraint"),
+                "{path}: {out}"
+            );
+            assert_eq!(*ed.scene(), rest);
+        }
+    }
+
     #[test]
     fn light_proposals_rendering_and_scene_loading_share_validation() {
         let mut ed = Editor::new();

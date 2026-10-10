@@ -258,10 +258,12 @@ pub(crate) fn prepare(
     focus: Option<u64>,
     frame: Option<f64>,
 ) -> Result<Prepared, EngineError> {
+    let sampled = frame.map(|f| ed.scene_at(f)).transpose()?;
+    let scene = sampled.as_ref().unwrap_or_else(|| ed.scene());
     let mut tris = Vec::new();
     let mut materials = Vec::new();
     let mut decoded: HashMap<&str, Option<Arc<Pixels>>> = HashMap::new();
-    let images = &ed.scene().images;
+    let images = &scene.images;
     let mut pixels = |name: &Option<String>| -> Option<Arc<Pixels>> {
         let name = name.as_deref()?;
         let (key, image) = images.get_key_value(name)?;
@@ -272,7 +274,7 @@ pub(crate) fn prepare(
     };
     let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
     let (mut flo, mut fhi) = (lo, hi);
-    for o in &ed.scene().objects {
+    for o in &scene.objects {
         let (transform, material) = match frame {
             Some(f) => crate::anim::pose(o, f),
             None => (o.transform.clone(), o.material.clone()),
@@ -388,7 +390,7 @@ pub(crate) fn prepare(
         .map(|p| p.y)
         .fold(0.0, f64::min);
     Ok(Prepared {
-        scene_lights: crate::light::emitters(ed, frame),
+        scene_lights: crate::light::scene_emitters(scene, frame),
         tris,
         materials,
         center,

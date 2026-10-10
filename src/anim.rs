@@ -536,6 +536,133 @@ mod tests {
         assert!(key_value(Property::Opacity, &KeyValue::Vector([1.0; 3])).is_err());
         assert_eq!(rgb_to_hex(hex_to_rgb("#8fb9a0")), "#8fb9a0");
     }
+    #[test]
+    fn constrained_frames_preserve_support_offsets_rest_and_seek_order() {
+        use serde_json::json;
+        let mut ed = crate::engine::Editor::new();
+        optical_apply(&mut ed,json!([
+            {"op":"add","name":"Tray","primitive":{"kind":"cube"},"scale":[4,0.2,4],"translation":[0,1,0]},
+            {"op":"add","name":"Cup","primitive":{"kind":"cube"},"translation":[0.5,2,0]},
+            {"op":"constrain","id":"Cup","on":"Tray"},
+            {"op":"set_keyframe","id":"Tray","property":"translation","frame":1,"value":[0,1,0],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Tray","property":"translation","frame":3,"value":[2,3,0]},
+            {"op":"set_keyframe","id":"Cup","property":"translation","frame":1,"value":[0.5,2,0]},
+            {"op":"set_keyframe","id":"Cup","property":"translation","frame":3,"value":[9,9,0]}
+        ])).unwrap();
+        let rest = ed.scene().clone();
+        let middle = ed.scene_at(2.).unwrap();
+        assert_eq!(middle.objects[0].transform.translation, [1., 2., 0.]);
+        assert!((middle.objects[1].transform.translation[0] - 1.5).abs() < 1e-8);
+        assert!((middle.objects[1].transform.translation[1] - 2.6).abs() < 1e-8);
+        assert_eq!(middle.constraints, rest.constraints);
+        ed.scene_at(3.).unwrap();
+        ed.scene_at(1.).unwrap();
+        assert_eq!(ed.scene_at(2.).unwrap(), middle);
+        assert_eq!(*ed.scene(), rest);
+        assert!(ed.scene_at(f64::NAN).is_err());
+        assert!(ed.scene_at(-1.).is_err());
+    }
+
+    #[test]
+    fn animated_orientation_drives_render_camera_and_light_without_double_sampling() {
+        use serde_json::json;
+        let mut ed = crate::engine::Editor::new();
+        optical_apply(&mut ed,json!([
+            {"op":"add_camera","name":"Shot"},
+            {"op":"add_light","name":"Key","lamp":{"kind":"sun"}},
+            {"op":"constrain","id":"Shot","orientation":"Key"},
+            {"op":"set_keyframe","id":"Key","property":"rotation","frame":1,"value":[0,0,0],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Key","property":"rotation","frame":3,"value":[0,1,0]}
+        ])).unwrap();
+        let s = ed.scene_at(2.).unwrap();
+        assert!((s.objects[0].transform.rotation[1] - 0.5).abs() < 1e-8);
+        let c = crate::camera::resolve(
+            &ed,
+            &crate::engine::ObjRef::Name("Shot".into()),
+            Some(2.),
+            32,
+            32,
+        )
+        .unwrap();
+        let expected = glam::DQuat::from_rotation_y(0.5) * glam::DVec3::NEG_Z;
+        assert!((c.target - c.eye).normalize().abs_diff_eq(expected, 1e-8));
+        let ctx = crate::engine::context_at(&ed, Some(2.));
+        assert!(
+            (ctx["objects"][0]["pose"]["transform"]["rotation"][1]
+                .as_f64()
+                .unwrap()
+                - 0.5)
+                .abs()
+                < 1e-8
+        );
+    }
+
+    #[test]
+    fn constrained_render_matches_baked_frame() {
+        use serde_json::json;
+        let mut ed = crate::engine::Editor::new();
+        optical_apply(&mut ed,json!([
+            {"op":"add","name":"Anchor","primitive":{"kind":"cube"}},
+            {"op":"add","name":"Follower","primitive":{"kind":"cube"},"translation":[2,0,0]},
+            {"op":"constrain","id":"Follower","align":"y","from":"Anchor"},
+            {"op":"set_keyframe","id":"Anchor","property":"translation","frame":1,"value":[0,0,0],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Anchor","property":"translation","frame":3,"value":[0,2,0]}
+        ])).unwrap();
+        let mut baked = crate::engine::Editor::new();
+        baked.load(ed.scene_at(2.).unwrap()).unwrap();
+        let a = crate::render::prepare(&ed, None, Some(2.)).unwrap();
+        let b = crate::render::prepare(&baked, None, None).unwrap();
+        assert_eq!(a.tris.len(), b.tris.len());
+        for (a, b) in a.tris.iter().zip(&b.tris) {
+            assert_eq!(a.p, b.p);
+        }
+    }
+
+    #[test]
+    fn frame_constraints_follow_linear_eased_and_stepped_transform_and_material_tracks() {
+        use serde_json::json;
+        for (interpolation, factor) in [("linear", 0.25), ("ease", 0.15625), ("step", 0.)] {
+            let mut ed = crate::engine::Editor::new();
+            optical_apply(&mut ed,json!([
+                {"op":"add","name":"A","primitive":{"kind":"cube"}},
+                {"op":"add","name":"B","primitive":{"kind":"cube"}},
+                {"op":"constrain","id":"B","mirrors":"A","axis":"x"},
+                {"op":"constrain","id":"B","matches":"A"},
+                {"op":"set_keyframe","id":"A","property":"translation","frame":1,"value":[0,0,0],"interpolation":interpolation},
+                {"op":"set_keyframe","id":"A","property":"translation","frame":5,"value":[4,0,0]},
+                {"op":"set_keyframe","id":"A","property":"color","frame":1,"value":"#000000","interpolation":interpolation},
+                {"op":"set_keyframe","id":"A","property":"color","frame":5,"value":"#ffffff"}
+            ])).unwrap();
+            let s = ed.scene_at(2.).unwrap();
+            assert!((s.objects[1].transform.translation[0] + 4. * factor).abs() < 1e-8);
+            assert_eq!(s.objects[0].material, s.objects[1].material);
+            assert_eq!(s.objects[1].material.color, rgb_to_hex([factor; 3]));
+        }
+    }
+
+    #[test]
+    fn maintained_layout_follows_the_animated_reference() {
+        use serde_json::json;
+        let mut ed = crate::engine::Editor::new();
+        optical_apply(&mut ed,json!([
+            {"op":"add","name":"Anchor","primitive":{"kind":"cube"}},
+            {"op":"add","name":"A","primitive":{"kind":"cube"}},
+            {"op":"add","name":"B","primitive":{"kind":"cube"}},
+            {"op":"arrange","ids":["A","B"],"layout":"row","around":"Anchor","spacing":1,"keep":true},
+            {"op":"set_keyframe","id":"Anchor","property":"translation","frame":1,"value":[0,0,0],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Anchor","property":"translation","frame":3,"value":[2,0,2]}
+        ])).unwrap();
+        let s = ed.scene_at(2.).unwrap();
+        for (sampled, rest) in s.objects.iter().zip(&ed.scene().objects).skip(1) {
+            for k in [0, 2] {
+                assert!(
+                    (sampled.transform.translation[k] - rest.transform.translation[k] - 1.).abs()
+                        < 1e-8
+                );
+            }
+        }
+    }
+
     fn optical_apply(
         ed: &mut crate::engine::Editor,
         commands: serde_json::Value,

@@ -711,6 +711,34 @@ async fn mcp_bridge_edits_the_shared_scene() {
     assert!(std::fs::read(&output).unwrap().starts_with(b"\x89PNG"));
     std::fs::remove_file(output).unwrap();
 
+    // Agents read the same constraint-solved frames as the browser and renderer.
+    let r=call(json!({"jsonrpc":"2.0","id":88,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"add","name":"Animated anchor","primitive":{"kind":"cube"},"translation":[90,0,0]},
+        {"op":"add","name":"Animated follower","primitive":{"kind":"cube"},"translation":[92,0,0]},
+        {"op":"constrain","id":"Animated follower","align":"y","from":"Animated anchor"},
+        {"op":"set_keyframe","id":"Animated anchor","property":"translation","frame":1,"value":[90,0,0],"interpolation":"linear"},
+        {"op":"set_keyframe","id":"Animated anchor","property":"translation","frame":3,"value":[90,2,0]}
+    ]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":89,"method":"tools/call","params":{"name":"get_scene","arguments":{"frame":2}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let frame: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let follower = frame["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Animated follower")
+        .unwrap();
+    assert_eq!(
+        follower["transform"]["translation"],
+        json!([92.0, 0.0, 0.0])
+    );
+    assert_eq!(
+        follower["pose"]["transform"]["translation"],
+        json!([92.0, 1.0, 0.0])
+    );
+
     child.kill().await.unwrap();
 }
 
