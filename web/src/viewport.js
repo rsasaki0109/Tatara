@@ -14,6 +14,15 @@ import { createStroke } from './sculpt.js'
 import { uvGridCanvas } from './uveditor.js'
 import { boneRotations, boneSegments, hasRig, posedMesh, reach } from './rig.js'
 
+// KHR_lights_punctual specifies a squared angular ramp. Use the same
+// production shader for all scene spots before compiling any materials.
+const spotFunction = /float getSpotAttenuation\( const in float coneCosine, const in float penumbraCosine, const in float angleCosine \) \{[\s\S]*?\n\}/
+if (!spotFunction.test(THREE.ShaderChunk.lights_pars_begin)) throw new Error('Unsupported Three.js spot attenuation shader')
+THREE.ShaderChunk.lights_pars_begin = THREE.ShaderChunk.lights_pars_begin.replace(spotFunction, `float getSpotAttenuation( const in float coneCosine, const in float penumbraCosine, const in float angleCosine ) {
+  float ramp = clamp((angleCosine - coneCosine) / max(0.001, penumbraCosine - coneCosine), 0.0, 1.0);
+  return ramp * ramp;
+}`)
+
 const CREASE = THREE.MathUtils.degToRad(38)
 const SELECT = 0xff8a4c
 const WARN = 0xff4d5e
@@ -1953,7 +1962,7 @@ export class Viewport {
       if (!lamp) continue
       if (!node.light || node.lightKind !== lamp.kind) {
         if (node.light) { this.scene.remove(node.light, node.light.target); node.light.dispose() }
-        node.light = lamp.kind === 'sun' ? new THREE.DirectionalLight() : new THREE.PointLight()
+        node.light = lamp.kind === 'sun' ? new THREE.DirectionalLight() : lamp.kind === 'spot' ? new THREE.SpotLight() : new THREE.PointLight()
         node.lightKind = lamp.kind
         node.light.castShadow = true
         node.light.shadow.mapSize.set(512,512)
@@ -1967,6 +1976,14 @@ export class Viewport {
       const light = node.light
       light.color.set(lamp.color)
       light.intensity = lamp.intensity
+      if (lamp.kind !== 'sun') light.distance = lamp.range ?? 0
+      if (lamp.kind === 'spot') {
+        light.angle = lamp.outer_cone ?? Math.PI/4
+        light.penumbra = 1 - (lamp.inner_cone ?? 0) / light.angle
+        const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(...t.rotation, 'XYZ'))
+        light.target.position.fromArray(t.translation).add(new THREE.Vector3(0,0,-1).applyQuaternion(q))
+        light.shadow.camera.updateProjectionMatrix()
+      }
       light.visible = lamp.intensity > 0
       node.mesh.material.color.set(lamp.color)
       node.mesh.material.emissive.set(lamp.color)
@@ -1983,6 +2000,32 @@ export class Viewport {
         Object.assign(light.shadow.camera,{left:-radius,right:radius,bottom:-radius,top:radius,far:distance+sphere.radius*2+10})
         light.shadow.camera.updateProjectionMatrix()
       } else light.position.fromArray(t.translation)
+    }
+  }
+
+  /** Offscreen diagnostic compiles the actual production light shader. */
+  spotAttenuationProbe(coneCosine, penumbraCosine, angleCosine) {
+    if (![coneCosine,penumbraCosine,angleCosine].every(Number.isFinite)) throw new Error('Probe inputs must be finite')
+    const source = THREE.ShaderChunk.lights_pars_begin.match(spotFunction)?.[0]
+    if (!source) throw new Error('Spot shader function missing')
+    const target = new THREE.WebGLRenderTarget(1,1)
+    const material = new THREE.ShaderMaterial({
+      uniforms:{cone:{value:coneCosine},penumbra:{value:penumbraCosine},angle:{value:angleCosine}},
+      vertexShader:'void main(){gl_Position=vec4(position,1.0);}',
+      fragmentShader:`uniform float cone; uniform float penumbra; uniform float angle; ${source}\nvoid main(){float a=getSpotAttenuation(cone,penumbra,angle);gl_FragColor=vec4(a,a,a,1.0);}`,
+      depthTest:false,depthWrite:false,
+    })
+    const geometry = new THREE.PlaneGeometry(2,2)
+    const scene = new THREE.Scene();scene.add(new THREE.Mesh(geometry,material))
+    const previous = this.renderer.getRenderTarget()
+    try {
+      this.renderer.setRenderTarget(target)
+      this.renderer.render(scene,new THREE.OrthographicCamera(-1,1,1,-1,0,1))
+      const pixel = new Uint8Array(4)
+      this.renderer.readRenderTargetPixels(target,0,0,1,1,pixel)
+      return Array.from(pixel)
+    } finally {
+      this.renderer.setRenderTarget(previous);target.dispose();geometry.dispose();material.dispose()
     }
   }
 

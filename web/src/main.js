@@ -1055,10 +1055,12 @@ function renderProperties(o) {
       <div class="vec-row"><span>Location${keyed('translation')}</span>${vec('translation',t.translation,.1)}</div>
       <div class="vec-row"><span>Rotation°${keyed('rotation')}</span>${vec('rotation',t.rotation,5,r=>r*180/Math.PI)}</div></div>
       <div class="card"><div class="card-title">Lighting</div>
-      <label class="row">Type<select id="light-kind"><option value="point" ${o.light.kind==='point'?'selected':''}>Point</option><option value="sun" ${o.light.kind==='sun'?'selected':''}>Sun</option></select></label>
+      <label class="row">Type<select id="light-kind"><option value="point" ${o.light.kind==='point'?'selected':''}>Point</option><option value="spot" ${o.light.kind==='spot'?'selected':''}>Spot</option><option value="sun" ${o.light.kind==='sun'?'selected':''}>Sun</option></select></label>
       <label class="row">Colour${keyed('light_color')}<input type="color" id="light-color" value="${shown.light.color}"></label>
-      <label class="vec-row"><span>Intensity (${o.light.kind==='point'?'cd':'lx'})${keyed('light_intensity')}</span><input type="number" id="light-intensity" min="0" max="100000" step=".1" value="${shown.light.intensity}"></label>
-      <p class="muted small">Point lights fall off with distance squared. Sun rays travel down local −Z. Intensity 0 switches the light off. Press Key to animate transform, colour and intensity. Editing a marked property keys the current frame.</p></div>${constraintCard(o)}`
+      <label class="vec-row"><span>Intensity (${o.light.kind==='sun'?'lx':'cd'})${keyed('light_intensity')}</span><input type="number" id="light-intensity" min="0" max="100000" step=".1" value="${shown.light.intensity}"></label>
+      ${o.light.kind==='spot' ? `<label class="vec-row"><span>Inner cone°</span><input type="number" id="light-inner_cone" min="0" max="90" step="1" value="${fmt((o.light.inner_cone ?? 0)*180/Math.PI,3)}"></label><label class="vec-row"><span>Outer cone°</span><input type="number" id="light-outer_cone" min="0" max="90" step="1" value="${fmt((o.light.outer_cone ?? Math.PI/4)*180/Math.PI,3)}"></label>` : ''}
+      ${o.light.kind!=='sun' ? `<label class="vec-row"><span>Range (m)</span><input type="number" id="light-range" min=".001" max="10000" step=".1" placeholder="Unlimited" value="${o.light.range ?? ''}"></label>` : ''}
+      <p class="muted small">Spot rays travel down local −Z; inner cone must be smaller than outer cone. Empty range is unlimited. Point lights fall off with distance squared. Sun rays travel down local −Z. Intensity 0 switches the light off. Press Key to animate transform, colour and intensity. Editing a marked property keys the current frame.</p></div>${constraintCard(o)}`
     return
   }
   if (o.camera) {
@@ -1408,9 +1410,9 @@ $('properties').addEventListener('change', (e) => {
   const o = objectById(app.selected)
   if (!o) return
   if (/^p-bone-\d$/.test(target.id)) return run(poseCommands(o, currentBone(o).name, boneSliders())).catch(() => {})
-  if (['light-kind','light-color','light-intensity'].includes(target.id)) {
+  if (['light-kind','light-color','light-intensity','light-inner_cone','light-outer_cone','light-range'].includes(target.id)) {
     const field = target.id.slice(6)
-    const value = field==='intensity'?Number(target.value):target.value
+    const value = field==='intensity'?Number(target.value):field==='range'?(target.value===''?null:Number(target.value)):field.endsWith('_cone')?Number(target.value)*Math.PI/180:target.value
     const property = `light_${field}`
     return run(trackOf(o,property) ? [{op:'set_keyframe',id:o.id,property,frame:Math.round(app.frame),value}] : [{op:'light_settings',id:o.id,lamp:{...o.light,[field]:value}}]).catch(() => {})
   }
@@ -2015,7 +2017,8 @@ window.__tatara = {
         status.done = true
       })
   },
-  debug: () => ({ sceneLightValues: [...viewport.nodes.values()].filter(n=>n.light).map(n=>({intensity:n.light.intensity,color:n.light.color.getHexString()})), sceneLights: [...viewport.nodes.values()].filter(n=>n.light?.visible).length, sceneCamera: viewport.sceneCameraId ?? null, renderCamera: { eye: viewport.camera.position.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov ?? 36, orthographic:Boolean(viewport.camera.isOrthographicCamera), ortho_height:viewport.effectiveOrthoHeight() }, pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
+  spotAttenuationProbe: (...args) => viewport.spotAttenuationProbe(...args),
+  debug: () => ({ sceneLightValues: [...viewport.nodes.values()].filter(n=>n.light).map(n=>({kind:n.lightKind,angle:n.light.angle,penumbra:n.light.penumbra,distance:n.light.distance,target:n.light.target?.position.toArray(),intensity:n.light.intensity,color:n.light.color.getHexString()})), sceneLights: [...viewport.nodes.values()].filter(n=>n.light?.visible).length, sceneCamera: viewport.sceneCameraId ?? null, renderCamera: { eye: viewport.camera.position.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov ?? 36, orthographic:Boolean(viewport.camera.isOrthographicCamera), ortho_height:viewport.effectiveOrthoHeight() }, pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
     pathSamples: preview.active ? preview.samples : null,
     finalSamples: finalRender.open ? finalRender.samples : null,

@@ -2127,4 +2127,23 @@ mod tests {
             200
         );
     }
+    #[test]
+    fn spot_api_validates_settings_renders_and_undoes_one_typed_batch() {
+        let mut ed = Editor::new();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[
+            {"op":"add_light","name":"Spot","translation":[0,2,3],"rotation":[-0.4,0,0],"lamp":{"kind":"spot","inner_cone":0.2,"outer_cone":0.8,"range":8,"intensity":80}},
+            {"op":"add","primitive":{"kind":"cube"}}]})).0,200);
+        let before = ed.scene().clone();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"move","id":"Spot","offset":[1,0,0]},{"op":"light_settings","id":"Spot","lamp":{"kind":"spot","inner_cone":0.8,"outer_cone":0.8}}]})).0,422);
+        assert_eq!(*ed.scene(), before);
+        let image = image_job(&ed, "view=front&w=16&h=16&samples=2")
+            .unwrap_or_else(|r| panic!("{}", r.status))
+            .run();
+        assert_eq!(image.status, 200);
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"light_settings","id":"Spot","lamp":{"kind":"spot","inner_cone":0.3,"outer_cone":0.9,"range":10,"intensity":20}}]})).0,200);
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        let mut restored = before;
+        restored.revision += 2; // The edit and Undo each advance the API revision.
+        assert_eq!(*ed.scene(), restored);
+    }
 }
