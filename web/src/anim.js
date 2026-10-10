@@ -26,9 +26,38 @@ export function sampleTrack(track, frame) {
   const a = keys[i]
   const b = keys[i + 1]
   let t = (frame - a.frame) / (b.frame - a.frame)
+  if (a.interpolation === 'bezier') return a.value.map((start, k) => {
+    const x1 = a.out_handle?.time[k] ?? 1 / 3
+    const x2 = 1 - (b.in_handle?.time[k] ?? 1 / 3)
+    const end = b.value[k]
+    const y1 = start + (a.out_handle?.value[k] ?? 0)
+    const y2 = end + (b.in_handle?.value[k] ?? 0)
+    let lo = 0, hi = 1
+    for (let n = 0; n < 48; n++) {
+      const mid = (lo + hi) / 2
+      const x = cubic(0, x1, x2, 1, mid)
+      if (x === t) { lo = mid; hi = mid; break }
+      if (x < t) lo = mid
+      else hi = mid
+    }
+    return sampledDomain(track.property, cubic(start, y1, y2, end, (lo + hi) / 2))
+  })
   if (a.interpolation === 'step') t = 0
   else if (a.interpolation !== 'linear') t = t * t * (3 - 2 * t)
   return a.value.map((x, k) => x + (b.value[k] - x) * t)
+}
+
+function cubic(a, b, c, d, t) {
+  const u = 1 - t
+  return u*u*u*a + 3*u*u*t*b + 3*u*t*t*c + t*t*t*d
+}
+
+function sampledDomain(property, value) {
+  const ranges = {roughness:[0,1],metalness:[0,1],opacity:[0,1],emissive_strength:[0,20],camera_fov:[1,170],camera_aperture:[0,1],camera_focus:[.001,1e4],camera_height:[.001,1e4],light_intensity:[0,100000]}
+  const range = ranges[property] ?? (COLORS.includes(property) ? [0,1] : [-1e6,1e6])
+  value = Math.max(range[0], Math.min(range[1], value))
+  if (property === 'scale' && Math.abs(value) < 1e-6) return value < 0 ? -1e-6 : 1e-6
+  return value
 }
 
 export function restValue(o, property) {

@@ -3,6 +3,7 @@
 // editing, history and files, then every demo scenario in capture mode.
 // Requires `npm --prefix web run build` and `cargo build --release`.
 
+import { checkBezier } from './bezier-check.mjs'
 import { checkCurves } from './curve-check.mjs'
 import { checkPoles } from './pole-check.mjs'
 import { checkJointLimits } from './limits-check.mjs'
@@ -1089,6 +1090,7 @@ try {
   await checkCurves(curves,check)
   await checkPoles(curves,check)
   await checkJointLimits(curves,check)
+  await checkBezier(curves,check)
   await curves.close()
 
   // Every scenario must finish without errors (the MCP one falls back to HTTP).

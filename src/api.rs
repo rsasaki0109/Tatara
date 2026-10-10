@@ -1348,6 +1348,64 @@ mod tests {
     }
 
     #[test]
+    fn bezier_handles_preview_accept_sample_and_undo() {
+        let mut ed = Editor::new();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[
+            {"op":"add_camera","name":"Shot"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":1,"value":20,"interpolation":"bezier"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":11,"value":60}
+        ]})).0,200);
+        let original = ed.scene().clone();
+        let (status, proposal) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Shape the lens","commands":[
+                {"op":"set_key_handle","id":"Shot","property":"camera_fov","frame":1,"side":"out","handle":{"time":[0.8],"value":[40]}},
+                {"op":"set_key_handle","id":"Shot","property":"camera_fov","frame":11,"side":"in","handle":{"time":[0.1],"value":[0]}}
+            ]}),
+        );
+        assert_eq!(status, 200, "{proposal}");
+        let id = proposal["ids"][0].as_u64().unwrap();
+        let (status, preview) = call(&mut ed, "GET", &format!("/proposal?id={id}"), Value::Null);
+        assert_eq!(status, 200);
+        assert_eq!(
+            preview["scene"]["objects"][0]["tracks"][0]["keys"][0]["out_handle"]["time"],
+            json!([0.8])
+        );
+        assert_eq!(*ed.scene(), original);
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                &format!("/proposal/accept?id={id}"),
+                json!({})
+            )
+            .0,
+            200
+        );
+        assert!(
+            (path_job(&ed, "camera=Shot&frame=8.625&w=8&h=8")
+                .unwrap_or_else(|r| panic!("status {}", r.status))
+                .camera
+                .fov
+                - 55.0)
+                .abs()
+                < 1e-9
+        );
+        let accepted = ed.scene().clone();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[
+            {"op":"move","id":"Shot","offset":[1,0,0]},
+            {"op":"set_key_handle","id":"Shot","property":"camera_fov","frame":1,"side":"out","handle":{"time":[-1],"value":[0]}}
+        ]})).0,422);
+        assert_eq!(*ed.scene(), accepted);
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        assert_eq!(ed.scene().objects, original.objects);
+        assert_eq!(call(&mut ed, "POST", "/redo", json!({})).0, 200);
+        assert_eq!(ed.scene().objects, accepted.objects);
+    }
+
+    #[test]
     fn key_edits_preview_accept_undo_and_validate_atomically() {
         let mut ed = Editor::new();
         assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[

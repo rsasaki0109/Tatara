@@ -130,6 +130,7 @@ export class DemoRunner {
       return this.sleep(s.after ?? 500)
     }
     if (s.slide) return this.slide(s)
+    if (s.curveHandleDrag) return this.curveHandleDrag(s)
     if (s.curveDrag) return this.curveDrag(s)
     if (s.scrubNumber) return this.dragNumber(s)
     if (s.stroke) return this.stroke(s)
@@ -349,6 +350,27 @@ export class DemoRunner {
     const press=this.press()
     key.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:1,button:0,clientX:x0,clientY:y0}))
     await this.app.animator.add('curve-cursor',s.ms??1000,t=>{
+      this.pos={x:x0+(x1-x0)*t,y:y0+(y1-y0)*t};this.placeCursor()
+      document.dispatchEvent(new PointerEvent('pointermove',{pointerId:1,clientX:this.pos.x,clientY:this.pos.y}))
+    },ease.inOut)
+    document.dispatchEvent(new PointerEvent('pointerup',{pointerId:1,clientX:x1,clientY:y1}))
+    await press;await this.idle()
+    if(s.after)await this.sleep(s.after)
+  }
+
+  /** Drag an Bezier curve handle through the editor's pointer handlers. */
+  async curveHandleDrag(s) {
+    const key=document.querySelector(`[data-curve-handle="${s.curveHandleDrag.side}"]`)
+    if(!key)throw new Error('demo: curve handle missing')
+    key.scrollIntoView({block:'nearest'})
+    const svg=document.querySelector('[data-curve-plot]'),r=svg.getBoundingClientRect(),d=svg.dataset
+    const box=key.getBoundingClientRect(),x0=box.left+box.width/2,y0=box.top+box.height/2
+    const x1=r.left+(44+(s.curveHandleDrag.frame-Number(d.x0))/(Number(d.x1)-Number(d.x0))*300)/360*r.width
+    const y1=s.curveHandleDrag.value===undefined?y0:r.top+(16+(Number(d.y1)-s.curveHandleDrag.value)/(Number(d.y1)-Number(d.y0))*172)/220*r.height
+    await this.moveTo(x0,y0)
+    const press=this.press()
+    key.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:1,button:0,clientX:x0,clientY:y0}))
+    await this.app.animator.add('bezier-cursor',s.ms??1000,t=>{
       this.pos={x:x0+(x1-x0)*t,y:y0+(y1-y0)*t};this.placeCursor()
       document.dispatchEvent(new PointerEvent('pointermove',{pointerId:1,clientX:this.pos.x,clientY:this.pos.y}))
     },ease.inOut)

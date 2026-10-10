@@ -886,6 +886,50 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let r=call(json!({"jsonrpc":"2.0","id":98,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"edit_keyframe","id":"Animated anchor","property":"translation","frame":5,"new_frame":1}]}}})).await;
     assert_eq!(r["result"]["isError"], true, "{r}");
 
+    let r=call(json!({"jsonrpc":"2.0","id":107,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"add","name":"Bezier ball","primitive":{"kind":"cube"}},
+        {"op":"set_keyframe","id":"Bezier ball","property":"translation","frame":1,"value":[0,0,0],"interpolation":"bezier"},
+        {"op":"set_keyframe","id":"Bezier ball","property":"translation","frame":11,"value":[10,0,0]},
+        {"op":"set_key_handle","id":"Bezier ball","property":"translation","frame":1,"side":"out","handle":{"time":[0.8,0.3,0.3],"value":[10,0,0]}},
+        {"op":"set_key_handle","id":"Bezier ball","property":"translation","frame":11,"side":"in","handle":{"time":[0.1,0.3,0.3],"value":[0,0,0]}}
+    ]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":108,"method":"tools/call","params":{"name":"get_scene","arguments":{"frame":8.625}}})).await;
+    let sampled: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let ball = sampled["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Bezier ball")
+        .unwrap();
+    assert!(
+        (ball["pose"]["transform"]["translation"][0]
+            .as_f64()
+            .unwrap()
+            - 8.75)
+            .abs()
+            < 1e-9
+    );
+    let r=call(json!({"jsonrpc":"2.0","id":109,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"set_key_handle","id":"Bezier ball","property":"translation","frame":1,"side":"out","handle":{"time":[0.3,0.3,0.3],"value":[1000001,0,0]}}
+    ]}}})).await;
+    assert_eq!(r["result"]["isError"], true);
+
+    let r=call(json!({"jsonrpc":"2.0","id":110,"method":"tools/call","params":{"name":"get_scene","arguments":{"include_mesh":true}}})).await;
+    let authored: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let ball = authored["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Bezier ball")
+        .unwrap();
+    assert_eq!(
+        ball["tracks"][0]["keys"][0]["out_handle"]["time"],
+        json!([0.8, 0.3, 0.3])
+    );
+
     child.kill().await.unwrap();
 }
 

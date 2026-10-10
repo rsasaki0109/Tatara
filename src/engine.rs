@@ -853,6 +853,17 @@ pub enum Command {
         #[serde(default)]
         bone: Option<String>,
     },
+    /// Set or clear a component-wise Bezier control on an existing key.
+    SetKeyHandle {
+        id: ObjRef,
+        property: Property,
+        frame: f64,
+        side: anim::HandleSide,
+        #[serde(default)]
+        handle: Option<anim::CurveHandle>,
+        #[serde(default)]
+        bone: Option<String>,
+    },
     /// Give an object bones: an explicit list (`bones`; empty removes the
     /// rig) or a `chain` of that many bones end to end through the mesh
     /// along `axis` (default its longest side). The displayed mesh bends
@@ -2361,14 +2372,14 @@ fn apply_command(
                 (None, None) => anim::value_at(o, *property, frame),
             };
             let name = bone.map(|k| o.bones[k].name.clone());
-            anim::set_key(
-                o,
-                *property,
-                name.as_deref(),
-                frame,
-                value,
-                interpolation.unwrap_or_default(),
-            )?;
+            let interpolation = interpolation.unwrap_or_else(|| {
+                o.tracks
+                    .iter()
+                    .find(|t| t.property == *property && t.bone == name)
+                    .and_then(|t| t.keys.iter().find(|k| (k.frame - frame).abs() < 1e-9))
+                    .map_or_else(Interpolation::default, |k| k.interpolation)
+            });
+            anim::set_key(o, *property, name.as_deref(), frame, value, interpolation)?;
         }
         Command::EditKeyframe {
             id,
@@ -2388,6 +2399,24 @@ fn apply_command(
                 *new_frame,
                 value.as_ref(),
                 *interpolation,
+            )?;
+        }
+        Command::SetKeyHandle {
+            id,
+            property,
+            frame,
+            side,
+            handle,
+            bone,
+        } => {
+            let i = resolve(scene, id)?;
+            anim::set_handle(
+                &mut scene.objects[i],
+                *property,
+                bone.as_deref(),
+                *frame,
+                *side,
+                handle.as_ref(),
             )?;
         }
         Command::DeleteKeyframe {
@@ -3918,6 +3947,57 @@ mod tests {
     }
 
     #[test]
+    fn bezier_handle_commands_preserve_edits_round_trip_and_undo() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(serde_json::json!({"commands":[
+            {"op":"add","name":"Ball","primitive":{"kind":"cube"}},
+            {"op":"set_keyframe","id":"Ball","property":"translation","frame":1,"value":[0,1,0],"interpolation":"bezier"},
+            {"op":"set_keyframe","id":"Ball","property":"translation","frame":11,"value":[10,1,0]}
+        ]}))).unwrap();
+        let original = ed.scene().objects.clone();
+        apply_key_edit(&mut ed,serde_json::json!({"op":"set_key_handle","id":"Ball","property":"translation","frame":1,"side":"out","handle":{"time":[0.8,0.3,0.3],"value":[10,0,0]}})).unwrap();
+        let shaped = ed.scene().objects.clone();
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().objects, original);
+        ed.redo().unwrap();
+        assert_eq!(ed.scene().objects, shaped);
+        apply_key_edit(&mut ed,serde_json::json!({"op":"edit_keyframe","id":"Ball","property":"translation","frame":1,"new_frame":2,"value":[2,1,0]})).unwrap();
+        let key = &ed.scene().objects[0].tracks[0].keys[0];
+        assert_eq!(key.out_handle, shaped[0].tracks[0].keys[0].out_handle);
+        apply_key_edit(&mut ed,serde_json::json!({"op":"set_keyframe","id":"Ball","property":"translation","frame":2,"value":[2,1,0]})).unwrap();
+        assert_eq!(
+            ed.scene().objects[0].tracks[0].keys[0].out_handle,
+            shaped[0].tracks[0].keys[0].out_handle
+        );
+        assert_eq!(
+            ed.scene().objects[0].tracks[0].keys[0].interpolation,
+            Interpolation::Bezier
+        );
+        let serialized = serde_json::to_value(ed.scene()).unwrap();
+        let restored: Scene = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.objects, ed.scene().objects);
+        let before = ed.scene().clone();
+        for command in [
+            serde_json::json!({"op":"set_key_handle","id":"Ball","property":"translation","frame":2,"side":"out","handle":{"time":[2,0,0],"value":[0,0,0]}}),
+            serde_json::json!({"op":"set_key_handle","id":"Ball","property":"translation","frame":2,"side":"in","handle":{"time":[0.3],"value":[0]}}),
+            serde_json::json!({"op":"set_key_handle","id":"Ball","property":"translation","frame":3,"side":"in"}),
+            serde_json::json!({"op":"set_key_handle","id":"Ball","property":"translation","bone":"Wrong","frame":2,"side":"out"}),
+        ] {
+            let b = batch(
+                serde_json::json!({"commands":[{"op":"move","id":"Ball","offset":[1,0,0]},command]}),
+            );
+            assert!(ed.apply(&b).is_err());
+            assert_eq!(ed.scene(), &before);
+        }
+        apply_key_edit(&mut ed,serde_json::json!({"op":"set_key_handle","id":"Ball","property":"translation","frame":2,"side":"out"})).unwrap();
+        assert!(ed.scene().objects[0].tracks[0].keys[0].out_handle.is_none());
+        assert_eq!(
+            ed.scene().objects[0].tracks[0].keys[0].interpolation,
+            Interpolation::Bezier
+        );
+    }
+
+    #[test]
     fn key_edits_retime_one_channel_atomically_and_keep_other_keys() {
         let mut ed = Editor::new();
         ed.apply(&batch(serde_json::json!({"commands":[
@@ -4040,6 +4120,8 @@ mod tests {
                 frame: 3.0,
                 value: vec![0.2, 0.4],
                 interpolation: Default::default(),
+                in_handle: None,
+                out_handle: None,
             }],
         });
         assert!(Editor::new().load(saved).is_err());
