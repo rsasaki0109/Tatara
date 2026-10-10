@@ -3,6 +3,7 @@
 // editing, history and files, then every demo scenario in capture mode.
 // Requires `npm --prefix web run build` and `cargo build --release`.
 
+import { motionTip } from './gltf-motion-check.mjs'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -1062,6 +1063,18 @@ try {
   await until(ik,id=>window.__tatara.resolvedFrame()===1.5 && Math.hypot(...window.__tatara.rigTip(id).map((v,k)=>v-[.4,1.3,.2][k]))<.001,ikRest.objects[0].id)
   const afterIk=await ik.evaluate(()=>fetch('/api/scene').then(r=>r.json()))
   check(JSON.stringify(afterIk)===JSON.stringify(ikAuthored) && !afterIk.objects[0].tracks.length,'IK seeking is deterministic and creates no bone keys or history edits')
+  await ik.evaluate(async()=>{
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[{op:'set_animation',start:1,end:3}]})});if(!r.ok)throw new Error(await r.text());await window.__tatara.refresh(false)
+  })
+  check(await ik.evaluate(()=>document.documentElement.scrollWidth<=innerWidth && document.body.scrollWidth<=innerWidth && scrollX===0 && ['exportMotion','addCamera','addLight'].every(action=>document.querySelector(`[data-action=${action}] svg`))),'the motion export icon fits the desktop toolbar without horizontal scrolling')
+  const motionBefore=await ik.evaluate(()=>fetch('/api/scene').then(r=>r.json()))
+  const [motionFile]=await Promise.all([ik.waitForEvent('download'),ik.click('[data-action=exportMotion]')])
+  const motionBytes=fs.readFileSync(await motionFile.path())
+  const bakedPlayback=await motionTip(motionBytes,2/24)
+  check(Math.hypot(...bakedPlayback.tip.map((v,k)=>v-[0,1.3,.2][k]))<.001 && bakedPlayback.channels===10,'Motion GLB plays solved IK through the standard Three.js glTF loader and mixer')
+  check(JSON.stringify(await ik.evaluate(()=>fetch('/api/scene').then(r=>r.json())))===JSON.stringify(motionBefore),'Motion GLB export preserves authored keys, bones and revision')
+  const refused=await ik.evaluate(async()=>{const r=await fetch('/api/export/glb?frames=0-240');return r.status})
+  check(refused>=400,'oversized motion exports fail with a bounded range error')
   await ik.selectOption('#ik-target','');await ik.click('[data-rig=follow]')
   await until(ik,()=>fetch('/api/scene').then(r=>r.json()).then(s=>!s.ik_targets?.length));await ik.click('[data-action=undo]')
   await until(ik,()=>fetch('/api/scene').then(r=>r.json()).then(s=>s.ik_targets?.length===1))

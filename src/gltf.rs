@@ -10,7 +10,7 @@ use base64::Engine as _;
 use glam::{DMat4, DQuat, DVec3, EulerRot};
 use serde_json::{Value, json};
 
-use crate::anim::{Property, sample_track};
+use crate::anim::{Interpolation, Key, Property, Track, sample_track};
 use crate::engine::{
     Command, Editor, EngineError, MAX_FACES, MAX_OBJECTS, Material, Mesh, Vec3, check_color,
 };
@@ -270,8 +270,86 @@ fn material_json(
     out
 }
 
+/// Export resolved object and bone motion without changing the authored scene.
+/// Bounds cover samples, output channels and repeated geometry evaluation.
+pub fn export_glb_frames(ed: &Editor, start: f64, end: f64) -> Result<Vec<u8>, EngineError> {
+    crate::anim::check_frame(start)?;
+    crate::anim::check_frame(end)?;
+    if end < start || end - start >= 240.0 {
+        return err("glTF frames must run forward, at most 240 samples");
+    }
+    let mut frames = vec![start, end];
+    frames.extend((start.ceil() as u32..=end.floor() as u32).map(f64::from));
+    frames.extend(
+        ed.scene()
+            .objects
+            .iter()
+            .flat_map(|o| &o.tracks)
+            .flat_map(|t| &t.keys)
+            .map(|k| k.frame)
+            .filter(|&f| f >= start && f <= end),
+    );
+    frames.sort_by(f64::total_cmp);
+    frames.dedup_by(|a, b| *a == *b);
+    if frames.windows(2).any(|w| {
+        (w[0] / ed.scene().animation.fps) as f32 >= (w[1] / ed.scene().animation.fps) as f32
+    }) {
+        return err("glTF frames are too close to encode as distinct timestamps");
+    }
+    let geometry: usize = ed
+        .scene()
+        .objects
+        .iter()
+        .map(|o| ed.evaluated(o).vertices.len() + ed.evaluated(o).faces.len())
+        .sum();
+    let channels: usize = ed.scene().objects.iter().map(|o| 3 + o.bones.len()).sum();
+    if frames.len() > 240
+        || geometry.saturating_mul(frames.len()) > 4_000_000
+        || channels.saturating_mul(frames.len()) > 240_000
+    {
+        return err("glTF motion bake is too large: shorten the range or simplify the scene");
+    }
+    let mut tracks: HashMap<u64, Vec<Track>> = HashMap::new();
+    for &frame in &frames {
+        let scene = ed.scene_at(frame)?;
+        for o in &scene.objects {
+            let values = [
+                (Property::Translation, None, o.transform.translation),
+                (Property::Rotation, None, o.transform.rotation),
+                (Property::Scale, None, o.transform.scale),
+            ]
+            .into_iter()
+            .chain(
+                o.bones
+                    .iter()
+                    .map(|b| (Property::Bone, Some(b.name.clone()), b.rotation)),
+            );
+            let list = tracks.entry(o.id).or_default();
+            for (i, (property, bone, value)) in values.enumerate() {
+                if list.len() <= i {
+                    list.push(Track {
+                        property,
+                        bone,
+                        keys: Vec::new(),
+                    });
+                }
+                list[i].keys.push(Key {
+                    frame,
+                    value: value.to_vec(),
+                    interpolation: Interpolation::Linear,
+                });
+            }
+        }
+    }
+    Ok(export_glb_inner(ed, Some(&tracks)))
+}
+
 /// Binary glTF of the scene as displayed (modifiers applied).
 pub fn export_glb(ed: &Editor) -> Vec<u8> {
+    export_glb_inner(ed, None)
+}
+
+fn export_glb_inner(ed: &Editor, motion: Option<&HashMap<u64, Vec<Track>>>) -> Vec<u8> {
     let mut bin: Vec<u8> = Vec::new();
     let mut views = Vec::new();
     let mut accessors = Vec::new();
@@ -643,7 +721,8 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
         // Transform and bone tracks become glTF animation channels, baked
         // once per frame (and at every key) so eased and stepped keys look
         // the same.
-        for track in &o.tracks {
+        let tracks = motion.and_then(|m| m.get(&o.id)).unwrap_or(&o.tracks);
+        for track in tracks {
             let (target, path) = match track.property {
                 Property::Translation => (node, "translation"),
                 Property::Rotation => (node, "rotation"),
@@ -667,7 +746,13 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
                 .collect();
             frames.extend(track.keys.iter().map(|k| k.frame));
             frames.sort_by(f64::total_cmp);
-            frames.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+            frames.dedup_by(|a, b| {
+                if motion.is_some() {
+                    *a == *b
+                } else {
+                    (*a - *b).abs() < 1e-6
+                }
+            });
             let times: Vec<f32> = frames.iter().map(|f| (f / fps) as f32).collect();
             let values: Vec<f32> = frames
                 .iter()
@@ -1975,6 +2060,73 @@ mod tests {
             assert_eq!(faces.len(), 10, "face {face}");
             assert!(faces.iter().all(|f| f.len() == 4));
         }
+    }
+
+    #[test]
+    fn solved_motion_exports_unkeyed_followers_and_ik_without_editing() {
+        let ed = editor_with(json!([
+            {"op":"add","name":"Anchor","primitive":{"kind":"cube"}},
+            {"op":"add","name":"Follower","primitive":{"kind":"cube"},"translation":[2,0,0]},
+            {"op":"constrain","id":"Follower","align":"y","from":"Anchor"},
+            {"op":"set_keyframe","id":"Anchor","property":"translation","frame":1,"value":[0,0,0],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Anchor","property":"translation","frame":3,"value":[0,2,0]},
+            {"op":"add","name":"Arm","primitive":{"kind":"cylinder","height":2,"rings":8},"translation":[0,1,0]},
+            {"op":"rig","id":"Arm","chain":4},
+            {"op":"add","name":"Target","primitive":{"kind":"sphere"},"translation":[0.8,1.3,0.2]},
+            {"op":"track_target","id":"Arm","bone":"Bone 4","target":"Target"},
+            {"op":"set_keyframe","id":"Target","property":"translation","frame":1,"value":[0.8,1.3,0.2],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Target","property":"translation","frame":1.5,"value":[0.4,1.3,0.2],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Target","property":"translation","frame":3,"value":[-0.8,1.3,0.2]}
+        ]));
+        let rest = serde_json::to_value(ed.scene()).unwrap();
+        let bytes = export_glb_frames(&ed, 1.0, 3.0).unwrap();
+        assert_eq!(bytes, export_glb_frames(&ed, 1.0, 3.0).unwrap());
+        let (doc, bin) = parse_glb(&bytes).unwrap();
+        let buffers = load_buffers(&doc, bin).unwrap();
+        let animation = &doc["animations"][0];
+        for channel in animation["channels"].as_array().unwrap() {
+            let node = &doc["nodes"][channel["target"]["node"].as_u64().unwrap() as usize];
+            let sampler = &animation["samplers"][channel["sampler"].as_u64().unwrap() as usize];
+            let (times, _) =
+                read_accessor(&doc, &buffers, sampler["input"].as_u64().unwrap() as usize).unwrap();
+            let (values, width) =
+                read_accessor(&doc, &buffers, sampler["output"].as_u64().unwrap() as usize)
+                    .unwrap();
+            assert_eq!(times.len(), 4, "fractional driver keys must be sampled");
+            for (i, time) in times.iter().enumerate() {
+                let frame = *time * ed.scene().animation.fps;
+                let scene = ed.scene_at(frame).unwrap();
+                if node["name"] == "Follower" && channel["target"]["path"] == "translation" {
+                    assert!(
+                        (values[i * width + 1] - scene.objects[1].transform.translation[1]).abs()
+                            < 1e-5
+                    );
+                }
+                if let Some(name) = node["name"].as_str().filter(|n| n.starts_with("Bone ")) {
+                    let bone = scene.objects[2]
+                        .bones
+                        .iter()
+                        .find(|b| b.name == name)
+                        .unwrap();
+                    let [x, y, z] = bone.rotation;
+                    let expected = DQuat::from_euler(EulerRot::XYZ, x, y, z);
+                    let actual = DQuat::from_xyzw(
+                        values[i * width],
+                        values[i * width + 1],
+                        values[i * width + 2],
+                        values[i * width + 3],
+                    );
+                    assert!(actual.dot(expected).abs() > 1.0 - 1e-5);
+                }
+            }
+        }
+        assert_eq!(animation["channels"].as_array().unwrap().len(), 16);
+        assert_eq!(rest, serde_json::to_value(ed.scene()).unwrap());
+        for (a, b) in [(3.0, 1.0), (-1.0, 2.0), (0.0, 240.0), (f64::NAN, 2.0)] {
+            assert!(export_glb_frames(&ed, a, b).is_err());
+        }
+        assert!(export_glb_frames(&ed, 99_999.99, 99_999.990_000_01).is_err());
+        assert!(export_glb_frames(&ed, 1.5, 1.5).is_ok());
     }
 
     #[test]

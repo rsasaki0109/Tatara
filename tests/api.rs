@@ -765,6 +765,35 @@ async fn mcp_bridge_edits_the_shared_scene() {
         tatara::rig::tip(&bones, &rotations, 3).distance(glam::DVec3::new(0.4, 0.3, 0.2)) < 1e-3
     );
     assert!(!frame["ik_targets"].as_array().unwrap().is_empty());
+    let motion_path =
+        std::env::temp_dir().join(format!("tatara-motion-{}.glb", std::process::id()));
+    let r=call(json!({"jsonrpc":"2.0","id":94,"method":"tools/call","params":{"name":"export_gltf","arguments":{"path":motion_path,"frames":[1,3]}}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let motion_bytes = std::fs::read(&motion_path).unwrap();
+    assert_eq!(&motion_bytes[..4], b"glTF");
+    let size = u32::from_le_bytes(motion_bytes[12..16].try_into().unwrap()) as usize;
+    let doc: Value = serde_json::from_slice(&motion_bytes[20..20 + size]).unwrap();
+    let bone_node = doc["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|n| n["name"] == "Bone 4")
+        .unwrap();
+    assert!(
+        doc["animations"][0]["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["target"]["node"] == bone_node && c["target"]["path"] == "rotation")
+    );
+    let r=call(json!({"jsonrpc":"2.0","id":95,"method":"tools/call","params":{"name":"export_gltf","arguments":{"path":motion_path,"frames":[0,240]}}})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert_eq!(
+        std::fs::read(&motion_path).unwrap(),
+        motion_bytes,
+        "failed export must not overwrite a file"
+    );
+    std::fs::remove_file(motion_path).unwrap();
     let r=call(json!({"jsonrpc":"2.0","id":92,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"track_target","id":"IK arm","bone":"Bone 4","target":"IK arm"}]}}})).await;
     assert_eq!(r["result"]["isError"], true);
     let r=call(json!({"jsonrpc":"2.0","id":93,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"clear_target","id":"IK arm"}]}}})).await;

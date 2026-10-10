@@ -3,6 +3,7 @@
 // sub-path like GitHub Pages and drives it in Chromium with no server API.
 // Run `node scripts/build-static.mjs` first.
 
+import { motionTip } from './gltf-motion-check.mjs'
 import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
@@ -286,6 +287,15 @@ try {
   check(Math.hypot(...ikSolved.tip.map((v,k)=>v-[.4,1.3,.2][k]))<.001,'WebAssembly drives the persistent IK target in the actual viewport')
   check(JSON.stringify(ikSolved.rest)===JSON.stringify(ikRest),'WebAssembly IK sampling preserves authored bone poses, keys and revision')
 
+  await page.evaluate(async()=>{
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[{op:'set_animation',start:1,end:3}]})});if(!r.ok)throw new Error(await r.text());await window.__tatara.refresh(false)
+  })
+  check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth && document.body.scrollWidth<=innerWidth && scrollX===0 && ['exportMotion','addCamera','addLight'].every(action=>document.querySelector(`[data-action=${action}] svg`))),'the motion export icon fits the desktop toolbar without horizontal scrolling')
+  const motionBefore=await page.evaluate(()=>fetch('/api/scene').then(r=>r.json()))
+  const [motionFile]=await Promise.all([page.waitForEvent('download'),page.click('[data-action=exportMotion]')])
+  const bakedPlayback=await motionTip(fs.readFileSync(await motionFile.path()),2/24)
+  check(Math.hypot(...bakedPlayback.tip.map((v,k)=>v-[0,1.3,.2][k]))<.001 && bakedPlayback.channels===10,'WebAssembly Motion GLB reproduces IK with the standard glTF loader and mixer')
+  check(JSON.stringify(await page.evaluate(()=>fetch('/api/scene').then(r=>r.json())))===JSON.stringify(motionBefore),'WebAssembly motion export leaves the authored scene unchanged')
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

@@ -1653,4 +1653,19 @@ export const targetIk = {
   ]
 }
 
-export const SCENARIOS = { targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const motionExport = {
+  ...targetIk,
+  title:'Take AI-authored motion into other tools',
+  steps:[
+    {pick:'Arm',after:700},
+    {caption:'Move a target, animate the whole arm',hint:'shared Rust IK · no authored bone keys'},
+    {scrub:48,ms:2200,after:800},
+    {scrub:24,ms:1600,after:800},
+    {caption:'Export the solved playback range',hint:'standard glTF bone animation · constraints included'},
+    {click:'[data-action=exportMotion]',after:1600},
+    {caption:'Replay the motion in other 3D tools',hint:'scene and Undo history stay untouched'},
+    {cursor:false},{wait:1000}
+  ]
+}
+
+export const SCENARIOS = { motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
