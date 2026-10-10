@@ -852,7 +852,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
             };
             Ok(Response::json(
                 200,
-                json!({"revision": revision, "frame": f, "objects": scene.objects.iter().map(|o| json!({"id":o.id,"transform":o.transform,"material":o.material,"camera":o.camera,"light":o.light})).collect::<Vec<_>>()}),
+                json!({"revision": revision, "frame": f, "objects": scene.objects.iter().map(|o| json!({"id":o.id,"transform":o.transform,"material":o.material,"camera":o.camera,"light":o.light,"bones":o.bones})).collect::<Vec<_>>()}),
             ))
         }
         ("GET", "/context") => {
@@ -1004,6 +1004,79 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn persistent_ik_packets_previews_and_rendering_share_the_same_pose() {
+        let mut ed = Editor::new();
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[
+                {"op":"add","name":"Arm","primitive":{"kind":"cylinder","height":2,"rings":8},"translation":[0,1,0]},
+                {"op":"rig","id":"Arm","chain":4},
+                {"op":"add","name":"Target","primitive":{"kind":"sphere"},"translation":[0.8,1.3,0.2]},
+                {"op":"track_target","id":"Arm","bone":"Bone 4","target":"Target"},
+                {"op":"set_keyframe","id":"Target","property":"translation","frame":1,"value":[0.8,1.3,0.2],"interpolation":"linear"},
+                {"op":"set_keyframe","id":"Target","property":"translation","frame":3,"value":[-0.8,1.3,0.2]}
+            ]}),
+        );
+        assert_eq!(status, 200);
+        let rest = serde_json::to_value(ed.scene()).unwrap();
+        let (status, packet) = call(&mut ed, "GET", "/frame?frame=1.5", Value::Null);
+        assert_eq!(status, 200);
+        let o: crate::engine::Object = {
+            let mut v = rest["objects"][0].clone();
+            v["bones"] = packet["objects"][0]["bones"].clone();
+            serde_json::from_value(v).unwrap()
+        };
+        let tip = o.transform.matrix().transform_point3(crate::rig::tip(
+            &o.bones,
+            &crate::rig::rotations(&o, None),
+            3,
+        ));
+        assert!(tip.distance(glam::DVec3::new(0.4, 1.3, 0.2)) < 1e-3);
+        let (_, preview) = call(&mut ed, "POST", "/frame?frame=1.5", rest.clone());
+        assert_eq!(preview, packet);
+        let (_, context) = call(&mut ed, "GET", "/context?frame=1.5", Value::Null);
+        assert_eq!(
+            context["objects"][0]["pose"]["bones"],
+            packet["objects"][0]["bones"]
+        );
+        let rendered = handle(
+            &mut ed,
+            "GET",
+            "/render?views=front&size=64&frame=1.5",
+            &[],
+            false,
+        );
+        assert_eq!(
+            rendered.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&rendered.body)
+        );
+        assert!(rendered.body.starts_with(b"\x89PNG"));
+        let image = handle(
+            &mut ed,
+            "GET",
+            "/render/image?w=8&h=8&samples=1&frame=1.5",
+            &[],
+            false,
+        );
+        assert_eq!(image.status, 200);
+        assert!(image.body.starts_with(b"\x89PNG"));
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), rest);
+        let (status, error) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"rig","id":"Arm","bones":[]}]}),
+        );
+        assert_eq!(status, 422);
+        assert!(error.to_string().contains("clear its target"));
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), rest);
+    }
+
+    #[test]
     fn frame_evaluation_is_read_only_and_rejects_conflicting_animation() {
         let mut ed = Editor::new();
         let (status, out) = call(
@@ -1102,7 +1175,12 @@ mod tests {
             "#ff6633"
         );
         let rendered = handle(&mut ed, "GET", "/render?views=front&size=64", &[], false);
-        assert_eq!(rendered.status, 200);
+        assert_eq!(
+            rendered.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&rendered.body)
+        );
         assert!(rendered.body.starts_with(b"\x89PNG"));
         assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
         let (_, ctx) = call(&mut ed, "GET", "/context", Value::Null);

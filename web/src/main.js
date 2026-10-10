@@ -17,7 +17,7 @@ import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
 import { installWasmBackend } from './backend.js'
 import { propertiesFor, isAnimated, keyFrames, track as trackOf } from './anim.js'
-import { boneRotations, boneTrack } from './rig.js'
+import { boneRotations, boneTrack, boneSegments } from './rig.js'
 
 const params = new URLSearchParams(location.search)
 const capture = params.has('capture')
@@ -1351,15 +1351,19 @@ function rigCard(o) {
   }
   const bone = currentBone(o)
   const k = o.bones.indexOf(bone)
-  const r = boneRotations(o, app.frame)[k]
+  const r = boneRotations(viewport.rigPose(o), viewport.displayFrame())[k]
   const keyed = boneTrack(o, bone.name) ? ' <span class="keyed" title="Animated: edits key this frame">◆</span>' : ''
   const deg = (v) => Math.round((v * 180) / Math.PI)
+  const binding = app.scene.ik_targets?.find(t => t.rig === o.id)
+  const targets = app.scene.objects.filter(t => t.id !== o.id)
   return `${head(`${o.bones.length} bones`)}
     <div class="brushes">${o.bones.map((b) => `<button class="chip ${b === bone ? 'on' : ''}" data-bone="${escapeHtml(b.name)}">${escapeHtml(b.name)}</button>`).join('')}</div>
     ${['X', 'Y', 'Z']
       .map((a, i) => `<label class="slider"><span>Turn ${a}${keyed}</span><input type="range" min="-180" max="180" step="1" id="p-bone-${i}" value="${deg(r[i])}"><b>${deg(r[i])}°</b></label>`)
       .join('')}
     <div class="row"><button class="small-btn ${app.ik ? 'on' : ''}" data-rig="ik" title="Drag a handle at the bone's tip; the chain bends to follow (inverse kinematics)">Reach (IK)</button><button class="small-btn" data-rig="key" title="Key every bone at this frame">◆ Key pose</button></div>
+    <label class="row"><span class="muted small">Follow target</span><select id="ik-target"><option value="">None</option>${targets.map(t => `<option value="${t.id}" ${binding?.target === t.id ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}</select><button class="small-btn" data-rig="follow">Follow ${escapeHtml(bone.name)}</button></label>
+    ${binding ? `<div class="muted small">${escapeHtml(binding.bone)} follows the target origin · every frame</div>` : ''}
     <div class="row"><button class="small-btn" data-rig="reset">Reset pose</button><button class="small-btn" data-rig="remove">Remove rig</button></div>
   </div>`
 }
@@ -1517,13 +1521,17 @@ $('properties').addEventListener('click', (e) => {
   }
   const rigAction = e.target.closest('[data-rig]')?.dataset.rig
   if (rigAction && rigObject?.bones?.length) {
+    if (rigAction === 'follow') {
+      const target = Number($('ik-target').value)
+      return run([target ? {op:'track_target',id:rigObject.id,bone:currentBone(rigObject).name,target} : {op:'clear_target',id:rigObject.id}]).catch(() => {})
+    }
     if (rigAction === 'ik') {
       app.ik = !app.ik
       return syncEdit()
     }
     if (rigAction === 'key') return keyBones(rigObject).catch(() => {})
     if (rigAction === 'reset') return run(rigObject.bones.flatMap((b) => poseCommands(rigObject, b.name, [0, 0, 0]))).catch(() => {})
-    if (rigAction === 'remove') return run([{ op: 'rig', id: rigObject.id, bones: [] }]).catch(() => {})
+    if (rigAction === 'remove') return run([{op:'clear_target',id:rigObject.id},{ op: 'rig', id: rigObject.id, bones: [] }]).catch(() => {})
   }
   const sky = e.target.closest('[data-sky]')
   if (sky) return run([{ op: 'world', sky: sky.dataset.sky }]).catch(() => {})
@@ -2008,6 +2016,8 @@ window.__tatara = {
   resolvedFrame: () => viewport.resolvedFrame,
   setFrame: (f) => setFrame(f),
   position: (id) => viewport.nodes.get(id)?.group.position.toArray(),
+  rigPose: (id) => viewport.rigPose(viewport.nodes.get(id).data),
+  rigTip: (id) => { const node=viewport.nodes.get(id); const segments=boneSegments(viewport.rigPose(node.data),viewport.displayFrame()); node.group.updateMatrixWorld(true); return segments.at(-1)[1].applyMatrix4(node.group.matrixWorld).toArray() },
   camera: () => viewport.getOrbit(),
   refresh: (animate = false) => refresh(animate),
   meta: (id) => {

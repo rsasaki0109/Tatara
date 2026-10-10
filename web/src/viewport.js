@@ -545,7 +545,7 @@ export class Viewport {
     this.framePreview = preview ? scene : null
     this.frameEpoch = (this.frameEpoch || 0) + 1
     this.frameRevision = scene.revision
-    this.frameConstrained = !!(scene.constraints?.length || scene.arrangements?.length)
+    this.frameConstrained = !!(scene.constraints?.length || scene.arrangements?.length || scene.ik_targets?.length)
     this.framePoses = null
     this.frameRequested = null
     this.images = scene.images || {}
@@ -1559,7 +1559,7 @@ export class Viewport {
     if (o.light) return {vertices:[[0,.08,0],[.08,0,0],[0,0,.08],[-.08,0,0],[0,0,-.08],[0,-.08,0]],faces:[[0,2,1],[0,3,2],[0,4,3],[0,1,4],[5,1,2],[5,2,3],[5,3,4],[5,4,1]]}
     if (o.camera?.ortho_height != null) return {vertices:[[-.3,-.2,0],[.3,-.2,0],[.3,.2,0],[-.3,.2,0],[-.3,-.2,-.45],[.3,-.2,-.45],[.3,.2,-.45],[-.3,.2,-.45]],faces:[[0,3,2,1],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]]}
     if (o.camera) return { vertices: [[-.14,-.1,0],[.14,-.1,0],[.14,.1,0],[-.14,.1,0],[-.3,-.2,-.45],[.3,-.2,-.45],[.3,.2,-.45],[-.3,.2,-.45]], faces: [[0,3,2,1],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]] }
-    return posedMesh(o, displayMesh(o), this.displayFrame())
+    return posedMesh(this.rigPose(o), displayMesh(o), this.displayFrame())
   }
 
   /** Draw a rigged object's bones (posed), the chosen one highlighted. */
@@ -1569,13 +1569,14 @@ export class Viewport {
     const show = Boolean(hasRig(o) && (node.id === this.selected || this.showBones))
     node.bones.visible = node.boneEdges.visible = show
     if (!show) return
-    const key = JSON.stringify([o.bones, this.displayFrame(), (o.tracks || []).filter((t) => t.property === 'bone'), this.bone])
+    const rig = this.rigPose(o)
+    const key = JSON.stringify([rig.bones, this.displayFrame(), (o.tracks || []).filter((t) => t.property === 'bone'), this.bone])
     if (key === node.boneKey) return
     node.boneKey = key
     const pos = []
     const col = []
     const edges = []
-    const segments = boneSegments(o, this.displayFrame())
+    const segments = boneSegments(rig, this.displayFrame())
     o.bones.forEach((b, i) => {
       const [head, tail] = segments[i]
       const axis = tail.clone().sub(head)
@@ -1635,7 +1636,7 @@ export class Viewport {
     this.ikHandle.visible = k >= 0
     if (k < 0 || this.gizmo.dragging) return
     node.group.updateMatrixWorld(true)
-    const [, tail] = boneSegments(node.data, this.displayFrame())[k]
+    const [, tail] = boneSegments(this.rigPose(node.data), this.displayFrame())[k]
     this.ikHandle.position.copy(tail.applyMatrix4(node.group.matrixWorld))
   }
 
@@ -1678,6 +1679,11 @@ export class Viewport {
   }
 
   displayFrame() { return this.frameConstrained && this.framePoses ? this.resolvedFrame : this.currentFrame }
+
+  rigPose(o) {
+    const bones = this.framePoses?.get(o.id)?.bones
+    return bones ? { ...o, bones, tracks: (o.tracks || []).filter(t => t.property !== 'bone') } : o
+  }
 
   objectPose(o) {
     return this.framePoses?.get(o.id) || pose(o, this.currentFrame)

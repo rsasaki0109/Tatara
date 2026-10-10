@@ -165,6 +165,9 @@ pub fn diff(before: &Scene, after: &Scene) -> Diff {
     if before.constraints != after.constraints {
         d.scene.push("constraints");
     }
+    if before.ik_targets != after.ik_targets {
+        d.scene.push("ik_targets");
+    }
     if before.arrangements != after.arrangements {
         d.scene.push("arrangements");
     }
