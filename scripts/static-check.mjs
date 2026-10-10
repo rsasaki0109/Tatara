@@ -249,6 +249,8 @@ try {
   check(spotlight.status===200 && spotlight.signature.join(',')==='137,80,78,71','WebAssembly renders spot lights without a server')
   check(spotlight.bad===422 && spotlight.unchanged,'WebAssembly rejects equal spot cones atomically')
 
+  // The tour may leave playback running. These assertions compare fixed frames.
+  await page.evaluate(()=>{const play=document.querySelector('#play-btn');if(play.classList.contains('on'))play.click()})
   const frameRest=await page.evaluate(async()=>{
     const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
       {op:'clear'}, {op:'add',name:'Anchor',primitive:{kind:'cube'}},
@@ -260,13 +262,13 @@ try {
     await window.__tatara.refresh(false)
     const rest=await(await fetch('/api/scene')).json();window.__tatara.setFrame(2);return rest
   })
-  await page.waitForFunction(()=>window.__tatara.resolvedFrame()===2)
+  await page.waitForFunction(id=>window.__tatara.resolvedFrame()===2 && Math.abs(window.__tatara.position(id)[1]-1)<1e-8,frameRest.objects[1].id)
   const frames=await page.evaluate(async id=>({position:window.__tatara.position(id),frame:await(await fetch('/api/frame?frame=2')).json(),rest:await(await fetch('/api/scene')).json()}),frameRest.objects[1].id)
   check(frames.position[1]===1 && frames.frame.objects[1].transform.translation[1]===1,'WebAssembly solves constraints per frame and updates the unkeyed viewport follower')
   check(JSON.stringify(frames.rest)===JSON.stringify(frameRest),'WebAssembly frame reads preserve the authored scene and revision')
 
   await page.evaluate(()=>window.__tatara.refresh(true))
-  await page.waitForFunction(()=>window.__tatara.resolvedFrame()===2)
+  await page.waitForFunction(id=>window.__tatara.resolvedFrame()===2 && Math.abs(window.__tatara.position(id)[1]-1)<1e-8,frameRest.objects[1].id)
   await page.waitForTimeout(750)
   check(Math.abs((await page.evaluate(id=>window.__tatara.position(id),frameRest.objects[1].id))[1]-1)<1e-8,'a delayed animated refresh cannot replace a WebAssembly constraint-solved pose')
 
