@@ -2,7 +2,10 @@
 // browser matches what the Rust renderer and glTF export produce.
 
 export const PROPERTIES = ['translation', 'rotation', 'scale', 'color', 'roughness', 'metalness', 'emissive', 'emissive_strength', 'opacity']
-const COLORS = ['color', 'emissive']
+export const CAMERA_PROPERTIES = ['translation', 'rotation', 'scale', 'camera_fov', 'camera_aperture', 'camera_focus']
+export const LIGHT_PROPERTIES = ['translation', 'rotation', 'scale', 'light_color', 'light_intensity']
+export const propertiesFor = (o) => o.camera ? CAMERA_PROPERTIES : o.light ? LIGHT_PROPERTIES : PROPERTIES
+const COLORS = ['color', 'emissive', 'light_color']
 const RANGE = { emissive_strength: 20 }
 
 function hexToRgb(hex) {
@@ -29,6 +32,9 @@ export function sampleTrack(track, frame) {
 }
 
 export function restValue(o, property) {
+  if (property.startsWith('camera_')) return [o.camera[property.slice(7)]]
+  if (property === 'light_color') return hexToRgb(o.light.color)
+  if (property === 'light_intensity') return [o.light.intensity]
   switch (property) {
     case 'translation':
     case 'rotation':
@@ -57,9 +63,11 @@ export const isAnimated = (o) => (o.tracks || []).length > 0
 
 /** Transform and material at `frame` (the static ones when not animated). */
 export function pose(o, frame) {
-  if (!isAnimated(o)) return { transform: o.transform, material: o.material }
+  if (!isAnimated(o)) return { transform: o.transform, material: o.material, camera: o.camera, light: o.light }
   const scalar = (p) => Math.min(RANGE[p] ?? 1, Math.max(0, valueAt(o, p, frame)[0]))
   return {
+    camera: o.camera ? {...o.camera, fov:valueAt(o,'camera_fov',frame)[0], aperture:valueAt(o,'camera_aperture',frame)[0], focus:valueAt(o,'camera_focus',frame)[0]} : undefined,
+    light: o.light ? {...o.light, color:rgbToHex(valueAt(o,'light_color',frame)), intensity:valueAt(o,'light_intensity',frame)[0]} : undefined,
     transform: {
       translation: valueAt(o, 'translation', frame),
       rotation: valueAt(o, 'rotation', frame),

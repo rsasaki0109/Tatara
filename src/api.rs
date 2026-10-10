@@ -987,6 +987,57 @@ mod tests {
     }
 
     #[test]
+    fn optical_animation_reaches_named_camera_render_and_validates_atomically() {
+        let mut ed = Editor::new();
+        let commands = json!([
+            {"op":"add_camera","name":"Shot","translation":[0,1,4]},
+            {"op":"add_light","name":"Key","translation":[0,2,2]},
+            {"op":"add","primitive":{"kind":"cube"}},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":1,"value":20,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":3,"value":60},
+            {"op":"set_keyframe","id":"Shot","property":"camera_aperture","frame":1,"value":0.1},
+            {"op":"set_keyframe","id":"Shot","property":"camera_focus","frame":1,"value":4},
+            {"op":"set_keyframe","id":"Key","property":"light_intensity","frame":1,"value":0,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Key","property":"light_intensity","frame":3,"value":20}
+        ]);
+        assert_eq!(
+            call(&mut ed, "POST", "/commands", json!({"commands":commands})).0,
+            200
+        );
+        let job = path_job(&ed, "camera=Shot&frame=2&w=8&h=8")
+            .unwrap_or_else(|r| panic!("status {}", r.status));
+        assert_eq!(
+            (job.camera.fov, job.camera.aperture, job.camera.focus),
+            (40., 0.1, 4.)
+        );
+        assert_eq!(
+            path_job(&ed, "camera=Shot&frame=2&fov=75&w=8&h=8")
+                .unwrap_or_else(|r| panic!("status {}", r.status))
+                .camera
+                .fov,
+            75.
+        );
+        assert_eq!(
+            path_job(&ed, "camera=Shot&w=8&h=8")
+                .unwrap_or_else(|r| panic!("status {}", r.status))
+                .camera
+                .fov,
+            36.
+        );
+        assert_eq!(
+            image_job(&ed, "camera=Shot&w=8&h=8&samples=1&frames=1-3")
+                .unwrap_or_else(|r| panic!("status {}", r.status))
+                .run()
+                .status,
+            200
+        );
+        let before = ed.scene().clone();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"move","id":"Shot","offset":[1,0,0]},{"op":"set_keyframe","id":"Key","property":"camera_fov","frame":2,"value":40}]})).0,422);
+        assert_eq!(*ed.scene(), before);
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        assert!(ed.scene().objects.is_empty());
+    }
+    #[test]
     fn scene_camera_render_proposals_and_history_share_the_lens() {
         let mut ed = Editor::new();
         assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"add_camera","name":"Shot","translation":[0,1,4]},{"op":"add","primitive":{"kind":"cube"}}]})).0,200);

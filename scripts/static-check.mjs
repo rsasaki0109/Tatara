@@ -205,6 +205,24 @@ try {
   })
   check(analyticLight.status===200 && analyticLight.bytes.join(',')==='137,80,78,71','WebAssembly agent views trace editable analytic lights without a server')
   check(analyticLight.after.objects[0].light.color==='#ff6633' && analyticLight.after.objects[0].light.kind==='point','light settings and one Undo work through the WebAssembly command core')
+  const optics=await page.evaluate(async()=>{
+    const post=commands=>fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands})}).then(r=>r.json())
+    await post([{op:'clear'},{op:'add_camera',name:'Optical shot',translation:[0,1,4]},{op:'add_light',name:'Optical key'},
+      {op:'set_keyframe',id:'Optical shot',property:'camera_fov',frame:1,value:20,interpolation:'linear'},
+      {op:'set_keyframe',id:'Optical shot',property:'camera_fov',frame:3,value:60},
+      {op:'set_keyframe',id:'Optical key',property:'light_intensity',frame:1,value:0,interpolation:'linear'},
+      {op:'set_keyframe',id:'Optical key',property:'light_intensity',frame:3,value:40}])
+    const context=await(await fetch('/api/context?frame=2')).json()
+    const rendered=await fetch('/api/render/image?camera=Optical%20shot&frame=2&w=8&h=8&samples=1')
+    const signature=Array.from(new Uint8Array(await rendered.arrayBuffer()).slice(0,4))
+    const before=await(await fetch('/api/scene')).json()
+    const bad=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[{op:'set_keyframe',id:'Optical key',property:'camera_fov',frame:2,value:40}]})})
+    const after=await(await fetch('/api/scene')).json()
+    return {context,status:rendered.status,signature,bad:bad.status,unchanged:JSON.stringify(before)===JSON.stringify(after)}
+  })
+  check(optics.context.objects[0].camera.fov===40 && optics.context.objects[1].light.intensity===20,'WebAssembly samples lens and light properties at the requested frame')
+  check(optics.status===200 && optics.signature.join(',')==='137,80,78,71','WebAssembly renders an animated named camera')
+  check(optics.bad===422 && optics.unchanged,'WebAssembly rejects optical keys on the wrong object atomically')
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

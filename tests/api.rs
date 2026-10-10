@@ -647,6 +647,30 @@ async fn mcp_bridge_edits_the_shared_scene() {
     assert_ne!(r["result"]["isError"], true, "{r}");
     let r=call(json!({"jsonrpc":"2.0","id":77,"method":"tools/call","params":{"name":"revise_step","arguments":{"step":step,"commands":[{"op":"add","name":"MCP surface","primitive":{"kind":"cylinder","segments":12},"translation":[80,0.5,0]}]}}})).await;
     assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":78,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"set_keyframe","id":"MCP Shot","property":"camera_fov","frame":1,"value":20,"interpolation":"linear"},
+        {"op":"set_keyframe","id":"MCP Shot","property":"camera_fov","frame":3,"value":60},
+        {"op":"set_keyframe","id":"MCP Key","property":"light_intensity","frame":1,"value":0,"interpolation":"linear"},
+        {"op":"set_keyframe","id":"MCP Key","property":"light_intensity","frame":3,"value":40}
+    ]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":79,"method":"tools/call","params":{"name":"get_scene","arguments":{"frame":2}}})).await;
+    let scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let objs = scene["objects"].as_array().unwrap();
+    assert_eq!(
+        objs.iter().find(|o| o["name"] == "MCP Shot").unwrap()["camera"]["fov"],
+        40.
+    );
+    assert_eq!(
+        objs.iter().find(|o| o["name"] == "MCP Key").unwrap()["light"]["intensity"],
+        20.
+    );
+    let output = std::env::temp_dir().join(format!("tatara-optics-{}.png", std::process::id()));
+    let r=call(json!({"jsonrpc":"2.0","id":80,"method":"tools/call","params":{"name":"render_image","arguments":{"camera":"MCP Shot","frame":2,"size":[8,8],"samples":1,"path":output}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\x89PNG"));
+    std::fs::remove_file(output).unwrap();
     child.kill().await.unwrap();
 }
 

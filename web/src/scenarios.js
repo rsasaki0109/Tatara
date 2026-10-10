@@ -1437,6 +1437,36 @@ export const rebase = {
 }
 
 
+export const opticalAnimation = {
+  title:'Animate the shot and lighting',width:800,gizmo:false,
+  setup:[
+    {op:'add',name:'Plinth',primitive:{kind:'cylinder',segments:32},translation:[0,.12,0],scale:[1.4,.24,1.4],color:'#769c8b'},
+    {op:'add',name:'Form',primitive:{kind:'torus',major_segments:32,minor_segments:16},translation:[0,.85,0],rotation:[Math.PI/2,0,0],scale:[.7,.7,.7],color:'#be6651'},
+    {op:'add_camera',name:'Shot',translation:[0,1.4,4],rotation:[-.16,0,0],lens:{fov:45,focus:4}},
+    {op:'add_light',name:'Key',translation:[-1.5,2,2],lamp:{color:'#ffd2b0',intensity:80}},
+  ],
+  camera:{azimuth:20,elevation:20,distance:5,target:[0,.6,0]},
+  steps:[
+    {caption:'A shot is more than a moving camera',hint:'typed lens and light keyframes'},
+    {run:[
+      {op:'set_keyframe',id:'Shot',property:'camera_fov',frame:1,value:45,interpolation:'linear'},
+      {op:'set_keyframe',id:'Shot',property:'camera_fov',frame:48,value:26},
+      {op:'set_keyframe',id:'Shot',property:'camera_focus',frame:1,value:4},
+      {op:'set_keyframe',id:'Key',property:'light_intensity',frame:1,value:10,interpolation:'linear'},
+      {op:'set_keyframe',id:'Key',property:'light_intensity',frame:48,value:100},
+      {op:'set_keyframe',id:'Key',property:'light_color',frame:1,value:'#ffd2b0',interpolation:'linear'},
+      {op:'set_keyframe',id:'Key',property:'light_color',frame:48,value:'#a0ccff'},
+    ],after:300},
+    {pick:'Shot',after:200},{click:'[data-look-camera]',after:400},
+    {caption:'Zoom and change the light together',hint:'the viewport and Rust renderer sample the same frame'},
+    {scrub:48,ms:2500,after:700},
+    {pick:'Key',after:400},
+    {caption:'Colour and intensity are editable keys',hint:'marked fields show the sampled value'},
+    {scrub:1,ms:1800,after:700},
+    {cursor:false},{wait:1000},
+  ],
+}
+
 export const faceHistory = {
   title:'Keep face intent through detail changes',width:800,gizmo:false,external:true,
   camera:{azimuth:25,elevation:32,distance:3.6,target:[0,.75,0]},
@@ -1538,4 +1568,4 @@ export const sceneLight = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

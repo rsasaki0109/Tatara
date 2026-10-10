@@ -95,7 +95,7 @@ pub(crate) fn emitters(ed: &Editor, frame: Option<f64>) -> Vec<Emitter> {
         .objects
         .iter()
         .filter_map(|o| {
-            let lamp = o.light.as_ref()?;
+            let lamp = crate::anim::lamp_at(o, frame)?;
             if lamp.intensity == 0. {
                 return None;
             }
@@ -237,5 +237,28 @@ mod tests {
             let e = emitters(&back, None);
             assert!(d[1].toward.abs_diff_eq(e[1].toward, 1e-9));
         }
+    }
+    #[test]
+    fn animated_light_power_and_colour_drive_native_irradiance() {
+        let mut ed = Editor::new();
+        apply(&mut ed,json!([
+            {"op":"add_light","name":"Key","translation":[0,2,0]},
+            {"op":"set_keyframe","id":"Key","property":"light_intensity","frame":1,"value":0,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Key","property":"light_intensity","frame":3,"value":32},
+            {"op":"set_keyframe","id":"Key","property":"light_color","frame":1,"value":"#ff0000","interpolation":"step"},
+            {"op":"set_keyframe","id":"Key","property":"light_color","frame":3,"value":"#0000ff"}
+        ])).unwrap();
+        assert!(emitters(&ed, Some(1.)).is_empty());
+        let mid = emitters(&ed, Some(2.))[0].sample(DVec3::ZERO).unwrap();
+        assert!(mid.1.abs_diff_eq(DVec3::new(4., 0., 0.), 1e-9));
+        let end = emitters(&ed, Some(3.))[0].sample(DVec3::ZERO).unwrap();
+        assert!(end.1.abs_diff_eq(DVec3::new(0., 0., 8.), 1e-9));
+        assert!(
+            emitters(&ed, None)[0]
+                .sample(DVec3::ZERO)
+                .unwrap()
+                .1
+                .abs_diff_eq(DVec3::splat(2.5), 1e-9)
+        );
     }
 }

@@ -27,6 +27,11 @@ pub enum Property {
     Opacity,
     /// A bone's pose (Euler XYZ, radians); the track names the bone.
     Bone,
+    CameraFov,
+    CameraAperture,
+    CameraFocus,
+    LightColor,
+    LightIntensity,
 }
 
 impl Property {
@@ -39,12 +44,19 @@ impl Property {
         match self {
             Property::Roughness | Property::Metalness | Property::Opacity => Some((0.0, 1.0)),
             Property::EmissiveStrength => Some((0.0, 20.0)),
+            Property::CameraFov => Some((1.0, 170.0)),
+            Property::CameraAperture => Some((0.0, 1.0)),
+            Property::CameraFocus => Some((0.001, 1e4)),
+            Property::LightIntensity => Some((0.0, 100_000.0)),
             _ => None,
         }
     }
 
     pub fn is_color(self) -> bool {
-        matches!(self, Property::Color | Property::Emissive)
+        matches!(
+            self,
+            Property::Color | Property::Emissive | Property::LightColor
+        )
     }
 
     pub fn all() -> [Property; 9] {
@@ -176,6 +188,11 @@ pub fn key_value(property: Property, value: &KeyValue) -> Result<Vec<f64>, Engin
         ))
     };
     let v = match (property, value) {
+        (Property::LightColor, KeyValue::Vector(v))
+            if v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x)) =>
+        {
+            v.to_vec()
+        }
         (p, KeyValue::Color(c)) if p.is_color() => hex_to_rgb(&check_color(c)?).to_vec(),
         (p, _) if p.is_color() => return bad("a #rrggbb colour"),
         (p, value) if p.range().is_some() => {
@@ -213,6 +230,13 @@ pub fn rest_value(o: &Object, property: Property) -> Vec<f64> {
         Property::EmissiveStrength => vec![o.material.emissive_strength],
         Property::Opacity => vec![o.material.opacity],
         Property::Bone => vec![0.0; 3],
+        Property::CameraFov => vec![o.camera.as_ref().map_or(36.0, |c| c.fov)],
+        Property::CameraAperture => vec![o.camera.as_ref().map_or(0.0, |c| c.aperture)],
+        Property::CameraFocus => vec![o.camera.as_ref().map_or(10.0, |c| c.focus)],
+        Property::LightColor => {
+            hex_to_rgb(o.light.as_ref().map_or("#ffffff", |l| l.color.as_str())).to_vec()
+        }
+        Property::LightIntensity => vec![o.light.as_ref().map_or(10.0, |l| l.intensity)],
     }
 }
 
@@ -283,6 +307,44 @@ pub fn pose(o: &Object, frame: f64) -> (Transform, Material) {
     (transform, material)
 }
 
+/// Sample scene optics without changing the unanimated rest settings.
+pub fn lens_at(o: &Object, frame: Option<f64>) -> Option<crate::camera::Lens> {
+    let mut lens = o.camera.clone()?;
+    if let Some(f) = frame {
+        lens.fov = value_at(o, Property::CameraFov, f)[0];
+        lens.aperture = value_at(o, Property::CameraAperture, f)[0];
+        lens.focus = value_at(o, Property::CameraFocus, f)[0];
+    }
+    Some(lens)
+}
+
+pub fn lamp_at(o: &Object, frame: Option<f64>) -> Option<crate::light::Lamp> {
+    let mut lamp = o.light.clone()?;
+    if let Some(f) = frame {
+        let v = value_at(o, Property::LightColor, f);
+        lamp.color = rgb_to_hex([v[0], v[1], v[2]]);
+        lamp.intensity = value_at(o, Property::LightIntensity, f)[0];
+    }
+    Some(lamp)
+}
+
+pub fn validate_property(o: &Object, property: Property) -> Result<(), EngineError> {
+    let valid = match property {
+        Property::CameraFov | Property::CameraAperture | Property::CameraFocus => {
+            o.camera.is_some()
+        }
+        Property::LightColor | Property::LightIntensity => o.light.is_some(),
+        _ => true,
+    };
+    if !valid {
+        return Err(EngineError::new(format!(
+            "{:?} is not a property of {}",
+            property, o.name
+        )));
+    }
+    Ok(())
+}
+
 /// Insert or replace the key at `frame` (of `bone` for bone tracks),
 /// keeping the track sorted.
 pub fn set_key(
@@ -293,6 +355,7 @@ pub fn set_key(
     value: Vec<f64>,
     interpolation: Interpolation,
 ) -> Result<(), EngineError> {
+    validate_property(o, property)?;
     let track = match o
         .tracks
         .iter_mut()
@@ -353,6 +416,7 @@ pub fn delete_key(
 
 pub fn validate_tracks(o: &Object) -> Result<(), EngineError> {
     for (i, t) in o.tracks.iter().enumerate() {
+        validate_property(o, t.property)?;
         if t.keys.is_empty() {
             return Err(EngineError::new("a track needs at least one key"));
         }
@@ -378,6 +442,26 @@ pub fn validate_tracks(o: &Object) -> Result<(), EngineError> {
                     "{:?} key at frame {} has the wrong value",
                     t.property, k.frame
                 )));
+            }
+            if matches!(
+                t.property,
+                Property::CameraFov
+                    | Property::CameraAperture
+                    | Property::CameraFocus
+                    | Property::LightColor
+                    | Property::LightIntensity
+            ) {
+                if let Some((lo, hi)) = t.property.range() {
+                    if !(lo..=hi).contains(&k.value[0]) {
+                        return Err(EngineError::new(
+                            "optical key is outside its property range",
+                        ));
+                    }
+                } else if k.value.iter().any(|v| !(0.0..=1.0).contains(v)) {
+                    return Err(EngineError::new(
+                        "light colour keys need sRGB components in 0-1",
+                    ));
+                }
             }
             if i > 0 && k.frame <= t.keys[i - 1].frame {
                 return Err(EngineError::new("track keys must be sorted by frame"));
@@ -439,5 +523,154 @@ mod tests {
         assert!(key_value(Property::EmissiveStrength, &KeyValue::Scalar(21.0)).is_err());
         assert!(key_value(Property::Opacity, &KeyValue::Vector([1.0; 3])).is_err());
         assert_eq!(rgb_to_hex(hex_to_rgb("#8fb9a0")), "#8fb9a0");
+    }
+    fn optical_apply(
+        ed: &mut crate::engine::Editor,
+        commands: serde_json::Value,
+    ) -> Result<crate::engine::ApplyResult, EngineError> {
+        ed.apply(&serde_json::from_value(serde_json::json!({"commands":commands})).unwrap())
+    }
+
+    #[test]
+    fn camera_optics_sample_linear_eased_and_stepped_tracks_without_changing_rest() {
+        use serde_json::json;
+        let mut ed = crate::engine::Editor::new();
+        optical_apply(&mut ed,json!([
+            {"op":"add_camera","name":"Shot"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":1,"value":20,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":5,"value":60},
+            {"op":"set_keyframe","id":"Shot","property":"camera_aperture","frame":1,"value":0,"interpolation":"ease"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_aperture","frame":5,"value":0.4},
+            {"op":"set_keyframe","id":"Shot","property":"camera_focus","frame":1,"value":2,"interpolation":"step"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_focus","frame":5,"value":8}
+        ])).unwrap();
+        let o = &ed.scene().objects[0];
+        let lens = lens_at(o, Some(2.)).unwrap();
+        assert_eq!(lens.fov, 30.);
+        assert!((lens.aperture - 0.0625).abs() < 1e-9);
+        assert_eq!(lens.focus, 2.);
+        assert_eq!(lens_at(o, None).unwrap(), crate::camera::Lens::default());
+        let c = crate::camera::resolve(
+            &ed,
+            &crate::engine::ObjRef::Name("Shot".into()),
+            Some(2.),
+            16,
+            16,
+        )
+        .unwrap();
+        assert_eq!(
+            (c.fov, c.aperture, c.focus),
+            (lens.fov, lens.aperture, lens.focus)
+        );
+        assert_eq!(lens_at(o, Some(100.)).unwrap().focus, 8.);
+        let ctx = crate::engine::context_at(&ed, Some(2.));
+        assert_eq!(ctx["objects"][0]["camera"]["fov"], 30.);
+    }
+
+    #[test]
+    fn light_optics_sample_color_and_power_in_srgb_and_keep_static_kind() {
+        use serde_json::json;
+        let mut ed = crate::engine::Editor::new();
+        optical_apply(&mut ed,json!([
+            {"op":"add_light","name":"Key","lamp":{"kind":"sun","intensity":16}},
+            {"op":"set_keyframe","id":"Key","property":"light_color","frame":1,"value":"#ff0000","interpolation":"linear"},
+            {"op":"set_keyframe","id":"Key","property":"light_color","frame":3,"value":"#0000ff"},
+            {"op":"set_keyframe","id":"Key","property":"light_intensity","frame":1,"value":0,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Key","property":"light_intensity","frame":3,"value":20}
+        ])).unwrap();
+        let o = &ed.scene().objects[0];
+        let lamp = lamp_at(o, Some(2.)).unwrap();
+        assert_eq!(lamp.color, "#800080");
+        assert_eq!(lamp.intensity, 10.);
+        assert_eq!(lamp.kind, crate::light::Kind::Sun);
+        assert_eq!(lamp_at(o, None).unwrap().intensity, 16.);
+        assert!(crate::light::emitters(&ed, Some(1.)).is_empty());
+        let ctx = crate::engine::context_at(&ed, Some(2.));
+        assert_eq!(ctx["objects"][0]["light"]["intensity"], 10.);
+    }
+
+    #[test]
+    fn optical_keys_reject_wrong_object_and_invalid_values_atomically() {
+        use serde_json::json;
+        let mut ed = crate::engine::Editor::new();
+        optical_apply(&mut ed,json!([{"op":"add","name":"Cube","primitive":{"kind":"cube"}},{"op":"add_camera","name":"Shot"},{"op":"add_light","name":"Key"}])).unwrap();
+        let before = ed.scene().clone();
+        for (id, property, value) in [
+            ("Cube", "camera_fov", json!(40)),
+            ("Shot", "light_intensity", json!(20)),
+            ("Key", "camera_focus", json!(4)),
+            ("Shot", "camera_fov", json!(171)),
+            ("Shot", "camera_focus", json!(0)),
+            ("Key", "light_color", json!([2, 0, 0])),
+            ("Key", "light_intensity", json!(-1)),
+        ] {
+            assert!(optical_apply(&mut ed,json!([{"op":"move","id":"Cube","offset":[1,0,0]},{"op":"set_keyframe","id":id,"property":property,"frame":2,"value":value}])).is_err());
+            assert_eq!(*ed.scene(), before);
+        }
+    }
+
+    #[test]
+    fn loaded_optical_tracks_reject_bad_ranges_and_wrong_targets() {
+        use serde_json::json;
+        let mut ed = crate::engine::Editor::new();
+        optical_apply(&mut ed, json!([{"op":"add_camera","name":"Shot"}])).unwrap();
+        let mut o = ed.scene().objects[0].clone();
+        o.tracks = vec![Track {
+            property: Property::CameraFov,
+            bone: None,
+            keys: vec![Key {
+                frame: 1.,
+                value: vec![171.],
+                interpolation: Interpolation::Linear,
+            }],
+        }];
+        assert!(validate_tracks(&o).is_err());
+        o.tracks[0].keys[0].value = vec![60.];
+        assert!(validate_tracks(&o).is_ok());
+        o.tracks[0].property = Property::LightIntensity;
+        assert!(validate_tracks(&o).is_err());
+    }
+
+    #[test]
+    fn optical_keys_share_proposal_review_history_replay_and_single_undo() {
+        use serde_json::json;
+        let mut ed = crate::engine::Editor::new();
+        optical_apply(&mut ed, json!([{"op":"add_camera","name":"Shot"}])).unwrap();
+        let keys = |a, b| {
+            json!([
+                {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":1,"value":a,"interpolation":"linear"},
+                {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":3,"value":b}
+            ])
+        };
+        optical_apply(&mut ed, keys(20, 60)).unwrap();
+        let ids=ed.propose(&serde_json::from_value(json!({"title":"Widen the ending","commands":[{"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":3,"value":100}]})).unwrap()).unwrap();
+        assert_eq!(
+            lens_at(&ed.preview(ids[0]).unwrap().scene().objects[0], Some(2.))
+                .unwrap()
+                .fov,
+            60.
+        );
+        assert_eq!(lens_at(&ed.scene().objects[0], Some(2.)).unwrap().fov, 40.);
+        ed.accept(ids[0]).unwrap();
+        assert_eq!(lens_at(&ed.scene().objects[0], Some(2.)).unwrap().fov, 60.);
+        ed.undo().unwrap();
+        assert_eq!(lens_at(&ed.scene().objects[0], Some(2.)).unwrap().fov, 40.);
+        let commands: Vec<crate::engine::Command> = serde_json::from_value(keys(30, 90)).unwrap();
+        assert_eq!(
+            lens_at(
+                &ed.revise_preview(2, commands.clone())
+                    .unwrap()
+                    .scene()
+                    .objects[0],
+                Some(2.)
+            )
+            .unwrap()
+            .fov,
+            60.
+        );
+        ed.revise(2, commands).unwrap();
+        assert_eq!(lens_at(&ed.scene().objects[0], Some(2.)).unwrap().fov, 60.);
+        ed.undo().unwrap();
+        assert_eq!(lens_at(&ed.scene().objects[0], Some(2.)).unwrap().fov, 40.);
     }
 }

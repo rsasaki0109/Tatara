@@ -1721,13 +1721,14 @@ export class Viewport {
     if (this.sceneCameraId == null) return
     const node = this.nodes.get(this.sceneCameraId)
     if (!node?.data.camera) return this.lookThrough(null)
-    const t = pose(node.data, this.currentFrame).transform
+    const posed = pose(node.data, this.currentFrame)
+    const t = posed.transform
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(...t.rotation, 'XYZ'))
     this.camera.position.fromArray(t.translation)
     this.camera.up.copy(new THREE.Vector3(0, 1, 0).applyQuaternion(q))
     this.camera.quaternion.copy(q)
-    this.controls.target.copy(this.camera.position).add(new THREE.Vector3(0, 0, -node.data.camera.focus).applyQuaternion(q))
-    this.camera.fov = node.data.camera.fov
+    this.controls.target.copy(this.camera.position).add(new THREE.Vector3(0, 0, -posed.camera.focus).applyQuaternion(q))
+    this.camera.fov = posed.camera.fov
     this.camera.updateProjectionMatrix()
     this.controls.enabled = false
     this.gizmo.detach()
@@ -1879,7 +1880,7 @@ export class Viewport {
   /** Scene lights are viewport helpers plus actual physically attenuated lights. */
   syncSceneLights() {
     for (const node of this.nodes.values()) {
-      const lamp = node.data.light
+      const lamp = node.data.light ? pose(node.data,this.currentFrame).light : null
       if (!lamp) continue
       if (!node.light || node.lightKind !== lamp.kind) {
         if (node.light) { this.scene.remove(node.light, node.light.target); node.light.dispose() }
