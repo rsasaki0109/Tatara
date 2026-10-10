@@ -602,6 +602,25 @@ pub fn export_glb(ed: &Editor) -> Vec<u8> {
                 );
             }
         }
+        if o.camera.is_some() || o.light.is_some() {
+            let tracks: Vec<_> = o
+                .tracks
+                .iter()
+                .filter(|t| {
+                    matches!(
+                        t.property,
+                        Property::CameraFov
+                            | Property::CameraAperture
+                            | Property::CameraFocus
+                            | Property::LightColor
+                            | Property::LightIntensity
+                    )
+                })
+                .collect();
+            if !tracks.is_empty() {
+                nodes[node]["extras"]["tataraOpticalTracks"] = json!(tracks);
+            }
+        }
         // Transform and bone tracks become glTF animation channels, baked
         // once per frame (and at every key) so eased and stepped keys look
         // the same.
@@ -1206,6 +1225,7 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
         };
 
     let mut commands = Vec::new();
+    let mut object_count = 0usize;
     let mut images = ImageImport {
         doc: &doc,
         buffers: &buffers,
@@ -1259,12 +1279,14 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
             *n += 1;
             let name = if *n > 1 { format!("{base} {n}") } else { base };
             commands.push(Command::AddCamera {
-                name: Some(name),
+                name: Some(name.clone()),
                 translation: Some(t.to_array()),
                 rotation: Some([x, y, z]),
                 lens,
             });
-            if commands.len() > MAX_OBJECTS {
+            import_optical_tracks(node, &name, true, &mut commands)?;
+            object_count += 1;
+            if object_count > MAX_OBJECTS {
                 return err("scene object limit reached");
             }
         }
@@ -1295,12 +1317,14 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
             *n += 1;
             let name = if *n > 1 { format!("{base} {n}") } else { base };
             commands.push(Command::AddLight {
-                name: Some(name),
+                name: Some(name.clone()),
                 translation: Some(t.to_array()),
                 rotation: Some([x, y, z]),
                 lamp,
             });
-            if commands.len() > MAX_OBJECTS {
+            import_optical_tracks(node, &name, false, &mut commands)?;
+            object_count += 1;
+            if object_count > MAX_OBJECTS {
                 return err("scene object limit reached");
             }
         }
@@ -1427,7 +1451,8 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
                 texture: m.as_ref().and_then(|m| m.texture.clone()),
                 preset: None,
             });
-            if commands.len() > MAX_OBJECTS {
+            object_count += 1;
+            if object_count > MAX_OBJECTS {
                 return err(format!("a scene is limited to {MAX_OBJECTS} objects"));
             }
         }
@@ -1441,6 +1466,68 @@ pub fn import(bytes: &[u8]) -> Result<Vec<Command>, EngineError> {
     let mut all = std::mem::take(&mut images.commands);
     all.extend(commands);
     Ok(all)
+}
+
+// Optical animation is a Tatara extra: standard glTF viewers retain the rest lens/light.
+fn import_optical_tracks(
+    node: &Value,
+    name: &str,
+    camera: bool,
+    commands: &mut Vec<Command>,
+) -> Result<(), EngineError> {
+    let Some(raw) = node["extras"].get("tataraOpticalTracks") else {
+        return Ok(());
+    };
+    let tracks: Vec<crate::anim::Track> = serde_json::from_value(raw.clone())
+        .map_err(|_| EngineError::new("invalid Tatara optical tracks"))?;
+    if tracks.len() > if camera { 3 } else { 2 } {
+        return err("too many optical tracks");
+    }
+    for (i, t) in tracks.iter().enumerate() {
+        let valid = if camera {
+            matches!(
+                t.property,
+                Property::CameraFov | Property::CameraAperture | Property::CameraFocus
+            )
+        } else {
+            matches!(t.property, Property::LightColor | Property::LightIntensity)
+        };
+        if !valid
+            || t.bone.is_some()
+            || t.keys.is_empty()
+            || t.keys.len() > 10_000
+            || tracks[..i].iter().any(|x| x.property == t.property)
+        {
+            return err("invalid optical track target, duplicate or key count");
+        }
+        for (k, key) in t.keys.iter().enumerate() {
+            crate::anim::check_frame(key.frame)?;
+            if key.value.len() != t.property.width()
+                || key.value.iter().any(|v| !v.is_finite())
+                || (k > 0 && key.frame <= t.keys[k - 1].frame)
+            {
+                return err("optical keys must be finite, correctly sized and sorted");
+            }
+            let value = if t.property.is_color() {
+                if key.value.iter().any(|v| !(0.0..=1.0).contains(v)) {
+                    return err("invalid optical colour");
+                }
+                crate::anim::KeyValue::Vector([key.value[0], key.value[1], key.value[2]])
+            } else {
+                crate::anim::KeyValue::Scalar(key.value[0])
+            };
+            crate::anim::key_value(t.property, &value)?;
+            commands.push(Command::SetKeyframe {
+                id: crate::engine::ObjRef::Name(name.into()),
+                property: t.property,
+                frame: key.frame,
+                value: Some(value),
+                interpolation: Some(key.interpolation),
+                bone: None,
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1925,5 +2012,45 @@ mod tests {
         let o = &back.scene().objects[0];
         assert_eq!(o.transform.scale, [1.0; 3], "non-TRS world matrix is baked");
         assert_eq!(o.mesh.faces.len(), 6);
+    }
+    #[test]
+    fn optical_tracks_round_trip_as_validated_tatara_extras() {
+        let mut ed = Editor::new();
+        ed.apply(&serde_json::from_value(json!({"commands":[
+            {"op":"add_camera","name":"Shot"},{"op":"add_light","name":"Key"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":1,"value":20,"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":3,"value":80},
+            {"op":"set_keyframe","id":"Key","property":"light_color","frame":1,"value":[0.1,0.2,0.3],"interpolation":"step"},
+            {"op":"set_keyframe","id":"Key","property":"light_intensity","frame":1,"value":25}
+        ]})).unwrap()).unwrap();
+        let glb = export_glb(&ed);
+        let (doc, _) = parse_glb(&glb).unwrap();
+        assert!(
+            (doc["cameras"][0]["perspective"]["yfov"].as_f64().unwrap() - 36_f64.to_radians())
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(
+            doc["nodes"][0]["extras"]["tataraOpticalTracks"][0]["property"],
+            "camera_fov"
+        );
+        let commands = import(&glb).unwrap();
+        let mut round = Editor::new();
+        round
+            .apply(&serde_json::from_value(json!({"commands":commands})).unwrap())
+            .unwrap();
+        assert_eq!(
+            round.scene().objects[0].tracks,
+            ed.scene().objects[0].tracks
+        );
+        assert_eq!(
+            round.scene().objects[1].tracks,
+            ed.scene().objects[1].tracks
+        );
+        let mut bad = doc["nodes"][0].clone();
+        bad["extras"]["tataraOpticalTracks"][0]["keys"][0]["value"] = json!([171]);
+        assert!(import_optical_tracks(&bad, "Shot", true, &mut Vec::new()).is_err());
+        bad["extras"]["tataraOpticalTracks"][0]["property"] = json!("light_intensity");
+        assert!(import_optical_tracks(&bad, "Shot", true, &mut Vec::new()).is_err());
     }
 }

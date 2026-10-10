@@ -77,10 +77,8 @@ pub fn resolve(
             ObjRef::Name(n) => o.name == *n,
         })
         .ok_or_else(|| EngineError::new("scene camera does not exist"))?;
-    let lens = o
-        .camera
-        .as_ref()
-        .ok_or_else(|| EngineError::new("object is not a camera"))?;
+    let lens =
+        crate::anim::lens_at(o, frame).ok_or_else(|| EngineError::new("object is not a camera"))?;
     lens.validate()?;
     let t = frame.map_or_else(|| o.transform.clone(), |f| crate::anim::pose(o, f).0);
     let [x, y, z] = t.rotation;

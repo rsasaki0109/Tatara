@@ -2257,6 +2257,7 @@ fn apply_command(
             let i = resolve(scene, id)?;
             let frame = anim::check_frame(*frame)?;
             let o = &mut scene.objects[i];
+            anim::validate_property(o, *property)?;
             let bone = match (property, bone) {
                 (Property::Bone, Some(b)) => {
                     let k =
@@ -2855,8 +2856,8 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
                 "id": o.id,
                 "name": o.name,
                 "kind": o.kind,
-                "camera": o.camera,
-                "light": o.light,
+                "camera": anim::lens_at(o, frame),
+                "light": anim::lamp_at(o, frame),
                 "transform": o.transform,
                 "material": o.material,
                 "modifiers": o.modifiers,
@@ -2868,7 +2869,7 @@ pub fn context_at(ed: &Editor, frame: Option<f64>) -> serde_json::Value {
                     "property": t.property,
                     "frames": t.keys.iter().map(|k| k.frame).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
-                "pose": pose.map(|(t, m)| serde_json::json!({ "transform": t, "material": m })),
+                "pose": pose.map(|(t, m)| serde_json::json!({ "transform": t, "material": m, "camera": anim::lens_at(o, frame), "light": anim::lamp_at(o, frame) })),
             })
         })
         .collect();

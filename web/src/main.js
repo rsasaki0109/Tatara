@@ -16,7 +16,7 @@ import { DemoRunner } from './demo.js'
 import { SCENARIOS } from './scenarios.js'
 import { icon } from './icons.js'
 import { installWasmBackend } from './backend.js'
-import { PROPERTIES, isAnimated, keyFrames, pose, track as trackOf } from './anim.js'
+import { propertiesFor, isAnimated, keyFrames, pose, track as trackOf } from './anim.js'
 import { boneRotations, boneTrack } from './rig.js'
 
 const params = new URLSearchParams(location.search)
@@ -1056,9 +1056,9 @@ function renderProperties(o) {
       <div class="vec-row"><span>Rotation°${keyed('rotation')}</span>${vec('rotation',t.rotation,5,r=>r*180/Math.PI)}</div></div>
       <div class="card"><div class="card-title">Lighting</div>
       <label class="row">Type<select id="light-kind"><option value="point" ${o.light.kind==='point'?'selected':''}>Point</option><option value="sun" ${o.light.kind==='sun'?'selected':''}>Sun</option></select></label>
-      <label class="row">Colour<input type="color" id="light-color" value="${o.light.color}"></label>
-      <label class="vec-row"><span>Intensity (${o.light.kind==='point'?'cd':'lx'})</span><input type="number" id="light-intensity" min="0" max="100000" step=".1" value="${o.light.intensity}"></label>
-      <p class="muted small">Point lights fall off with distance squared. Sun rays travel down local −Z. Intensity 0 switches the light off. Transform tracks animate the light.</p></div>${constraintCard(o)}`
+      <label class="row">Colour${keyed('light_color')}<input type="color" id="light-color" value="${shown.light.color}"></label>
+      <label class="vec-row"><span>Intensity (${o.light.kind==='point'?'cd':'lx'})${keyed('light_intensity')}</span><input type="number" id="light-intensity" min="0" max="100000" step=".1" value="${shown.light.intensity}"></label>
+      <p class="muted small">Point lights fall off with distance squared. Sun rays travel down local −Z. Intensity 0 switches the light off. Press Key to animate transform, colour and intensity. Editing a marked property keys the current frame.</p></div>${constraintCard(o)}`
     return
   }
   if (o.camera) {
@@ -1069,8 +1069,8 @@ function renderProperties(o) {
       <div class="vec-row"><span>Location${keyed('translation')}</span>${vec('translation', t.translation, .1)}</div>
       <div class="vec-row"><span>Rotation°${keyed('rotation')}</span>${vec('rotation', t.rotation, 5, r => r * 180 / Math.PI)}</div></div>
       <div class="card"><div class="card-title">Perspective lens</div>
-      ${[['fov','Vertical FOV°',1,170,.1],['aperture','Lens radius m',0,1,.01],['focus','Focus m',.001,10000,.1]].map(([f,label,min,max,step]) => `<label class="vec-row"><span>${label}</span><input type="number" id="camera-${f}" data-camera-lens="${f}" min="${min}" max="${max}" step="${step}" value="${o.camera[f]}"></label>`).join('')}
-      <p class="muted small">Looks along local −Z. Lens and animation are used by Render while looking through this camera.</p></div>${constraintCard(o)}`
+      ${[['fov','Vertical FOV°',1,170,.1],['aperture','Lens radius m',0,1,.01],['focus','Focus m',.001,10000,.1]].map(([f,label,min,max,step]) => `<label class="vec-row"><span>${label}${keyed(`camera_${f}`)}</span><input type="number" id="camera-${f}" data-camera-lens="${f}" min="${min}" max="${max}" step="${step}" value="${shown.camera[f]}"></label>`).join('')}
+      <p class="muted small">Looks along local −Z. Press Key to animate transform and lens. Editing a marked property keys the current frame. Render samples the same lens.</p></div>${constraintCard(o)}`
     return
   }
   const glazes = GLAZES.map(
@@ -1409,9 +1409,14 @@ $('properties').addEventListener('change', (e) => {
   if (/^p-bone-\d$/.test(target.id)) return run(poseCommands(o, currentBone(o).name, boneSliders())).catch(() => {})
   if (['light-kind','light-color','light-intensity'].includes(target.id)) {
     const field = target.id.slice(6)
-    return run([{op:'light_settings',id:o.id,lamp:{...o.light,[field]:field==='intensity'?Number(target.value):target.value}}]).catch(() => {})
+    const value = field==='intensity'?Number(target.value):target.value
+    const property = `light_${field}`
+    return run(trackOf(o,property) ? [{op:'set_keyframe',id:o.id,property,frame:Math.round(app.frame),value}] : [{op:'light_settings',id:o.id,lamp:{...o.light,[field]:value}}]).catch(() => {})
   }
-  if (target.dataset.cameraLens) return run([{ op: 'camera_settings', id: o.id, lens: { ...o.camera, [target.dataset.cameraLens]: Number(target.value) } }]).catch(() => {})
+  if (target.dataset.cameraLens) {
+    const field=target.dataset.cameraLens, property=`camera_${field}`, value=Number(target.value)
+    return run(trackOf(o,property) ? [{op:'set_keyframe',id:o.id,property,frame:Math.round(app.frame),value}] : [{op:'camera_settings',id:o.id,lens:{...o.camera,[field]:value}}]).catch(() => {})
+  }
   if (target.id === 'p-name') return run([{ op: 'rename', id: o.id, name: target.value }]).catch(() => {})
   if (target.id === 'p-dist') {
     app.extrudeDistance = Number(target.value) || 0.3
@@ -1885,7 +1890,7 @@ function keyAll() {
   if (!o) return toast('Select an object to key')
   const frame = Math.round(app.frame)
   const bones = (o.bones || []).map((b) => ({ op: 'set_keyframe', id: o.id, property: 'bone', bone: b.name, frame }))
-  return run([...PROPERTIES.map((property) => ({ op: 'set_keyframe', id: o.id, property, frame })), ...bones], 'UI')
+  return run([...propertiesFor(o).map((property) => ({ op: 'set_keyframe', id: o.id, property, frame })), ...bones], 'UI')
 }
 
 /** Key every bone's current turn at this frame. */
@@ -2003,7 +2008,7 @@ window.__tatara = {
         status.done = true
       })
   },
-  debug: () => ({ sceneLights: [...viewport.nodes.values()].filter(n=>n.light?.visible).length, sceneCamera: viewport.sceneCameraId ?? null, renderCamera: { eye: viewport.camera.position.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov }, pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
+  debug: () => ({ sceneLightValues: [...viewport.nodes.values()].filter(n=>n.light).map(n=>({intensity:n.light.intensity,color:n.light.color.getHexString()})), sceneLights: [...viewport.nodes.values()].filter(n=>n.light?.visible).length, sceneCamera: viewport.sceneCameraId ?? null, renderCamera: { eye: viewport.camera.position.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov }, pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
     pathSamples: preview.active ? preview.samples : null,
     finalSamples: finalRender.open ? finalRender.samples : null,
