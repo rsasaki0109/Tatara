@@ -1689,4 +1689,31 @@ export const animationCurves = {
   ]
 }
 
-export const SCENARIOS = { animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const poleTarget = {
+  title:'Direct the knee, keep the foot planted',width:800,gizmo:false,
+  setup:[
+    {op:'set_animation',start:1,end:48},
+    {op:'add',name:'Leg',primitive:{kind:'cylinder',radius:.13,height:2,rings:16},translation:[0,1,0],color:'#769c8b'},
+    {op:'rig',id:'Leg',chain:2},
+    {op:'add',name:'Foot',primitive:{kind:'sphere',radius:.11},translation:[0,1.4,0],color:'#e59b61'},
+    {op:'add',name:'Knee direction',primitive:{kind:'sphere',radius:.1},translation:[1,.7,0],color:'#729dde'}
+  ],
+  camera:{azimuth:15,elevation:12,distance:4.6,target:[0,1,0]},
+  steps:[
+    {pick:'Leg',after:500},{click:'[data-bone="Bone 2"]',after:150},
+    {caption:'Keep the foot on its target',hint:'two-bone IK · a separate pole controls the knee'},
+    {choose:'#ik-target',value:'Foot',after:200},{choose:'#ik-pole',value:'Knee direction',after:200},
+    {click:'[data-rig=follow]',after:900},
+    {caption:'Move the pole, change the bend direction',hint:'foot stays planted · one typed command'},
+    {run:[{op:'move',id:'Knee direction',offset:[-2,0,0]}],after:1000},
+    {click:'[data-action=undo]',after:900},
+    {run:[
+      {op:'set_keyframe',id:'Knee direction',property:'translation',frame:1,value:[1,.7,0],interpolation:'linear'},
+      {op:'set_keyframe',id:'Knee direction',property:'translation',frame:48,value:[-1,.7,0]}
+    ],after:400},
+    {caption:'Animate the bend without keying every joint',hint:'same solver in browser, renders and Motion GLB'},
+    {scrub:48,ms:2200,after:800},{scrub:1,ms:2200,after:800},{cursor:false},{wait:700}
+  ]
+}
+
+export const SCENARIOS = { poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

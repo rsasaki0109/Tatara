@@ -893,6 +893,8 @@ pub enum Command {
         bone: String,
         target: ObjRef,
         #[serde(default)]
+        pole: Option<ObjRef>,
+        #[serde(default)]
         chain: Option<u32>,
     },
     /// Stop following the target; keep the current static pose.
@@ -2113,6 +2115,13 @@ fn apply_command(
             for i in idx.into_iter().rev() {
                 scene.objects.remove(i);
             }
+            for t in &mut scene.ik_targets {
+                if t.pole
+                    .is_some_and(|id| !scene.objects.iter().any(|o| o.id == id))
+                {
+                    t.pole = None;
+                }
+            }
             scene.ik_targets.retain(|t| {
                 scene.objects.iter().any(|o| o.id == t.rig)
                     && scene.objects.iter().any(|o| o.id == t.target)
@@ -2476,14 +2485,20 @@ fn apply_command(
             id,
             bone,
             target,
+            pole,
             chain,
         } => {
             let rig = scene.objects[resolve(scene, id)?].id;
             let target = scene.objects[resolve(scene, target)?].id;
+            let pole = pole
+                .as_ref()
+                .map(|p| resolve(scene, p).map(|i| scene.objects[i].id))
+                .transpose()?;
             scene.ik_targets.retain(|t| t.rig != rig);
             scene.ik_targets.push(rig::Target {
                 rig,
                 target,
+                pole,
                 bone: bone.clone(),
                 chain: chain.unwrap_or(rig::MAX_BONES as u32),
             });

@@ -4,6 +4,7 @@
 // Run `node scripts/build-static.mjs` first.
 
 import { checkCurves } from './curve-check.mjs'
+import { checkPoles } from './pole-check.mjs'
 import { motionTip } from './gltf-motion-check.mjs'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -298,6 +299,7 @@ try {
   check(Math.hypot(...bakedPlayback.tip.map((v,k)=>v-[0,1.3,.2][k]))<.001 && bakedPlayback.channels===10,'WebAssembly Motion GLB reproduces IK with the standard glTF loader and mixer')
   check(JSON.stringify(await page.evaluate(()=>fetch('/api/scene').then(r=>r.json())))===JSON.stringify(motionBefore),'WebAssembly motion export leaves the authored scene unchanged')
   await checkCurves(page,check)
+  await checkPoles(page,check)
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

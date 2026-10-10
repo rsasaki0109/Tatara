@@ -799,6 +799,39 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let r=call(json!({"jsonrpc":"2.0","id":93,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"clear_target","id":"IK arm"}]}}})).await;
     assert_ne!(r["result"]["isError"], true, "{r}");
 
+    // Pole bindings and animated bend planes travel through the same MCP commands.
+    let r=call(json!({"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"add","name":"Pole leg","primitive":{"kind":"cylinder","height":2,"rings":8},"translation":[110,1,0]},
+        {"op":"rig","id":"Pole leg","chain":2},
+        {"op":"add","name":"Pole foot","primitive":{"kind":"sphere"},"translation":[110,1.4,0]},
+        {"op":"add","name":"Pole knee","primitive":{"kind":"sphere"},"translation":[111,0.7,0]},
+        {"op":"track_target","id":"Pole leg","bone":"Bone 2","target":"Pole foot","pole":"Pole knee","chain":2},
+        {"op":"set_keyframe","id":"Pole knee","property":"translation","frame":1,"value":[111,0.7,0],"interpolation":"linear"},
+        {"op":"set_keyframe","id":"Pole knee","property":"translation","frame":3,"value":[109,0.7,0]}
+    ]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    for (id, frame_number, sign) in [(102, 1., 1.), (103, 3., -1.)] {
+        let r=call(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"get_scene","arguments":{"frame":frame_number}}})).await;
+        assert_ne!(r["result"]["isError"], true, "{r}");
+        let scene: Value =
+            serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        let leg = scene["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["name"] == "Pole leg")
+            .unwrap();
+        let bones: Vec<tatara::rig::Bone> =
+            serde_json::from_value(leg["pose"]["bones"].clone()).unwrap();
+        let rotations: Vec<_> = bones.iter().map(|b| b.rotation).collect();
+        let knee = tatara::rig::matrices(&bones, &rotations)[1]
+            .transform_point3(glam::DVec3::from(bones[1].head));
+        assert!(knee.x * sign > 0.6);
+        assert!(
+            tatara::rig::tip(&bones, &rotations, 1).distance(glam::DVec3::new(0., 0.4, 0.)) < 1e-8
+        );
+    }
+
     // Agents use the same collision-checked key edit as the curve UI.
     let r=call(json!({"jsonrpc":"2.0","id":96,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"edit_keyframe","id":"Animated anchor","property":"translation","frame":3,"new_frame":5,"value":[90,4,0]}]}}})).await;
     assert_ne!(r["result"]["isError"], true, "{r}");

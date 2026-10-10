@@ -4,6 +4,7 @@
 // Requires `npm --prefix web run build` and `cargo build --release`.
 
 import { checkCurves } from './curve-check.mjs'
+import { checkPoles } from './pole-check.mjs'
 import { motionTip } from './gltf-motion-check.mjs'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -1085,6 +1086,7 @@ try {
   const curves=await browser.newPage({viewport:{width:1280,height:720}})
   await curves.goto(url);await curves.evaluate(()=>window.__tatara.ready)
   await checkCurves(curves,check)
+  await checkPoles(curves,check)
   await curves.close()
 
   // Every scenario must finish without errors (the MCP one falls back to HTTP).
