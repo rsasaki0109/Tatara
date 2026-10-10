@@ -957,13 +957,13 @@ try {
   await shot.click('[data-action=undo]');await shot.click('[data-action=undo]')
   await until(shot,()=>!window.__tatara.debug().worldBackground && window.__tatara.debug().pending===0)
 
-  const previousUp=await shot.evaluate(()=>window.__tatara.debug().renderCamera.up)
-  await shot.evaluate(async()=>{
+  const sourceUp=await shot.evaluate(async()=>{
     const s=await(await fetch('/api/scene')).json(),o=s.objects.find(o=>o.camera),rotation=[...o.transform.rotation];rotation[2]+=.25
     const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[{op:'set_keyframe',id:o.id,property:'rotation',frame:2,value:rotation}]})});if(!r.ok)throw new Error(await r.text())
+    const [x,y,z]=rotation
+    return [-Math.cos(y)*Math.sin(z),Math.cos(x)*Math.cos(z)-Math.sin(x)*Math.sin(y)*Math.sin(z),Math.sin(x)*Math.cos(z)+Math.cos(x)*Math.sin(y)*Math.sin(z)]
   })
-  await until(shot, up => window.__tatara.debug().renderCamera.up.some((v,i)=>Math.abs(v-up[i])>.01), previousUp)
-  const sourceUp=await shot.evaluate(()=>window.__tatara.debug().renderCamera.up)
+  await until(shot, up => window.__tatara.debug().renderCamera.up.every((v,i)=>Math.abs(v-up[i])<1e-6), sourceUp)
   const observer=await browser.newPage({viewport:{width:1280,height:720}})
   await observer.goto(`${url}/?participant=Projection%20observer`);await observer.evaluate(()=>window.__tatara.ready)
   await until(observer, up => window.__tatara.presence().some(p=>p.camera?.ortho_height===4 && p.camera?.up?.every((v,i)=>Math.abs(v-up[i])<1e-6)), sourceUp)
