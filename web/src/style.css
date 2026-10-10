@@ -1290,6 +1290,12 @@ input[type='range'] {
   caret-color: transparent !important;
 }
 
+@media (max-width: 1400px) {
+  #add-group button span {
+    display: none;
+  }
+}
+
 @media (max-width: 1100px) {
   #app {
     grid-template-columns: 0 1fr 270px;

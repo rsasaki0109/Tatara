@@ -677,6 +677,15 @@ const actions = {
   exportGlb() {
     download('/api/export/glb', 'scene.glb')
   },
+  async exportMotion() {
+    try {
+      const { start, end } = (await api.scene()).animation
+      const response = await fetch(`/api/export/glb?frames=${start}-${end}`)
+      if (!response.ok) { const error = await response.json(); throw new Error(error.error ?? 'Motion export failed') }
+      download(URL.createObjectURL(await response.blob()), 'scene-motion.glb')
+      toast(`Saved solved motion: frames ${start}–${end}`)
+    } catch (error) { toast(error.message, 'error') }
+  },
   renderImage(on = !finalRender.open) {
     if (on) finalRender.show()
     else finalRender.hide()
@@ -815,7 +824,7 @@ $('edit-group').innerHTML =
 $('history-group').innerHTML =
   button('undo', '', 'Undo (Ctrl+Z)', 'icon-only') + button('redo', '', 'Redo (Ctrl+Shift+Z)', 'icon-only')
 $('file-group').innerHTML =
-  button('open', 'Open', 'Open a .tatara.json scene, or import .glb / .gltf') + button('save', 'Save', 'Save (Ctrl+S)') + button('exportGlb', 'GLB', 'Export glTF (.glb)') + button('exportObj', 'OBJ', 'Export OBJ')
+  button('open', 'Open', 'Open a .tatara.json scene, or import .glb / .gltf') + button('save', 'Save', 'Save (Ctrl+S)') + button('exportGlb', 'GLB', 'Export glTF (.glb)') + button('exportMotion', 'Motion GLB', 'Bake solved IK and constraints over the playback range (max 240 samples)') + button('exportObj', 'OBJ', 'Export OBJ')
 $('wire-btn').innerHTML = icon('wire')
 $('frame-btn').innerHTML = icon('frame')
 $('shading-btn').innerHTML = icon('render')
