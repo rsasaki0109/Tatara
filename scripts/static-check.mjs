@@ -129,6 +129,21 @@ try {
   })
   check(JSON.stringify(layout.moved.objects[1].transform.translation) === '[0.5,0.5,3]' && JSON.stringify(layout.moved.objects[2].transform.translation) === '[3.5,0.5,3]', 'maintained layouts follow their reference in WebAssembly')
   check(JSON.stringify(layout.undone.objects[1].transform.translation) === '[-1.5,0.5,0]' && layout.undone.arrangements.length === 1, 'WebAssembly keeps layout intent through Undo')
+  const faceReplay = await page.evaluate(async () => {
+    const post=(path,body)=>fetch(`/api/${path}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json())
+    const primitive=segments=>({op:'add',name:'Cylinder',primitive:{kind:'cylinder',segments}})
+    await post('commands',{commands:[{op:'clear'},primitive(9)]})
+    const history=await(await fetch('/api/history?limit=1')).json()
+    await post('commands',{commands:[{op:'extrude',id:'Cylinder',face:{normal:[0,1,0],centre:[.2943407405,.5,.1071312683],max_distance:.1},distance:.4}]})
+    const before=await(await fetch('/api/scene')).json()
+    await post('history/revise',{step:history.steps[0].step,commands:[{op:'clear'},primitive(12)]})
+    const after=await(await fetch('/api/scene')).json()
+    await fetch('/api/undo',{method:'POST'})
+    const undone=await(await fetch('/api/scene')).json()
+    return {before,after,undone}
+  })
+  check(faceReplay.before.objects[0].mesh.faces.length !== faceReplay.after.objects[0].mesh.faces.length && Math.abs(Math.max(...faceReplay.after.objects[0].mesh.vertices.map(p=>p[1]))-.9)<1e-6,'WebAssembly reidentifies geometric faces during history replay')
+  check(JSON.stringify(faceReplay.before.objects) === JSON.stringify(faceReplay.undone.objects),'WebAssembly Undo restores topology-sensitive face edits')
   const orientation = await page.evaluate(async () => {
     const post=commands=>fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands})}).then(r=>r.json())
     await post([{op:'clear'},{op:'add_camera',name:'Shot'},{op:'add_light',name:'Key',rotation:[0,.3,0]},{op:'constrain',id:'Key',orientation:'Shot'}])

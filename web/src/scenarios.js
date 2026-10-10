@@ -1437,6 +1437,26 @@ export const rebase = {
 }
 
 
+export const faceHistory = {
+  title:'Keep face intent through detail changes',width:800,gizmo:false,external:true,
+  camera:{azimuth:25,elevation:32,distance:3.6,target:[0,.75,0]},
+  steps:[
+    {caption:'Pick a surface by geometry, not its number',hint:'a local normal · centre · bounded search'},
+    {mcp:[
+      {tool:'apply_commands',arguments:{commands:[{op:'add',name:'Cylinder',primitive:{kind:'cylinder',segments:9},translation:[0,.5,0],color:'#769c8b'}]},after:300},
+      {tool:'apply_commands',arguments:{commands:[{op:'extrude',id:'Cylinder',face:{normal:[0,1,0],centre:[.2943407405,.5,.1071312683],max_distance:.1},distance:.4}]},after:700},
+    ]},
+    {terminal:false},{pick:'Cylinder',after:200},{tab:'history'},{click:'[data-hs-open="1"]',after:300},
+    {caption:'Change the earlier cylinder detail',hint:'History · segments 9 → 12'},
+    {into:'input[data-path*=segments]',type:'12',after:1300},
+    {caption:'The extrusion stays on the nearby top surface',hint:'face indices changed · the geometric intent replays'},
+    {click:'[data-hs=apply]',after:1200},
+    {click:'[data-action=undo]',after:1000},
+    {caption:'One Undo restores the earlier topology',hint:'missing or ambiguous faces need review'},
+    {cursor:false},{wait:1000},
+  ],
+}
+
 export const orientation = {
   title:'Keep the relative orientation',width:800,gizmo:false,
   setup:[
@@ -1518,4 +1538,4 @@ export const sceneLight = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

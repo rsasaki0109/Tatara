@@ -637,6 +637,16 @@ async fn mcp_bridge_edits_the_shared_scene() {
         .find(|o| o["name"] == "MCP Key")
         .unwrap();
     assert!(light["transform"]["rotation"][1].as_f64().unwrap().abs() > 0.1);
+    let r=call(json!({"jsonrpc":"2.0","id":74,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"add","name":"MCP surface","primitive":{"kind":"cylinder","segments":9},"translation":[80,0.5,0]}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":75,"method":"tools/call","params":{"name":"get_history","arguments":{"limit":1}}})).await;
+    let history: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let step = history["steps"][0]["step"].as_u64().unwrap();
+    let r=call(json!({"jsonrpc":"2.0","id":76,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"extrude","id":"MCP surface","face":{"normal":[0,1,0],"centre":[0.2943407405,0.5,0.1071312683],"max_distance":0.1},"distance":0.4}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":77,"method":"tools/call","params":{"name":"revise_step","arguments":{"step":step,"commands":[{"op":"add","name":"MCP surface","primitive":{"kind":"cylinder","segments":12},"translation":[80,0.5,0]}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
     child.kill().await.unwrap();
 }
 

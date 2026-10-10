@@ -7,6 +7,7 @@ pub mod constraint;
 pub mod csg;
 pub mod edit;
 pub mod engine;
+pub mod face;
 pub mod gltf;
 pub mod image;
 pub mod inspect;

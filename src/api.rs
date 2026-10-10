@@ -1051,6 +1051,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn geometric_faces_replay_through_history_and_reject_missing_matches_atomically() {
+        let mut ed = Editor::new();
+        let (_, out) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"add","name":"Cylinder","primitive":{"kind":"cylinder","segments":9}}]}),
+        );
+        let old_revision = out["revision"].as_u64().unwrap();
+        let face =
+            json!({"normal":[0,1,0],"centre":[0.2943407405,0.5,0.1071312683],"max_distance":0.1});
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"extrude","id":"Cylinder","face":face,"distance":0.4}]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        let before = ed.scene().clone();
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/history/revise",
+            json!({"step":1,"commands":[{"op":"add","name":"Cylinder","primitive":{"kind":"cylinder","segments":12}}]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        assert!(ed.scene().revision > old_revision);
+        assert_ne!(
+            ed.scene().objects[0].mesh.faces.len(),
+            before.objects[0].mesh.faces.len()
+        );
+        assert!(
+            (ed.scene().objects[0]
+                .mesh
+                .vertices
+                .iter()
+                .map(|p| p[1])
+                .fold(f64::NEG_INFINITY, f64::max)
+                - 0.9)
+                .abs()
+                < 1e-6
+        );
+        let current = ed.scene().clone();
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"extrude","id":"Cylinder","face":{"normal":[0,1,0],"centre":[0,10,0],"max_distance":0.1},"distance":0.4}]}),
+        );
+        assert_eq!(status, 422, "{out}");
+        assert!(out["error"].as_str().unwrap().contains("no matching"));
+        assert_eq!(*ed.scene(), current);
+        call(&mut ed, "POST", "/undo", json!({}));
+        assert_eq!(ed.scene().objects, before.objects);
+    }
+
+    #[test]
     fn orientation_proposals_preview_and_accept_share_the_atomic_command_path() {
         let mut ed = Editor::new();
         let (status, out) = call(
