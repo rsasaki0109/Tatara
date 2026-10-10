@@ -466,6 +466,28 @@ function targetFaces() {
   return app.face != null ? [app.face] : []
 }
 
+/** A bounded local geometric reference for a single selected base face. */
+function geometricFace(index) {
+  const mesh = objectById(app.selected)?.mesh
+  const face = mesh?.faces[index]
+  if (!face?.length) return index
+  const points = face.map(i => mesh.vertices[i])
+  const centre = [0,0,0]
+  const normal = [0,0,0]
+  for (let k=0;k<points.length;k++) {
+    const a=points[k], b=points[(k+1)%points.length]
+    for (let j=0;j<3;j++) centre[j]+=a[j]/points.length
+    normal[0]+=(a[1]-b[1])*(a[2]+b[2])
+    normal[1]+=(a[2]-b[2])*(a[0]+b[0])
+    normal[2]+=(a[0]-b[0])*(a[1]+b[1])
+  }
+  const length=Math.hypot(...normal)
+  if (length<1e-12) return index
+  let radius=0
+  for (const p of points) radius=Math.max(radius,Math.hypot(...p.map((v,j)=>v-centre[j])))
+  return {normal:normal.map(v=>v/length),centre,max_distance:Math.min(10000,Math.max(1e-4,radius*.25)),min_dot:.95}
+}
+
 function summarize(commands) {
   const parts = []
   for (const c of commands) {
@@ -590,12 +612,12 @@ const actions = {
   extrude(distance = app.extrudeDistance) {
     const faces = targetFaces()
     if (app.selected == null || !faces.length) return toast('Alt+click a face to extrude it')
-    return run(faces.map((face) => ({ op: 'extrude', id: app.selected, face, distance })))
+    return run(faces.map((face) => ({ op: 'extrude', id: app.selected, face: faces.length === 1 ? geometricFace(face) : face, distance })))
   },
   inset(fraction = app.insetFraction) {
     const faces = targetFaces()
     if (app.selected == null || !faces.length) return toast('Alt+click a face to inset it')
-    return run(faces.map((face) => ({ op: 'inset', id: app.selected, face, fraction })))
+    return run(faces.map((face) => ({ op: 'inset', id: app.selected, face: faces.length === 1 ? geometricFace(face) : face, fraction })))
   },
   bevel(width = app.bevelWidth) {
     if (app.selected == null) return toast('Select an object first')

@@ -680,10 +680,11 @@ pub enum Command {
     Delete {
         id: ObjRef,
     },
-    /// Extrude one polygon along its normal (object space).
+    /// Extrude one polygon along its normal (object space). `face` is a legacy
+    /// index or a bounded geometric normal/centroid query for history replay.
     Extrude {
         id: ObjRef,
-        face: usize,
+        face: crate::face::FaceRef,
         distance: f64,
     },
     /// Catmull-Clark subdivision, 1 to 4 levels.
@@ -699,10 +700,11 @@ pub enum Command {
         offset: Vec3,
     },
     /// Move a polygon's corners toward its centre by `fraction` (0-1),
-    /// adding a ring of quads. Combine with `extrude` for panels and bosses.
+    /// adding a ring of quads. `face` accepts an index or geometric query.
+    /// Combine with `extrude` for panels and bosses.
     Inset {
         id: ObjRef,
-        face: usize,
+        face: crate::face::FaceRef,
         fraction: f64,
     },
     /// Create an object from explicit geometry (used by glTF import).
@@ -2052,7 +2054,8 @@ fn apply_command(
             if !distance.is_finite() || *distance == 0.0 {
                 return err("distance must be a non-zero finite number");
             }
-            extrude(&mut scene.objects[i].mesh, *face, *distance)?;
+            let face = face.resolve(&scene.objects[i].mesh)?;
+            extrude(&mut scene.objects[i].mesh, face, *distance)?;
         }
         Command::Subdivide { id, levels } => {
             let i = resolve(scene, id)?;
@@ -2087,7 +2090,8 @@ fn apply_command(
             if !(fraction.is_finite() && *fraction > 0.0 && *fraction < 1.0) {
                 return err("fraction must be between 0 and 1 (exclusive)");
             }
-            inset(&mut scene.objects[i].mesh, *face, *fraction)?;
+            let face = face.resolve(&scene.objects[i].mesh)?;
+            inset(&mut scene.objects[i].mesh, face, *fraction)?;
         }
         Command::MoveVertices {
             id,

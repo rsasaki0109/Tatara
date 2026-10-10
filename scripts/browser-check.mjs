@@ -123,6 +123,9 @@ try {
   await page.click('#edit-group [data-action=extrude]')
   await page.waitForFunction(() => /10 faces/.test(document.querySelector('#status-mesh').textContent))
   check((await faces()) === 10, 'extrude adds four side faces')
+  const faceIntent = await page.evaluate(() => fetch('/api/history?limit=1').then(r=>r.json()).then(h=>h.steps[0].commands[0].face))
+  check(Array.isArray(faceIntent.normal) && Array.isArray(faceIntent.centre) && faceIntent.max_distance > 0, 'single-face UI extrusion records bounded geometric intent instead of an index')
+
 
   await page.keyboard.press('Escape')
   await page.keyboard.press('Control+z')
@@ -574,6 +577,26 @@ try {
   await page.click('.constraints [data-unconstrain]')
   await until(page, () => fetch('/api/scene').then(r=>r.json()).then(s=>(s.constraints || []).length===0))
   check(true,'relative orientation constraints can be removed from either endpoint')
+
+  const faceReplay = await page.evaluate(async () => {
+    const post=(path,body)=>fetch(`/api/${path}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(async r=>({status:r.status,data:await r.json()}))
+    const primitive=segments=>({op:'add',name:'History cylinder',primitive:{kind:'cylinder',segments},color:'#769c8b'})
+    await post('commands',{commands:[{op:'clear'},primitive(9)]})
+    const history=await(await fetch('/api/history?limit=1')).json()
+    const step=history.steps[0].step
+    await post('commands',{commands:[{op:'extrude',id:'History cylinder',face:{normal:[0,1,0],centre:[.2943407405,.5,.1071312683],max_distance:.1},distance:.4}]})
+    const before=await(await fetch('/api/scene')).json()
+    const revised=await post('history/revise',{step,commands:[{op:'clear'},primitive(12)]})
+    const after=await(await fetch('/api/scene')).json()
+    const refused=await post('commands',{commands:[{op:'extrude',id:'History cylinder',face:{normal:[0,1,0],centre:[0,10,0],max_distance:.1},distance:.4}]})
+    const unchanged=await(await fetch('/api/scene')).json()
+    await fetch('/api/undo',{method:'POST'})
+    const undone=await(await fetch('/api/scene')).json()
+    return {before,after,revised,refused,unchanged,undone}
+  })
+  check(faceReplay.revised.status === 200 && faceReplay.before.objects[0].mesh.faces.length !== faceReplay.after.objects[0].mesh.faces.length && Math.abs(Math.max(...faceReplay.after.objects[0].mesh.vertices.map(p=>p[1]))-.9)<1e-6, 'history reidentifies the selected top surface after cylinder detail changes')
+  check(faceReplay.refused.status === 422 && faceReplay.refused.data.error.includes('no matching') && JSON.stringify(faceReplay.after) === JSON.stringify(faceReplay.unchanged), 'missing geometric face references leave the scene unchanged')
+  check(JSON.stringify(faceReplay.before.objects) === JSON.stringify(faceReplay.undone.objects), 'one Undo restores the previous topology and geometric face edit')
 
   // Axis alignment leaves the other coordinates free, whichever endpoint leads.
   await page.evaluate(() => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands: [
