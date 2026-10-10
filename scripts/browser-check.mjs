@@ -547,6 +547,34 @@ try {
   await until(page, () => fetch('/api/scene').then((r) => r.json()).then((s) => (s.constraints || []).length === 0))
   check(true, 'the distance rule can be removed from the Constraints card')
 
+  // Preserve the current relative orientation using real inspector edits.
+  await page.evaluate(() => fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
+    {op:'clear'},{op:'add',name:'Turn anchor',primitive:{kind:'cube'},translation:[-2,.5,0]},
+    {op:'add',name:'Turn partner',primitive:{kind:'cube'},translation:[2,.5,0],rotation:[0,Math.PI/6,0]},
+  ]})}))
+  await until(page, () => fetch('/api/scene').then(r=>r.json()).then(s=>s.objects.length===2 && s.objects[1].name==='Turn partner'))
+  await page.click('#outliner li:last-child')
+  await page.selectOption('#c-kind','orientation')
+  await page.click('[data-constrain]')
+  await until(page, () => fetch('/api/scene').then(r=>r.json()).then(s=>s.constraints.some(c=>c.kind==='orientation')))
+  check((await page.textContent('.constraints')).includes('Keeps relative orientation to Turn anchor'),'the Constraints card captures a relative orientation')
+  await page.click('#outliner li:first-child')
+  await page.fill('input[data-field=rotation][data-i="1"]','40')
+  await page.locator('input[data-field=rotation][data-i="1"]').press('Tab')
+  await until(page, () => fetch('/api/scene').then(r=>r.json()).then(s=>Math.abs(s.objects[1].transform.rotation[1]-70*Math.PI/180)<1e-6 && s.objects[1].transform.translation[0]===2))
+  check(true,'rotating the reference preserves the partner offset without moving it')
+  await page.click('#outliner li:last-child')
+  await page.fill('input[data-field=rotation][data-i="1"]','50')
+  await page.locator('input[data-field=rotation][data-i="1"]').press('Tab')
+  await until(page, () => fetch('/api/scene').then(r=>r.json()).then(s=>Math.abs(s.objects[0].transform.rotation[1]-20*Math.PI/180)<1e-6))
+  check(true,'rotating the orientation partner leads the reference')
+  await page.click('[data-action=undo]')
+  await until(page, () => fetch('/api/scene').then(r=>r.json()).then(s=>Math.abs(s.objects[0].transform.rotation[1]-40*Math.PI/180)<1e-6 && Math.abs(s.objects[1].transform.rotation[1]-70*Math.PI/180)<1e-6))
+  check(true,'one Undo restores both constrained orientations')
+  await page.click('.constraints [data-unconstrain]')
+  await until(page, () => fetch('/api/scene').then(r=>r.json()).then(s=>(s.constraints || []).length===0))
+  check(true,'relative orientation constraints can be removed from either endpoint')
+
   // Axis alignment leaves the other coordinates free, whichever endpoint leads.
   await page.evaluate(() => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({commands: [
     {op: 'clear'}, {op: 'add', name: 'Anchor', primitive: {kind: 'cube'}, translation: [-2,1,0]},

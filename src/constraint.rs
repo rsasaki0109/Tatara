@@ -4,7 +4,8 @@
 //! place on it; kept the **mirror** image of another across a plane; or
 //! kept **matching** another's material; or kept a fixed **distance** from
 //! another object's or group's evaluated world-bound centre; or keep centres
-//! **aligned** along selected world axes while leaving the other axes free.
+//! **aligned** along selected world axes while leaving the other axes free;
+//! or preserve their relative **orientation** as a quaternion offset.
 //!
 //! Constraints are solved at the end of every command batch. Mirrors and
 //! matches work both ways: whichever side the batch changed leads, so moving
@@ -53,6 +54,7 @@ pub enum Kind {
     Matches,
     Distance,
     Align,
+    Orientation,
 }
 
 /// World axes whose evaluated bound centres must coincide.
@@ -95,6 +97,8 @@ pub enum Rule {
     Distance { of: Who, distance: f64 },
     /// Keep evaluated centres equal on these axes; other axes stay free.
     Align { of: Who, axes: Axes },
+    /// Preserve the captured relative rotation between two individual objects.
+    Orientation { of: Who, relative: [f64; 4] },
 }
 
 impl Rule {
@@ -105,6 +109,7 @@ impl Rule {
             Rule::Matches { .. } => Kind::Matches,
             Rule::Distance { .. } => Kind::Distance,
             Rule::Align { .. } => Kind::Align,
+            Rule::Orientation { .. } => Kind::Orientation,
         }
     }
 
@@ -114,7 +119,8 @@ impl Rule {
             Rule::Mirrors { of, .. }
             | Rule::Matches { of }
             | Rule::Distance { of, .. }
-            | Rule::Align { of, .. } => of,
+            | Rule::Align { of, .. }
+            | Rule::Orientation { of, .. } => of,
         }
     }
 }
@@ -175,6 +181,21 @@ fn overlaps(scene: &Scene, a: &Who, b: &Who) -> bool {
 /// Whether every object a constraint names still exists.
 pub fn alive(scene: &Scene, c: &Constraint) -> bool {
     !members(scene, &c.subject).is_empty() && !members(scene, c.rule.other()).is_empty()
+}
+
+fn individual(scene: &Scene, who: &Who) -> Result<usize, EngineError> {
+    match who {
+        Who::Id(id) => scene
+            .objects
+            .iter()
+            .position(|o| o.id == *id)
+            .ok_or_else(|| EngineError::new("orientation endpoint no longer exists")),
+        Who::Group(_) => err("orientation constraints require individual objects, not groups"),
+    }
+}
+
+fn rotation(t: &Transform) -> DQuat {
+    DQuat::from_euler(EulerRot::XYZ, t.rotation[0], t.rotation[1], t.rotation[2])
 }
 
 fn centre(scene: &Scene, idx: &[usize]) -> Result<DVec3, EngineError> {
@@ -242,6 +263,21 @@ pub fn add(scene: &mut Scene, subject: &ObjRef, rule: Request) -> Result<(), Eng
             }
             Rule::Align { of, axes }
         }
+        Request::Orientation(r) => {
+            let of = who(scene, &r)?;
+            let a = individual(scene, &subject)?;
+            let b = individual(scene, &of)?;
+            if a == b {
+                return err("an orientation constraint needs two different objects");
+            }
+            Rule::Orientation {
+                of,
+                relative: (rotation(&scene.objects[b].transform).inverse()
+                    * rotation(&scene.objects[a].transform))
+                .normalize()
+                .to_array(),
+            }
+        }
         Request::Matches(r) => {
             let of = who(scene, &r)?;
             if overlaps(scene, &subject, &of) {
@@ -273,6 +309,7 @@ pub enum Request {
     Matches(ObjRef),
     Distance(ObjRef, f64),
     Align(ObjRef, Axes),
+    Orientation(ObjRef),
 }
 
 /// Drop `subject`'s constraints (of one kind, or all), and those of others
@@ -371,7 +408,12 @@ pub fn solve(scene: &mut Scene, before: &Snapshot) -> Result<(), EngineError> {
                 *offset = [d.x, d.z];
             }
         }
-        let spatial = |c: &Constraint| matches!(c.rule, Rule::Distance { .. } | Rule::Align { .. });
+        let spatial = |c: &Constraint| {
+            matches!(
+                c.rule,
+                Rule::Distance { .. } | Rule::Align { .. } | Rule::Orientation { .. }
+            )
+        };
         let has_spatial = constraints.iter().any(spatial) || !scene.arrangements.is_empty();
         for pass in 0..if has_spatial { 32 } else { 3 } {
             for c in &constraints {
@@ -491,6 +533,24 @@ fn apply(scene: &mut Scene, c: &Constraint, lead: Lead) -> Result<(), EngineErro
             assembly::translate(scene, moving, delta);
             Ok(())
         }
+        Rule::Orientation { of, relative } => {
+            let a = individual(scene, &c.subject)?;
+            let b = individual(scene, of)?;
+            let relative = DQuat::from_array(*relative);
+            let (moving, q) = match lead {
+                Lead::Other => (a, rotation(&scene.objects[b].transform) * relative),
+                Lead::Subject => (
+                    b,
+                    rotation(&scene.objects[a].transform) * relative.inverse(),
+                ),
+            };
+            if !q.is_finite() {
+                return err("orientation constraint produced a nonfinite rotation");
+            }
+            let (x, y, z) = q.normalize().to_euler(EulerRot::XYZ);
+            scene.objects[moving].transform.rotation = [x, y, z];
+            Ok(())
+        }
         Rule::Matches { of } => {
             let of = members(scene, of);
             let (from, to) = match lead {
@@ -533,6 +593,20 @@ pub fn validate(scene: &Scene) -> Result<(), EngineError> {
                 "constraint {} names objects that do not exist",
                 c.id
             ));
+        }
+        if let Rule::Orientation { of, relative } = &c.rule {
+            individual(scene, &c.subject)?;
+            individual(scene, of)?;
+            let q = DQuat::from_array(*relative);
+            if overlaps(scene, &c.subject, of)
+                || !q.is_finite()
+                || (q.length_squared() - 1.0).abs() > 1e-6
+            {
+                return err(format!(
+                    "constraint {} has invalid orientation endpoints or relative quaternion",
+                    c.id
+                ));
+            }
         }
         if let Rule::Distance { of, distance } = &c.rule
             && (!distance.is_finite() || *distance < 0.0 || overlaps(scene, &c.subject, of))
@@ -666,6 +740,186 @@ mod tests {
             .map(|o| o.id)
             .collect();
         inspect::bounds(&solids, &ids).unwrap().1.y
+    }
+
+    #[test]
+    fn incompatible_loaded_orientation_rules_fail_atomically() {
+        let mut ed = orientation_pair();
+        let mut scene = ed.scene().clone();
+        scene.constraints.push(Constraint {
+            id: 2,
+            subject: Who::Id(scene.objects[0].id),
+            rule: Rule::Orientation {
+                of: Who::Id(scene.objects[1].id),
+                relative: DQuat::IDENTITY.to_array(),
+            },
+        });
+        ed.load(scene).unwrap();
+        let before = ed.scene().clone();
+        assert!(
+            apply(
+                &mut ed,
+                json!([{"op":"material","id":"A","color":"#ff0000"}])
+            )
+            .is_err()
+        );
+        assert_eq!(*ed.scene(), before);
+    }
+
+    #[test]
+    fn orientation_partner_changes_are_rebase_dependencies() {
+        let mut ed = orientation_pair();
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"A","rotation":[0.8,0.2,0.4]}]),
+        )
+        .unwrap();
+        let before = ed.scene().clone();
+        let batch: CommandBatch=serde_json::from_value(json!({"expected_revision":1,"rebase":true,"commands":[{"op":"material","id":"B","color":"#ff0000"}]})).unwrap();
+        assert!(ed.apply(&batch).unwrap_err().stale);
+        assert_eq!(*ed.scene(), before);
+    }
+
+    fn orientation_pair() -> Editor {
+        let mut ed = Editor::new();
+        apply(&mut ed, json!([
+            {"op":"add","name":"A","primitive":{"kind":"cube"},"rotation":[0.2,0.3,0.1]},
+            {"op":"add","name":"B","primitive":{"kind":"cube"},"translation":[3,0,0],"rotation":[-0.4,0.1,0.5]},
+            {"op":"constrain","id":"B","orientation":"A"}
+        ])).unwrap();
+        ed
+    }
+
+    fn relative(ed: &Editor) -> DQuat {
+        rotation(&ed.scene().objects[0].transform).inverse()
+            * rotation(&ed.scene().objects[1].transform)
+    }
+
+    fn rotation_close(a: DQuat, b: DQuat) -> bool {
+        a.abs_diff_eq(b, 1e-6) || a.abs_diff_eq(-b, 1e-6)
+    }
+
+    #[test]
+    fn orientation_preserves_noncommuting_relative_rotation_from_either_endpoint() {
+        let mut ed = orientation_pair();
+        let offset = relative(&ed);
+        for (id, value) in [("A", [0.8, 0.6, -0.3]), ("B", [-0.7, 0.2, 1.1])] {
+            let before = ed.scene().clone();
+            apply(
+                &mut ed,
+                json!([{"op":"transform","id":id,"rotation":value}]),
+            )
+            .unwrap();
+            assert!(rotation_close(relative(&ed), offset));
+            for (o, p) in ed.scene().objects.iter().zip(&before.objects) {
+                assert_eq!(o.transform.translation, p.transform.translation);
+                assert_eq!(o.transform.scale, p.transform.scale);
+            }
+        }
+        let result = ed.scene().clone();
+        ed.undo().unwrap();
+        assert!(rotation_close(relative(&ed), offset));
+        ed.redo().unwrap();
+        assert_eq!(ed.scene().objects, result.objects);
+    }
+
+    #[test]
+    fn orientation_both_changed_follow_other_and_replay_keeps_the_relation() {
+        let mut ed = orientation_pair();
+        let offset = relative(&ed);
+        apply(
+            &mut ed,
+            json!([
+                {"op":"transform","id":"A","rotation":[0.9,0.2,0.3]},
+                {"op":"transform","id":"B","rotation":[-0.8,0.4,0.1]}
+            ]),
+        )
+        .unwrap();
+        assert!(rotation_close(
+            rotation(&ed.scene().objects[0].transform),
+            DQuat::from_euler(EulerRot::XYZ, 0.9, 0.2, 0.3)
+        ));
+        assert!(rotation_close(relative(&ed), offset));
+        let batch = serde_json::from_value::<CommandBatch>(
+            json!({"commands":[{"op":"transform","id":"A","rotation":[0.6,-0.3,0.8]}]}),
+        )
+        .unwrap();
+        ed.revise(2, batch.commands).unwrap();
+        assert!(rotation_close(relative(&ed), offset));
+    }
+
+    #[test]
+    fn orientation_rejects_self_groups_and_bad_loaded_quaternions() {
+        let mut ed = orientation_pair();
+        let before = ed.scene().clone();
+        assert!(
+            apply(
+                &mut ed,
+                json!([{"op":"constrain","id":"A","orientation":"A"}])
+            )
+            .is_err()
+        );
+        assert_eq!(*ed.scene(), before);
+        apply(
+            &mut ed,
+            json!([{"op":"build","template":"table","name":"Table"}]),
+        )
+        .unwrap();
+        let before = ed.scene().clone();
+        assert!(
+            apply(
+                &mut ed,
+                json!([{"op":"constrain","id":"A","orientation":"Table"}])
+            )
+            .is_err()
+        );
+        assert_eq!(*ed.scene(), before);
+        let mut invalid = ed.scene().clone();
+        if let Rule::Orientation { relative, .. } = &mut invalid.constraints[0].rule {
+            *relative = [0.; 4];
+        }
+        assert!(ed.load(invalid).is_err());
+        assert_eq!(*ed.scene(), before);
+    }
+
+    #[test]
+    fn orientation_inspects_loaded_violations_and_constraints_repair_them() {
+        let mut ed = orientation_pair();
+        let mut loaded = ed.scene().clone();
+        loaded.objects[1].transform.rotation = [0.; 3];
+        ed.load(loaded).unwrap();
+        assert!(
+            violations(ed.scene(), &ed.scene().constraints)
+                .iter()
+                .any(|v| v["rule"] == "orientation")
+        );
+        apply(
+            &mut ed,
+            json!([{"op":"material","id":"A","color":"#ff0000"}]),
+        )
+        .unwrap();
+        assert!(violations(ed.scene(), &ed.scene().constraints).is_empty());
+    }
+
+    #[test]
+    fn orientation_can_link_camera_and_light_without_mesh_geometry() {
+        let mut ed = Editor::new();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"add_camera","name":"Shot"},
+                {"op":"add_light","name":"Key","lamp":{"kind":"sun"},"rotation":[0.3,0.4,0.1]},
+                {"op":"constrain","id":"Key","orientation":"Shot"}
+            ]),
+        )
+        .unwrap();
+        let offset = relative(&ed);
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"Shot","rotation":[0.1,-0.5,0.2]}]),
+        )
+        .unwrap();
+        assert!(rotation_close(relative(&ed), offset));
     }
 
     fn pair() -> Editor {

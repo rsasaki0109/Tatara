@@ -1051,6 +1051,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn orientation_proposals_preview_and_accept_share_the_atomic_command_path() {
+        let mut ed = Editor::new();
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[
+                {"op":"add_camera","name":"Shot"},
+                {"op":"add_light","name":"Key","lamp":{"kind":"sun"},"rotation":[0.3,0.1,0.2]},
+                {"op":"constrain","id":"Key","orientation":"Shot"}
+            ]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        let before = ed.scene().clone();
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Turn the shot and its light","commands":[{"op":"transform","id":"Shot","rotation":[0.8,0.5,0.1]}]}),
+        );
+        assert_eq!(status, 200, "{out}");
+        let id = out["ids"][0].as_u64().unwrap();
+        let (status, preview) = call(&mut ed, "GET", &format!("/proposal?id={id}"), Value::Null);
+        assert_eq!(status, 200, "{preview}");
+        assert_eq!(*ed.scene(), before);
+        assert_ne!(
+            preview["scene"]["objects"][1]["transform"]["rotation"],
+            json!(before.objects[1].transform.rotation)
+        );
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            &format!("/proposal/accept?id={id}"),
+            json!({}),
+        );
+        assert_eq!(status, 200, "{out}");
+        assert_eq!(json!(ed.scene().objects), preview["scene"]["objects"]);
+        call(&mut ed, "POST", "/undo", json!({}));
+        assert_eq!(ed.scene().objects, before.objects);
+        let before = ed.scene().clone();
+        let (status, out) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"constrain","id":"Shot","orientation":"Shot"}]}),
+        );
+        assert_eq!(status, 422, "{out}");
+        assert_eq!(*ed.scene(), before);
+    }
+
+    #[test]
     fn stale_creations_return_actual_ids_and_conflicts_are_409() {
         let mut ed = Editor::new();
         call(

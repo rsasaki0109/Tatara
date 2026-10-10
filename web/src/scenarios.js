@@ -1437,6 +1437,26 @@ export const rebase = {
 }
 
 
+export const orientation = {
+  title:'Keep the relative orientation',width:800,gizmo:false,
+  setup:[
+    {op:'add',name:'Anchor',primitive:{kind:'cube'},translation:[-1,.5,0],scale:[.4,1,.7],color:'#769c8b'},
+    {op:'add',name:'Partner',primitive:{kind:'cube'},translation:[1,.5,0],rotation:[0,.35,0],scale:[.4,1,.7],color:'#be6651'},
+  ],
+  camera:{azimuth:12,elevation:22,distance:4.5,target:[0,.5,0]},
+  steps:[
+    {caption:'Keep the angle between objects',hint:'capture the current relative rotation'},
+    {pick:'Partner',after:200},{choose:'#c-kind',value:'Keep relative orientation',after:200},{click:'[data-constrain]',after:800},
+    {caption:'Turn the anchor: its partner follows',hint:'orientation offset · positions stay free'},
+    {run:[{op:'transform',id:'Anchor',rotation:[0,.75,0]}],after:1300},
+    {caption:'Either side can lead the rotation',hint:'same solver in proposals and history'},
+    {run:[{op:'transform',id:'Partner',rotation:[0,-.5,0]}],after:1300},
+    {click:'[data-action=undo]',after:1000},
+    {caption:'One Undo restores both orientations',hint:'objects, scene cameras and lights'},
+    {cursor:false},{wait:1000},
+  ],
+}
+
 export const concurrentCreation = {
   title: 'Build together from one context', width: 800, gizmo: false,
   setup: [{op:'add',name:'Shared plinth',primitive:{kind:'cube'},translation:[0,.08,0],scale:[3,.16,1.5],color:'#769c8b'}],
@@ -1498,4 +1518,4 @@ export const sceneLight = {
   ],
 }
 
-export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, concurrentCreation, sceneCamera, sceneLight }
+export const SCENARIOS = { hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, orientation, concurrentCreation, sceneCamera, sceneLight }
