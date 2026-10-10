@@ -832,6 +832,40 @@ async fn mcp_bridge_edits_the_shared_scene() {
         );
     }
 
+    // Agents author local joint bounds; sampled IK obeys them.
+    let r=call(json!({"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"set_bone_limits","id":"Pole leg","bone":"Bone 2","limits":{"min":[0,0,0],"max":[0,0,1]}}
+    ]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":105,"method":"tools/call","params":{"name":"get_scene","arguments":{"frame":1}}})).await;
+    let s: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let leg = s["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Pole leg")
+        .unwrap();
+    assert_eq!(
+        leg["pose"]["bones"][1]["limits"]["max"],
+        json!([0.0, 0.0, 1.0])
+    );
+    assert!(
+        s["ik_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["rig"] == leg["id"]
+                && e["limited"] == true
+                && e["distance"].as_f64().unwrap() > 0.2)
+    );
+    let z = leg["pose"]["bones"][1]["rotation"][2].as_f64().unwrap();
+    assert!((0.0..=1.0).contains(&z));
+    let r=call(json!({"jsonrpc":"2.0","id":106,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"set_bone_limits","id":"Pole leg","bone":"Bone 2","limits":{"min":[0,0,2],"max":[0,0,1]}}
+    ]}}})).await;
+    assert_eq!(r["result"]["isError"], true);
+
     // Agents use the same collision-checked key edit as the curve UI.
     let r=call(json!({"jsonrpc":"2.0","id":96,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"edit_keyframe","id":"Animated anchor","property":"translation","frame":3,"new_frame":5,"value":[90,4,0]}]}}})).await;
     assert_ne!(r["result"]["isError"], true, "{r}");

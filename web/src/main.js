@@ -1372,17 +1372,42 @@ function rigCard(o) {
     app.ikDraft = { id: o.id, binding: bindingKey, target: binding?.target ?? '', pole: binding?.pole ?? '' }
   }
   const draft = app.ikDraft
+  const limitKey = JSON.stringify(bone.limits ?? null)
+  if (app.jointDraft?.id !== o.id || app.jointDraft.bone !== bone.name || app.jointDraft.key !== limitKey) {
+    app.jointDraft = { id:o.id, bone:bone.name, key:limitKey,
+      min:(bone.limits?.min ?? [-Math.PI,-Math.PI,-Math.PI]).map(v=>String(Number((v*180/Math.PI).toFixed(6)))),
+      max:(bone.limits?.max ?? [Math.PI,Math.PI,Math.PI]).map(v=>String(Number((v*180/Math.PI).toFixed(6)))) }
+    app.jointDraft.initialMin = app.jointDraft.min.slice()
+    app.jointDraft.initialMax = app.jointDraft.max.slice()
+  }
+  const limits = app.jointDraft
+  let targetError = ''
+  if (binding) {
+    const node = viewport.nodes.get(o.id)
+    const tip = boneSegments(viewport.rigPose(o), viewport.displayFrame())[o.bones.findIndex(b=>b.name===binding.bone)]?.[1]
+    const target = objectById(binding.target)
+    if (node && tip && target) {
+      node.group.updateMatrixWorld(true)
+      const error = tip.applyMatrix4(node.group.matrixWorld).distanceTo(new THREE.Vector3(...viewport.objectPose(target).transform.translation))
+      targetError = `<div class="muted small" id="ik-error">Target error: ${error.toFixed(3)} units</div>`
+    }
+  }
   const targets = app.scene.objects.filter(t => t.id !== o.id)
   return `${head(`${o.bones.length} bones`)}
     <div class="brushes">${o.bones.map((b) => `<button class="chip ${b === bone ? 'on' : ''}" data-bone="${escapeHtml(b.name)}">${escapeHtml(b.name)}</button>`).join('')}</div>
     ${['X', 'Y', 'Z']
       .map((a, i) => `<label class="slider"><span>Turn ${a}${keyed}</span><input type="range" min="-180" max="180" step="1" id="p-bone-${i}" value="${deg(r[i])}"><b>${deg(r[i])}°</b></label>`)
       .join('')}
+    <div class="muted small">Joint limits · local degrees</div>
+    ${['X','Y','Z'].map((axis,k)=>`<label class="row"><span class="muted small">${axis}</span><input type="number" id="joint-min-${k}" min="-180" max="180" step="0.1" value="${escapeHtml(limits.min[k])}" style="width:70px;min-width:0" aria-label="${axis} minimum degrees"><span class="muted small">to</span><input type="number" id="joint-max-${k}" min="-180" max="180" step="0.1" value="${escapeHtml(limits.max[k])}" style="width:70px;min-width:0" aria-label="${axis} maximum degrees"></label>`).join('')}
+    <div class="row"><button class="small-btn" data-rig="limits" ${app.playing?'disabled':''}>Apply limits</button><button class="small-btn" data-rig="clearLimits" ${!bone.limits||app.playing?'disabled':''}>Clear limits</button></div>
+    <div class="muted small">Poses and IK stay within these angles; a target may remain out of reach.</div>
     <div class="row"><button class="small-btn ${app.ik ? 'on' : ''}" data-rig="ik" title="Drag a handle at the bone's tip; the chain bends to follow (inverse kinematics)">Reach (IK)</button><button class="small-btn" data-rig="key" title="Key every bone at this frame">◆ Key pose</button></div>
     <label class="row"><span class="muted small">Follow target</span><select id="ik-target"><option value="">None</option>${targets.map(t => `<option value="${t.id}" ${Number(draft.target) === t.id ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}</select><button class="small-btn" data-rig="follow">Follow ${escapeHtml(bone.name)}</button></label>
     <label class="row"><span class="muted small">Pole target</span><select id="ik-pole"><option value="">None</option>${targets.map(t=>`<option value="${t.id}" ${Number(draft.pole)===t.id?'selected':''}>${escapeHtml(t.name)}</option>`).join('')}</select></label>
     <div class="muted small">A pole controls the bend direction of a connected two-bone chain.</div>
     ${binding ? `<div class="muted small">${escapeHtml(binding.bone)} follows the target origin · every frame</div>` : ''}
+    ${targetError}
     <div class="row"><button class="small-btn" data-rig="reset">Reset pose</button><button class="small-btn" data-rig="remove">Remove rig</button></div>
   </div>`
 }
@@ -1411,8 +1436,16 @@ function modifierField(m, name, raw) {
   return next
 }
 
+function updateJointDraft(target) {
+  const joint = target.id.match(/^joint-(min|max)-(\d)$/)
+  if (!joint || !app.jointDraft) return false
+  app.jointDraft[joint[1]][Number(joint[2])] = target.value
+  return true
+}
+
 $('properties').addEventListener('input', (e) => {
   const t = e.target
+  if (updateJointDraft(t)) return
   if (t.id === 'w-strength' || t.id === 'w-rotation') {
     // Preview the light while dragging; the change commits it.
     t.nextElementSibling.textContent = t.id === 'w-rotation' ? `${t.value}°` : fmt(Number(t.value))
@@ -1427,6 +1460,7 @@ $('properties').addEventListener('input', (e) => {
 })
 $('properties').addEventListener('change', (e) => {
   const target = e.target
+  if (updateJointDraft(target)) return
   if (target.id === 'w-strength') return run([{ op: 'world', strength: Number(target.value) }]).catch(() => {})
   if (target.id === 'w-rotation') return run([{ op: 'world', rotation: Number(target.value) }]).catch(() => {})
   if (target.id === 'w-bg') return run([{ op: 'world', background: target.checked }]).catch(() => {})
@@ -1544,6 +1578,16 @@ $('properties').addEventListener('click', (e) => {
   }
   const rigAction = e.target.closest('[data-rig]')?.dataset.rig
   if (rigAction && rigObject?.bones?.length) {
+    if (rigAction === 'limits' || rigAction === 'clearLimits') {
+      const draft = app.jointDraft
+      if (rigAction === 'limits' && [...draft.min,...draft.max].some(v=>v.trim()==='' || !Number.isFinite(Number(v)))) return toast('Enter a finite angle for every joint limit', 'error')
+      if (rigAction === 'limits' && draft.min.some((v,k)=>Number(v)<-180 || Number(draft.max[k])>180 || Number(v)>Number(draft.max[k]))) return toast('Use angles from -180° to 180°, with each minimum no greater than its maximum', 'error')
+      const limits = rigAction === 'clearLimits' ? null : {
+        min:draft.min.map((v,k)=>currentBone(rigObject).limits && v===draft.initialMin[k] ? currentBone(rigObject).limits.min[k] : Number(v)*Math.PI/180),
+        max:draft.max.map((v,k)=>currentBone(rigObject).limits && v===draft.initialMax[k] ? currentBone(rigObject).limits.max[k] : Number(v)*Math.PI/180)
+      }
+      return run([{op:'set_bone_limits',id:rigObject.id,bone:currentBone(rigObject).name,limits}]).catch(()=>{})
+    }
     if (rigAction === 'follow') {
       const target = Number($('ik-target').value)
       const pole=Number($('ik-pole').value)

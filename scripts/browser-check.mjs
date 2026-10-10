@@ -5,6 +5,7 @@
 
 import { checkCurves } from './curve-check.mjs'
 import { checkPoles } from './pole-check.mjs'
+import { checkJointLimits } from './limits-check.mjs'
 import { motionTip } from './gltf-motion-check.mjs'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -1087,6 +1088,7 @@ try {
   await curves.goto(url);await curves.evaluate(()=>window.__tatara.ready)
   await checkCurves(curves,check)
   await checkPoles(curves,check)
+  await checkJointLimits(curves,check)
   await curves.close()
 
   // Every scenario must finish without errors (the MCP one falls back to HTTP).

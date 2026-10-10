@@ -1716,4 +1716,23 @@ export const poleTarget = {
   ]
 }
 
-export const SCENARIOS = { poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const jointLimits = {
+  ...poleTarget,
+  title:'Keep a joint within its allowed bend',
+  setup:[...poleTarget.setup,{op:'track_target',id:'Leg',bone:'Bone 2',target:'Foot',pole:'Knee direction',chain:2}],
+  steps:[
+    {pick:'Leg',after:500},{click:'[data-bone="Bone 2"]',after:150},{reveal:'#joint-min-0',after:400},
+    {caption:'Give the knee a safe range of motion',hint:'local angles · shared pose and IK constraint'},
+    {into:'#joint-min-0',type:'0',cps:20},{into:'#joint-max-0',type:'0',cps:20},
+    {into:'#joint-min-1',type:'0',cps:20},{into:'#joint-max-1',type:'0',cps:20},
+    {into:'#joint-min-2',type:'0',cps:20},{into:'#joint-max-2',type:'60',cps:20,after:400},
+    {click:'[data-rig=limits]',after:1200},
+    {caption:'The limit wins, even when the target is too close',hint:'the remaining target distance stays visible'},
+    {reveal:'#ik-error',after:1400},
+    {caption:'One Undo restores the complete pose',hint:'same typed command for UI, proposals and agents'},
+    {click:'[data-action=undo]',after:1100},{click:'[data-action=redo]',after:1100},
+    {click:'[data-rig=clearLimits]',after:1000},{cursor:false},{wait:700}
+  ]
+}
+
+export const SCENARIOS = { jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

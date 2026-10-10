@@ -37,6 +37,40 @@ pub struct Bone {
     /// axes as carried along by the parent bones.
     #[serde(default)]
     pub rotation: [f64; 3],
+    /// Optional local Euler XYZ bounds in radians; native files retain them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<JointLimits>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct JointLimits {
+    pub min: [f64; 3],
+    pub max: [f64; 3],
+}
+
+impl JointLimits {
+    pub fn validate(&self) -> Result<(), EngineError> {
+        for k in 0..3 {
+            if !self.min[k].is_finite()
+                || !self.max[k].is_finite()
+                || self.min[k] < -std::f64::consts::PI
+                || self.max[k] > std::f64::consts::PI
+                || self.min[k] > self.max[k]
+            {
+                return Err(EngineError::new(
+                    "joint limits need ordered finite min/max within -pi..pi",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn limit_rotation(bone: &Bone, rotation: [f64; 3]) -> [f64; 3] {
+    match &bone.limits {
+        Some(limits) => std::array::from_fn(|k| rotation[k].clamp(limits.min[k], limits.max[k])),
+        None => rotation,
+    }
 }
 
 /// One persistent IK relation, using stable object ids and a bone name.
@@ -114,6 +148,11 @@ pub fn validate_targets(scene: &Scene) -> Result<(), EngineError> {
 /// targeted rigs have no rotational feedback. Object constraints solve first.
 pub fn solve_targets(scene: &mut Scene) -> Result<(), EngineError> {
     validate_targets(scene)?;
+    for o in &mut scene.objects {
+        for b in &mut o.bones {
+            b.rotation = limit_rotation(b, b.rotation);
+        }
+    }
     for t in &scene.ik_targets {
         let target = scene
             .objects
@@ -166,6 +205,29 @@ pub fn solve_targets(scene: &mut Scene) -> Result<(), EngineError> {
     Ok(())
 }
 
+/// Remaining world-space distances, including bounded IK that cannot reach.
+pub fn target_errors(scene: &Scene) -> Vec<serde_json::Value> {
+    scene
+        .ik_targets
+        .iter()
+        .filter_map(|binding| {
+            let rig = scene.objects.iter().find(|o| o.id == binding.rig)?;
+            let target = scene.objects.iter().find(|o| o.id == binding.target)?;
+            let end = rig.bones.iter().position(|b| b.name == binding.bone)?;
+            let tip = rig.transform.matrix().transform_point3(tip(
+                &rig.bones,
+                &rotations(rig, None),
+                end,
+            ));
+            Some(serde_json::json!({
+                "rig":rig.id,"bone":binding.bone,"target":target.id,
+                "distance":tip.distance(DVec3::from(target.transform.translation)),
+                "limited":rig.bones.iter().any(|b|b.limits.is_some())
+            }))
+        })
+        .collect()
+}
+
 /// The axis a bone chain runs along.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -208,6 +270,9 @@ pub fn validate(bones: &[Bone]) -> Result<(), EngineError> {
                 "bone {:?} needs a tail apart from its head",
                 b.name
             )));
+        }
+        if let Some(limits) = &b.limits {
+            limits.validate()?;
         }
         if let Some(p) = &b.parent
             && !bones[..i].iter().any(|o| &o.name == p)
@@ -260,6 +325,7 @@ pub fn chain(mesh: &Mesh, count: u32, axis: Option<Axis>) -> Result<Vec<Bone>, E
             tail: at((i + 1) as f64 / count as f64),
             parent: (i > 0).then(|| format!("Bone {i}")),
             rotation: [0.0; 3],
+            limits: None,
         })
         .collect())
 }
@@ -277,13 +343,16 @@ pub fn rotations(o: &Object, frame: Option<f64>) -> Vec<[f64; 3]> {
                         && !t.keys.is_empty()
                 })
             });
-            match (track, frame) {
-                (Some(t), Some(f)) => {
-                    let v = anim::sample_track(t, f);
-                    [v[0], v[1], v[2]]
-                }
-                _ => b.rotation,
-            }
+            limit_rotation(
+                b,
+                match (track, frame) {
+                    (Some(t), Some(f)) => {
+                        let v = anim::sample_track(t, f);
+                        [v[0], v[1], v[2]]
+                    }
+                    _ => b.rotation,
+                },
+            )
         })
         .collect()
 }
@@ -384,7 +453,11 @@ pub fn reach(
     chain: usize,
     target: DVec3,
 ) -> Vec<[f64; 3]> {
-    let mut rot = rotations.to_vec();
+    let mut rot: Vec<_> = bones
+        .iter()
+        .zip(rotations)
+        .map(|(b, r)| limit_rotation(b, *r))
+        .collect();
     let mut joints = vec![end];
     while joints.len() < chain.max(1) {
         let last = &bones[*joints.last().expect("not empty")];
@@ -429,7 +502,7 @@ pub fn reach(
             let own = DQuat::from_euler(EulerRot::XYZ, x, y, z);
             let next = (parent.inverse() * turn * parent * own).normalize();
             let (x, y, z) = next.to_euler(EulerRot::XYZ);
-            rot[j] = [x, y, z];
+            rot[j] = limit_rotation(&bones[j], [x, y, z]);
         }
     }
     rot
@@ -507,7 +580,13 @@ pub fn reach_pole(
         DQuat::from_rotation_arc((tip - elbow).normalize(), (desired_tip - elbow).normalize()),
         &m,
     );
-    rot
+    if bones[root].limits.is_some() || bones[end].limits.is_some() {
+        // Limits take priority over the requested bend plane. Refine the
+        // projected analytic pose with bounded CCD when the target is infeasible.
+        reach(bones, &rot, end, 2, target)
+    } else {
+        rot
+    }
 }
 
 /// Where the tip of bone `k` is with the bones at `rotations` (object space).
@@ -548,6 +627,135 @@ mod tests {
         o.transform
             .matrix()
             .transform_point3(tip(&o.bones, &rotations(o, None), 3))
+    }
+
+    #[test]
+    fn joint_limits_bound_pole_and_ccd_poses_and_undo() {
+        let mut ed = pole_editor();
+        let before = ed.scene().clone();
+        let max = std::f64::consts::PI / 3.;
+        apply(&mut ed, json!([{"op":"set_bone_limits","id":"Leg","bone":"Bone 2","limits":{"min":[0,0,0],"max":[0,0,max]}}])).unwrap();
+        let limited = ed.scene().clone();
+        assert!(limited.objects[0].bones[1].rotation[2] <= max);
+        let error = pole_points(&limited).1.distance(DVec3::new(0., 1.4, 0.));
+        assert!((0.25..0.4).contains(&error), "{error}");
+        let context = crate::engine::context_at_checked(&ed, Some(1.)).unwrap();
+        assert!(context["ik_errors"][0]["distance"].as_f64().unwrap() > 0.25);
+        assert_eq!(context["ik_errors"][0]["limited"], true);
+        assert!(
+            crate::inspect::inspect(&ed)["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "ik_target" && i["distance"].as_f64().unwrap() > 0.25)
+        );
+        apply(
+            &mut ed,
+            json!([{"op":"track_target","id":"Leg","bone":"Bone 2","target":"Foot","chain":2}]),
+        )
+        .unwrap();
+        assert!(ed.scene().objects[0].bones[1].rotation[2] <= max);
+        assert!(pole_points(ed.scene()).1.distance(DVec3::new(0., 1.4, 0.)) > 0.25);
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().objects, limited.objects);
+        assert_eq!(ed.scene().ik_targets, limited.ik_targets);
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().objects, before.objects);
+        ed.redo().unwrap();
+        assert_eq!(ed.scene().objects, limited.objects);
+        apply(
+            &mut ed,
+            json!([{"op":"set_bone_limits","id":"Leg","bone":"Bone 2"}]),
+        )
+        .unwrap();
+        assert!(pole_points(ed.scene()).1.distance(DVec3::new(0., 1.4, 0.)) < 1e-8);
+        assert!(ed.scene().objects[0].bones[1].limits.is_none());
+    }
+
+    #[test]
+    fn joint_limits_sample_authored_keys_without_mutation_and_round_trip() {
+        let mut ed = pole_editor();
+        apply(&mut ed,json!([
+            {"op":"clear_target","id":"Leg"},
+            {"op":"set_bone_limits","id":"Leg","bone":"Bone 2","limits":{"min":[0,0,0],"max":[0,0,1]}},
+            {"op":"pose","id":"Leg","bone":"Bone 2","rotation":[0.5,0,-1]}
+        ])).unwrap();
+        assert_eq!(ed.scene().objects[0].bones[1].rotation, [0.; 3]);
+        apply(&mut ed,json!([
+            {"op":"set_keyframe","id":"Leg","bone":"Bone 2","property":"bone","frame":1,"value":[0.5,0,-1],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Leg","bone":"Bone 2","property":"bone","frame":3,"value":[0.5,0,3]}
+        ])).unwrap();
+        let authored = ed.scene().clone();
+        assert_eq!(
+            ed.scene_at(1.).unwrap().objects[0].bones[1].rotation,
+            [0.; 3]
+        );
+        assert_eq!(
+            ed.scene_at(2.5).unwrap().objects[0].bones[1].rotation,
+            [0., 0., 1.]
+        );
+        assert_eq!(
+            ed.scene_at(3.).unwrap().objects[0].bones[1].rotation,
+            [0., 0., 1.]
+        );
+        assert_eq!(*ed.scene(), authored);
+        let json = serde_json::to_vec(&authored).unwrap();
+        let mut loaded = Editor::new();
+        loaded.load(serde_json::from_slice(&json).unwrap()).unwrap();
+        assert_eq!(
+            loaded.scene().objects[0].bones[1].limits,
+            authored.objects[0].bones[1].limits
+        );
+        assert_eq!(loaded.scene().objects[0].tracks, authored.objects[0].tracks);
+        for (a, b) in loaded.scene_at(2.5).unwrap().objects[0]
+            .bones
+            .iter()
+            .zip(ed.scene_at(2.5).unwrap().objects[0].bones.iter())
+        {
+            assert!(
+                a.rotation
+                    .iter()
+                    .zip(b.rotation)
+                    .all(|(x, y)| (x - y).abs() < 1e-12)
+            );
+        }
+        apply(
+            &mut ed,
+            json!([{"op":"set_bone_limits","id":"Leg","bone":"Bone 2"}]),
+        )
+        .unwrap();
+        assert_eq!(
+            ed.scene_at(3.).unwrap().objects[0].bones[1].rotation,
+            [0.5, 0., 3.]
+        );
+    }
+
+    #[test]
+    fn joint_limits_reject_invalid_bounds_atomically() {
+        let mut ed = pole_editor();
+        let before = ed.scene().clone();
+        for (bone, min, max) in [
+            ("Bone 2", [0.; 3], [0., 0., -1.]),
+            ("Bone 2", [-4., 0., 0.], [0.; 3]),
+            ("Missing", [0.; 3], [1.; 3]),
+        ] {
+            assert!(
+                apply(
+                    &mut ed,
+                    json!([{"op":"move","id":"Foot","offset":[1,0,0]},
+                {"op":"set_bone_limits","id":"Leg","bone":bone,"limits":{"min":min,"max":max}}])
+                )
+                .is_err()
+            );
+            assert_eq!(*ed.scene(), before);
+        }
+        let mut invalid = before.clone();
+        invalid.objects[0].bones[1].limits = Some(JointLimits {
+            min: [f64::NAN, 0., 0.],
+            max: [1.; 3],
+        });
+        assert!(ed.load(invalid).is_err());
+        assert_eq!(*ed.scene(), before);
     }
 
     fn pole_editor() -> Editor {
