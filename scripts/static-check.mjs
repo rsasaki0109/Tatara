@@ -249,6 +249,8 @@ try {
   check(spotlight.status===200 && spotlight.signature.join(',')==='137,80,78,71','WebAssembly renders spot lights without a server')
   check(spotlight.bad===422 && spotlight.unchanged,'WebAssembly rejects equal spot cones atomically')
 
+  // The tour may leave playback running. These assertions compare fixed frames.
+  await page.evaluate(()=>{const play=document.querySelector('#play-btn');if(play.classList.contains('on'))play.click()})
   const frameRest=await page.evaluate(async()=>{
     const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
       {op:'clear'}, {op:'add',name:'Anchor',primitive:{kind:'cube'}},
@@ -260,10 +262,29 @@ try {
     await window.__tatara.refresh(false)
     const rest=await(await fetch('/api/scene')).json();window.__tatara.setFrame(2);return rest
   })
-  await page.waitForFunction(()=>window.__tatara.resolvedFrame()===2)
+  await page.waitForFunction(id=>window.__tatara.resolvedFrame()===2 && Math.abs(window.__tatara.position(id)[1]-1)<1e-8,frameRest.objects[1].id)
   const frames=await page.evaluate(async id=>({position:window.__tatara.position(id),frame:await(await fetch('/api/frame?frame=2')).json(),rest:await(await fetch('/api/scene')).json()}),frameRest.objects[1].id)
   check(frames.position[1]===1 && frames.frame.objects[1].transform.translation[1]===1,'WebAssembly solves constraints per frame and updates the unkeyed viewport follower')
   check(JSON.stringify(frames.rest)===JSON.stringify(frameRest),'WebAssembly frame reads preserve the authored scene and revision')
+
+  await page.evaluate(()=>window.__tatara.refresh(true))
+  await page.waitForFunction(id=>window.__tatara.resolvedFrame()===2 && Math.abs(window.__tatara.position(id)[1]-1)<1e-8,frameRest.objects[1].id)
+  await page.waitForTimeout(750)
+  check(Math.abs((await page.evaluate(id=>window.__tatara.position(id),frameRest.objects[1].id))[1]-1)<1e-8,'a delayed animated refresh cannot replace a WebAssembly constraint-solved pose')
+
+  const ikRest=await page.evaluate(async()=>{
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
+      {op:'clear'}, {op:'add',name:'Arm',primitive:{kind:'cylinder',height:2,rings:8},translation:[0,1,0]},
+      {op:'rig',id:'Arm',chain:4}, {op:'add',name:'Target',primitive:{kind:'sphere'},translation:[.8,1.3,.2]},
+      {op:'track_target',id:'Arm',bone:'Bone 4',target:'Target'},
+      {op:'set_keyframe',id:'Target',property:'translation',frame:1,value:[.8,1.3,.2],interpolation:'linear'},
+      {op:'set_keyframe',id:'Target',property:'translation',frame:3,value:[-.8,1.3,.2]}
+    ]})});if(!r.ok)throw new Error(await r.text());await window.__tatara.refresh(false);window.__tatara.setFrame(1.5);return(await fetch('/api/scene')).json()
+  })
+  await page.waitForFunction(()=>window.__tatara.resolvedFrame()===1.5)
+  const ikSolved=await page.evaluate(async id=>({tip:window.__tatara.rigTip(id),rest:await(await fetch('/api/scene')).json()}),ikRest.objects[0].id)
+  check(Math.hypot(...ikSolved.tip.map((v,k)=>v-[.4,1.3,.2][k]))<.001,'WebAssembly drives the persistent IK target in the actual viewport')
+  check(JSON.stringify(ikSolved.rest)===JSON.stringify(ikRest),'WebAssembly IK sampling preserves authored bone poses, keys and revision')
 
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)

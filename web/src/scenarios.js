@@ -1630,4 +1630,27 @@ export const constrainedAnimation = {
   ]
 }
 
-export const SCENARIOS = { constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const targetIk = {
+  title:'Animate a target, not every joint',width:800,gizmo:false,
+  setup:[
+    {op:'set_animation',start:1,end:48},
+    {op:'add',name:'Arm',primitive:{kind:'cylinder',radius:.16,height:2,rings:16},translation:[0,1,0],color:'#769c8b'},
+    {op:'rig',id:'Arm',chain:4,axis:'y'},
+    {op:'add',name:'Target',primitive:{kind:'sphere',radius:.13},translation:[.8,1.3,0],color:'#e59b61'},
+    {op:'track_target',id:'Arm',bone:'Bone 4',target:'Target'},
+    {op:'set_keyframe',id:'Target',property:'translation',frame:1,value:[.8,1.3,0],interpolation:'linear'},
+    {op:'set_keyframe',id:'Target',property:'translation',frame:48,value:[-.8,1.3,0]}
+  ],
+  camera:{azimuth:20,elevation:15,distance:4.5,target:[0,1,0]},
+  steps:[
+    {pick:'Arm',after:700},
+    {caption:'Bind the bone tip to an object',hint:'typed target relation · shared Rust solver'},
+    {scrub:48,ms:2200,after:900},
+    {caption:'The arm follows the animated target',hint:'automatic joint rotations · no extra bone keys'},
+    {scrub:1,ms:2200,after:900},
+    {caption:'Seek backwards to the same pose',hint:'native renders · browser · proposals · Undo'},
+    {scrub:24,ms:1200,after:900},{cursor:false},{wait:700}
+  ]
+}
+
+export const SCENARIOS = { targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

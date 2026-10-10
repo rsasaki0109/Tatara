@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::anim::{self, Property};
-use crate::engine::{EngineError, Mesh, Object};
+use crate::engine::{EngineError, Mesh, Object, Scene};
 
 pub const MAX_BONES: usize = 64;
 /// The most one bone turns in one `reach` iteration (radians).
@@ -37,6 +37,83 @@ pub struct Bone {
     /// axes as carried along by the parent bones.
     #[serde(default)]
     pub rotation: [f64; 3],
+}
+
+/// One persistent IK relation, using stable object ids and a bone name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Target {
+    pub rig: u64,
+    pub target: u64,
+    pub bone: String,
+    pub chain: u32,
+}
+
+pub fn validate_targets(scene: &Scene) -> Result<(), EngineError> {
+    if scene.ik_targets.len() > scene.objects.len() {
+        return Err(EngineError::new("at most one IK target per rig"));
+    }
+    for (i, t) in scene.ik_targets.iter().enumerate() {
+        let o = scene
+            .objects
+            .iter()
+            .find(|o| o.id == t.rig)
+            .ok_or_else(|| EngineError::new("IK target names a missing rig"))?;
+        if t.target == t.rig || !scene.objects.iter().any(|o| o.id == t.target) {
+            return Err(EngineError::new(
+                "IK needs a different, existing target object",
+            ));
+        }
+        if !o.bones.iter().any(|b| b.name == t.bone) {
+            return Err(EngineError::new(format!(
+                "{} has no IK bone {:?}; clear its target before removing that bone",
+                o.name, t.bone
+            )));
+        }
+        if !(1..=MAX_BONES as u32).contains(&t.chain) {
+            return Err(EngineError::new(format!(
+                "IK chain must contain 1-{MAX_BONES} bones"
+            )));
+        }
+        if scene.ik_targets[..i].iter().any(|p| p.rig == t.rig) {
+            return Err(EngineError::new("at most one IK target per rig"));
+        }
+    }
+    Ok(())
+}
+
+/// Targets use world origins, independent of bone deformation: even mutually
+/// targeted rigs have no rotational feedback. Object constraints solve first.
+pub fn solve_targets(scene: &mut Scene) -> Result<(), EngineError> {
+    validate_targets(scene)?;
+    for t in &scene.ik_targets {
+        let target = scene
+            .objects
+            .iter()
+            .find(|o| o.id == t.target)
+            .expect("validated")
+            .transform
+            .translation;
+        let o = scene
+            .objects
+            .iter_mut()
+            .find(|o| o.id == t.rig)
+            .expect("validated");
+        let end = o
+            .bones
+            .iter()
+            .position(|b| b.name == t.bone)
+            .expect("validated");
+        let local = o
+            .transform
+            .matrix()
+            .inverse()
+            .transform_point3(DVec3::from(target));
+        let rotations = reach(&o.bones, &rotations(o, None), end, t.chain as usize, local);
+        for (bone, rotation) in o.bones.iter_mut().zip(rotations) {
+            bone.rotation = rotation;
+        }
+    }
+    Ok(())
 }
 
 /// The axis a bone chain runs along.
@@ -321,6 +398,177 @@ pub fn posed(rotations: &[[f64; 3]]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::engine::{CommandBatch, Editor};
+    use serde_json::{Value, json};
+
+    fn apply(ed: &mut Editor, commands: Value) -> Result<(), EngineError> {
+        let batch: CommandBatch = serde_json::from_value(json!({"commands":commands})).unwrap();
+        ed.apply(&batch).map(|_| ())
+    }
+
+    fn target_editor() -> Editor {
+        let mut ed = Editor::new();
+        apply(&mut ed, json!([
+            {"op":"add","name":"Arm","primitive":{"kind":"cylinder","height":2,"rings":8},"translation":[0,1,0]},
+            {"op":"rig","id":"Arm","chain":4,"axis":"y"},
+            {"op":"add","name":"Target","primitive":{"kind":"sphere"},"translation":[0.8,1.3,0.2]},
+            {"op":"track_target","id":"Arm","bone":"Bone 4","target":"Target"}
+        ])).unwrap();
+        ed
+    }
+
+    fn tip_world(scene: &Scene) -> DVec3 {
+        let o = &scene.objects[0];
+        o.transform
+            .matrix()
+            .transform_point3(tip(&o.bones, &rotations(o, None), 3))
+    }
+
+    #[test]
+    fn target_follows_world_origin_through_transforms_and_undo() {
+        let mut ed = target_editor();
+        assert!(tip_world(ed.scene()).distance(DVec3::new(0.8, 1.3, 0.2)) < 1e-3);
+        let before = ed.scene().clone();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"transform","id":"Arm","rotation":[0.2,0.4,0.1],"scale":[1.2,0.9,1.1]},
+                {"op":"transform","id":"Target","translation":[-0.6,1.4,0.2]}
+            ]),
+        )
+        .unwrap();
+        assert!(tip_world(ed.scene()).distance(DVec3::new(-0.6, 1.4, 0.2)) < 1e-3);
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().objects, before.objects);
+        assert_eq!(ed.scene().ik_targets, before.ik_targets);
+        ed.redo().unwrap();
+        assert!(tip_world(ed.scene()).distance(DVec3::new(-0.6, 1.4, 0.2)) < 1e-3);
+    }
+
+    #[test]
+    fn keyed_targets_override_bone_keys_without_editing_or_double_sampling() {
+        let mut ed = target_editor();
+        apply(&mut ed, json!([
+            {"op":"set_keyframe","id":"Target","property":"translation","frame":1,"value":[0.8,1.3,0.2],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Target","property":"translation","frame":3,"value":[-0.8,1.3,0.2]},
+            {"op":"set_keyframe","id":"Arm","property":"bone","bone":"Bone 4","frame":1,"value":[0,0,0.5]},
+            {"op":"set_keyframe","id":"Arm","property":"translation","frame":1,"value":[0,1,0],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Arm","property":"translation","frame":3,"value":[0.2,1,0]}
+        ])).unwrap();
+        let rest = ed.scene().clone();
+        let first = ed.scene_at(1.5).unwrap();
+        for f in [3., 1., 1.5, 2.5] {
+            let scene = ed.scene_at(f).unwrap();
+            let target = DVec3::from(scene.objects[1].transform.translation);
+            assert!(tip_world(&scene).distance(target) < 1e-3, "frame {f}");
+            assert!(scene.objects.iter().all(|o| o.tracks.is_empty()));
+        }
+        assert_eq!(ed.scene_at(1.5).unwrap(), first);
+        assert_eq!(*ed.scene(), rest);
+        let o = &first.objects[0];
+        let mesh = ed.posed(o, Some(1.5));
+        assert_eq!(*mesh, skin(ed.evaluated(o), &o.bones, &rotations(o, None)));
+        let context = crate::engine::context_at_checked(&ed, Some(1.5)).unwrap();
+        assert_eq!(
+            context["objects"][0]["pose"]["bones"],
+            serde_json::to_value(&o.bones).unwrap()
+        );
+        let bounds = crate::engine::world_bounds(&o.transform, &mesh).unwrap();
+        assert_eq!(
+            context["objects"][0]["bounds"],
+            serde_json::to_value(bounds).unwrap()
+        );
+    }
+
+    #[test]
+    fn invalid_targets_and_rig_changes_are_atomic_and_deletion_cleans_up() {
+        let mut ed = target_editor();
+        let rest = ed.scene().clone();
+        for commands in [
+            json!([{"op":"track_target","id":"Arm","bone":"Bone 4","target":"Arm"}]),
+            json!([{"op":"track_target","id":"Arm","bone":"missing","target":"Target"}]),
+            json!([{"op":"track_target","id":"Arm","bone":"Bone 4","target":"missing"}]),
+            json!([{"op":"track_target","id":"Arm","bone":"Bone 4","target":"Target","chain":0}]),
+            json!([{"op":"track_target","id":"Arm","bone":"Bone 4","target":"Target","chain":65}]),
+            json!([{"op":"rig","id":"Arm","bones":[]}]),
+        ] {
+            assert!(apply(&mut ed, commands).is_err());
+            assert_eq!(*ed.scene(), rest);
+        }
+        let mut invalid = rest.clone();
+        invalid.ik_targets.push(invalid.ik_targets[0].clone());
+        assert!(ed.load(invalid).is_err());
+        assert_eq!(*ed.scene(), rest);
+        apply(&mut ed, json!([{"op":"delete","id":"Target"}])).unwrap();
+        assert!(ed.scene().ik_targets.is_empty());
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().ik_targets, rest.ik_targets);
+        apply(
+            &mut ed,
+            json!([{"op":"clear_target","id":"Arm"},{"op":"rig","id":"Arm","bones":[]}]),
+        )
+        .unwrap();
+        assert!(ed.scene().objects[0].bones.is_empty());
+    }
+
+    #[test]
+    fn target_relations_survive_proposal_reapplication_and_history_revision() {
+        let mut ed = target_editor();
+        apply(&mut ed, json!([{"op":"clear_target","id":"Arm"}])).unwrap();
+        let rest = ed.scene().clone();
+        let req=serde_json::from_value(json!({"title":"Follow target","commands":[{"op":"track_target","id":"Arm","bone":"Bone 4","target":"Target"}]})).unwrap();
+        let id = ed.propose(&req).unwrap()[0];
+        assert_eq!(*ed.scene(), rest);
+        let preview = ed.preview(id).unwrap();
+        assert_eq!(preview.scene().ik_targets.len(), 1);
+        assert!(
+            crate::proposal::diff(ed.scene(), preview.scene())
+                .scene
+                .contains(&"ik_targets")
+        );
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"Target","translation":[-0.5,1.4,0.2]}]),
+        )
+        .unwrap();
+        let preview = ed.preview(id).unwrap();
+        assert!(tip_world(preview.scene()).distance(DVec3::new(-0.5, 1.4, 0.2)) < 1e-3);
+        ed.accept(id).unwrap();
+        assert_eq!(ed.scene().ik_targets.len(), 1);
+        let commands = serde_json::from_value(
+            json!([{ "op":"transform","id":"Target","translation":[0.5,1.4,0.2]}]),
+        )
+        .unwrap();
+        // Step 3 moved the target; the later binding must replay against its new origin.
+        let preview = ed.revise_preview(3, commands).unwrap();
+        assert!(tip_world(preview.scene()).distance(DVec3::new(0.5, 1.4, 0.2)) < 1e-3);
+        ed.undo().unwrap();
+        assert!(ed.scene().ik_targets.is_empty());
+    }
+
+    #[test]
+    fn unreachable_target_is_finite_and_unbinding_keeps_the_pose() {
+        let mut ed = target_editor();
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"Target","translation":[100,20,3]}]),
+        )
+        .unwrap();
+        assert!(
+            ed.scene().objects[0]
+                .bones
+                .iter()
+                .flat_map(|b| b.rotation)
+                .all(f64::is_finite)
+        );
+        let bones = ed.scene().objects[0].bones.clone();
+        apply(&mut ed,json!([{"op":"clear_target","id":"Arm"},{"op":"transform","id":"Target","translation":[-100,0,0]}])).unwrap();
+        assert_eq!(ed.scene().objects[0].bones, bones);
+        let mut reloaded = Editor::new();
+        reloaded.load(ed.scene().clone()).unwrap();
+        assert_eq!(reloaded.scene().objects, ed.scene().objects);
+    }
 
     /// A tall box of rings along Y (0..2), so it can bend.
     fn column() -> Mesh {

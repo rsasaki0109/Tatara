@@ -739,6 +739,37 @@ async fn mcp_bridge_edits_the_shared_scene() {
         json!([92.0, 1.0, 0.0])
     );
 
+    let r=call(json!({"jsonrpc":"2.0","id":90,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"add","name":"IK arm","primitive":{"kind":"cylinder","height":2,"rings":8},"translation":[100,1,0]},
+        {"op":"rig","id":"IK arm","chain":4},
+        {"op":"add","name":"IK target","primitive":{"kind":"sphere"},"translation":[100.8,1.3,0.2]},
+        {"op":"track_target","id":"IK arm","bone":"Bone 4","target":"IK target"},
+        {"op":"set_keyframe","id":"IK target","property":"translation","frame":1,"value":[100.8,1.3,0.2],"interpolation":"linear"},
+        {"op":"set_keyframe","id":"IK target","property":"translation","frame":3,"value":[99.2,1.3,0.2]}
+    ]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"get_scene","arguments":{"frame":1.5}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let frame: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let arm = frame["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "IK arm")
+        .unwrap();
+    let bones: Vec<tatara::rig::Bone> =
+        serde_json::from_value(arm["pose"]["bones"].clone()).unwrap();
+    let rotations: Vec<_> = bones.iter().map(|b| b.rotation).collect();
+    assert!(
+        tatara::rig::tip(&bones, &rotations, 3).distance(glam::DVec3::new(0.4, 0.3, 0.2)) < 1e-3
+    );
+    assert!(!frame["ik_targets"].as_array().unwrap().is_empty());
+    let r=call(json!({"jsonrpc":"2.0","id":92,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"track_target","id":"IK arm","bone":"Bone 4","target":"IK arm"}]}}})).await;
+    assert_eq!(r["result"]["isError"], true);
+    let r=call(json!({"jsonrpc":"2.0","id":93,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"clear_target","id":"IK arm"}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+
     child.kill().await.unwrap();
 }
 

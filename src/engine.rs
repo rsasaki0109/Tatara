@@ -306,6 +306,9 @@ pub struct Scene {
     /// Row, grid or circle arrangements maintained through later edits.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub arrangements: Vec<crate::layout::Arrangement>,
+    /// Persistent bone-tip targets, solved after object constraints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ik_targets: Vec<rig::Target>,
 }
 
 impl Default for Scene {
@@ -319,6 +322,7 @@ impl Default for Scene {
             world: World::default(),
             constraints: Vec::new(),
             arrangements: Vec::new(),
+            ik_targets: Vec::new(),
         }
     }
 }
@@ -869,6 +873,18 @@ pub enum Command {
         #[serde(default)]
         frame: Option<f64>,
     },
+    /// Keep a bone tip following another object's world origin. One target per rig.
+    TrackTarget {
+        id: ObjRef,
+        bone: String,
+        target: ObjRef,
+        #[serde(default)]
+        chain: Option<u32>,
+    },
+    /// Stop following the target; keep the current static pose.
+    ClearTarget {
+        id: ObjRef,
+    },
     /// Remove an object's animation (one property, or all of it).
     ClearAnimation {
         id: ObjRef,
@@ -1077,6 +1093,7 @@ fn replay_into(scene: &mut Scene, commands: &[Command]) -> Result<Vec<u64>, Engi
     crate::light::validate_scene(scene)?;
     // Constraints hold after every batch.
     constraint::solve(scene, &before)?;
+    rig::solve_targets(scene)?;
     Ok(created)
 }
 
@@ -1198,11 +1215,20 @@ impl Editor {
             o.light = anim::lamp_at(o, Some(frame));
         }
         constraint::solve_frame(&mut sampled, &before)?;
+        // Start from the keyed bone pose, then solve IK using resolved object transforms.
+        for o in &mut sampled.objects {
+            let rotations = rig::rotations(o, Some(frame));
+            for (bone, rotation) in o.bones.iter_mut().zip(rotations) {
+                bone.rotation = rotation;
+            }
+            o.tracks.retain(|t| t.property != anim::Property::Bone);
+        }
+        rig::solve_targets(&mut sampled)?;
         for (o, rest) in sampled.objects.iter_mut().zip(&self.scene.objects) {
             o.mesh = rest.mesh.clone();
             o.modifiers = rest.modifiers.clone();
-            // Bones are still sampled by the geometry renderer; other values are baked.
-            o.tracks.retain(|t| t.property == anim::Property::Bone);
+            // All properties, including IK-adjusted bones, are already sampled.
+            o.tracks.clear();
         }
         Ok(sampled)
     }
@@ -2073,6 +2099,10 @@ fn apply_command(
             for i in idx.into_iter().rev() {
                 scene.objects.remove(i);
             }
+            scene.ik_targets.retain(|t| {
+                scene.objects.iter().any(|o| o.id == t.rig)
+                    && scene.objects.iter().any(|o| o.id == t.target)
+            });
         }
         Command::Extrude { id, face, distance } => {
             let i = resolve(scene, id)?;
@@ -2408,6 +2438,27 @@ fn apply_command(
                 }
             }
         }
+        Command::TrackTarget {
+            id,
+            bone,
+            target,
+            chain,
+        } => {
+            let rig = scene.objects[resolve(scene, id)?].id;
+            let target = scene.objects[resolve(scene, target)?].id;
+            scene.ik_targets.retain(|t| t.rig != rig);
+            scene.ik_targets.push(rig::Target {
+                rig,
+                target,
+                bone: bone.clone(),
+                chain: chain.unwrap_or(rig::MAX_BONES as u32),
+            });
+            rig::validate_targets(scene)?;
+        }
+        Command::ClearTarget { id } => {
+            let id = scene.objects[resolve(scene, id)?].id;
+            scene.ik_targets.retain(|t| t.rig != id);
+        }
         Command::ClearAnimation { id, property } => {
             let i = resolve(scene, id)?;
             let o = &mut scene.objects[i];
@@ -2492,7 +2543,10 @@ fn apply_command(
             constraint::add(scene, id, request)?;
         }
         Command::Unconstrain { id, kind } => constraint::remove(scene, id, *kind)?,
-        Command::Clear {} => scene.objects.clear(),
+        Command::Clear {} => {
+            scene.objects.clear();
+            scene.ik_targets.clear();
+        }
         Command::AddImage { name, data } => {
             let name = check_name(name)?;
             if !scene.images.contains_key(&name) && scene.images.len() >= MAX_IMAGES {
@@ -2794,6 +2848,7 @@ fn validate_scene(scene: &Scene) -> Result<(), EngineError> {
             .map_err(|e| EngineError::new(format!("image {name:?}: {}", e.message)))?;
     }
     check_images(scene)?;
+    rig::validate_targets(scene)?;
     constraint::validate(scene)?;
     crate::layout::validate(scene)?;
     Ok(())
@@ -2874,9 +2929,9 @@ pub fn context_at_checked(
         .objects
         .iter()
         .map(|o| {
-            let posed = ed.posed(o, frame);
-            let mesh = &*posed;
             let resolved = sampled.as_ref().and_then(|s| s.objects.iter().find(|p| p.id == o.id)).unwrap_or(o);
+            let posed = ed.posed(resolved, frame);
+            let mesh = &*posed;
             let pose = frame.map(|_| (resolved.transform.clone(), resolved.material.clone()));
             let bounds = world_bounds(pose.as_ref().map_or(&o.transform, |p| &p.0), mesh);
             if let Some(b) = &bounds {
@@ -2902,7 +2957,7 @@ pub fn context_at_checked(
                     "property": t.property,
                     "frames": t.keys.iter().map(|k| k.frame).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
-                "pose": pose.map(|(t, m)| serde_json::json!({ "transform": t, "material": m, "camera": resolved.camera.clone(), "light": resolved.light.clone() })),
+                "pose": pose.map(|(t, m)| serde_json::json!({ "transform": t, "material": m, "camera": resolved.camera.clone(), "light": resolved.light.clone(), "bones": resolved.bones })),
             })
         })
         .collect();
@@ -2918,6 +2973,7 @@ pub fn context_at_checked(
         "world": scene.world,
         "constraints": scene.constraints,
         "arrangements": scene.arrangements,
+        "ik_targets": scene.ik_targets,
         "frame": frame,
         "bounds": bounds,
         "objects": objects,

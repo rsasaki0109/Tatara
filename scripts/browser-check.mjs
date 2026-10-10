@@ -1028,7 +1028,45 @@ try {
   check(JSON.stringify(frameMotion.rest)===JSON.stringify(restMotion),'frame evaluation preserves rest transforms, keys and scene revision')
   const followerFrame=frameMotion.frame.objects.find(o=>o.id===followerId),followerContext=frameMotion.context.objects.find(o=>o.id===followerId)
   check(JSON.stringify(followerFrame.transform)===JSON.stringify(followerContext.pose.transform),'frame packets and agent contexts expose the same solved pose')
+  await motion.evaluate(()=>window.__tatara.refresh(true))
+  await until(motion,id=>window.__tatara.resolvedFrame()===2 && Math.abs(window.__tatara.position(id)[1]-1)<1e-8,followerId)
+  // Let a cosmetic sync tween finish: it must not overwrite the solved pose.
+  await motion.waitForTimeout(750)
+  check(Math.abs((await motion.evaluate(id=>window.__tatara.position(id),followerId))[1]-1)<1e-8,'a late animated scene refresh cannot overwrite the solved follower pose')
   await motion.close()
+
+  // Persistent IK comes from the core, including the mesh and bone overlay.
+  const ik=await browser.newPage({viewport:{width:1280,height:720}})
+  await ik.goto(url);await ik.evaluate(()=>window.__tatara.ready)
+  const ikRest=await ik.evaluate(async()=>{
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
+      {op:'clear'}, {op:'add',name:'Arm',primitive:{kind:'cylinder',height:2,rings:8},translation:[0,1,0]},
+      {op:'rig',id:'Arm',chain:4}, {op:'add',name:'Target',primitive:{kind:'sphere'},translation:[.8,1.3,.2]}
+    ]})});if(!r.ok)throw new Error(await r.text());await window.__tatara.refresh(false)
+    const s=await(await fetch('/api/scene')).json();document.querySelector(`#outliner li[data-id="${s.objects[0].id}"]`).click();return s
+  })
+  await ik.click('[data-bone="Bone 4"]');await ik.selectOption('#ik-target',String(ikRest.objects[1].id));await ik.click('[data-rig=follow]')
+  await until(ik,()=>fetch('/api/scene').then(r=>r.json()).then(s=>s.ik_targets?.length===1))
+  await until(ik,id=>Math.hypot(...window.__tatara.rigTip(id).map((v,k)=>v-[.8,1.3,.2][k]))<.001,ikRest.objects[0].id)
+  check(true,'the Rig UI binds the chosen bone to a target and renders the solved tip')
+  const ikAuthored=await ik.evaluate(async()=>{
+    const r=await fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands:[
+      {op:'set_keyframe',id:'Target',property:'translation',frame:1,value:[.8,1.3,.2],interpolation:'linear'},
+      {op:'set_keyframe',id:'Target',property:'translation',frame:3,value:[-.8,1.3,.2]}
+    ]})});if(!r.ok)throw new Error(await r.text());await window.__tatara.refresh(false);window.__tatara.setFrame(1.5);return(await fetch('/api/scene')).json()
+  })
+  await until(ik,id=>window.__tatara.resolvedFrame()===1.5 && Math.hypot(...window.__tatara.rigTip(id).map((v,k)=>v-[.4,1.3,.2][k]))<.001,ikRest.objects[0].id)
+  const ikTurn=await ik.evaluate(id=>Math.round(window.__tatara.rigPose(id).bones[3].rotation[2]*180/Math.PI),ikRest.objects[0].id)
+  check(Number(await ik.inputValue('#p-bone-2'))===ikTurn,'the animated IK pose reaches the viewport bone overlay and Turn sliders')
+  await ik.evaluate(()=>{window.__tatara.setFrame(3);window.__tatara.setFrame(1);window.__tatara.setFrame(1.5)})
+  await until(ik,id=>window.__tatara.resolvedFrame()===1.5 && Math.hypot(...window.__tatara.rigTip(id).map((v,k)=>v-[.4,1.3,.2][k]))<.001,ikRest.objects[0].id)
+  const afterIk=await ik.evaluate(()=>fetch('/api/scene').then(r=>r.json()))
+  check(JSON.stringify(afterIk)===JSON.stringify(ikAuthored) && !afterIk.objects[0].tracks.length,'IK seeking is deterministic and creates no bone keys or history edits')
+  await ik.selectOption('#ik-target','');await ik.click('[data-rig=follow]')
+  await until(ik,()=>fetch('/api/scene').then(r=>r.json()).then(s=>!s.ik_targets?.length));await ik.click('[data-action=undo]')
+  await until(ik,()=>fetch('/api/scene').then(r=>r.json()).then(s=>s.ik_targets?.length===1))
+  check(true,'unbinding the IK target is one undoable typed command')
+  await ik.close()
 
   // Every scenario must finish without errors (the MCP one falls back to HTTP).
   const cap = await browser.newPage({ viewport: { width: 1280, height: 720 } })
