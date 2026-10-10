@@ -911,7 +911,9 @@ pub enum Command {
     /// evaluated world-bound centres that many metres apart; either edited
     /// side leads, and `from` leads if both sides were edited. `align` with
     /// `from` keeps centres equal on the selected world axes (x/y/z/xy/xz/yz/xyz),
-    /// leaving the other axes free, with the same lead policy.
+    /// leaving the other axes free, with the same lead policy. `orientation`
+    /// captures the relative rotation to an individual object; either edited
+    /// endpoint leads, or the referenced endpoint if both change.
     Constrain {
         id: ObjRef,
         #[serde(default)]
@@ -928,12 +930,15 @@ pub enum Command {
         /// World axes on which evaluated bound centres must coincide.
         #[serde(default)]
         align: Option<Axes>,
+        /// Preserve the current relative rotation to an individual object.
+        #[serde(default)]
+        orientation: Option<ObjRef>,
         /// The other object or group for distance or alignment.
         #[serde(default)]
         from: Option<ObjRef>,
     },
     /// Drop `id`'s constraints (only those of `kind`: on, mirrors or
-    /// matches, distance or align, if given), including symmetric rules that point at it.
+    /// matches, distance, align or orientation, if given), including symmetric rules that point at it.
     Unconstrain {
         id: ObjRef,
         #[serde(default)]
@@ -2428,23 +2433,29 @@ fn apply_command(
             matches,
             distance,
             align,
+            orientation,
             from,
         } => {
-            let request = match (on, mirrors, matches, distance, align, from) {
-                (Some(r), None, None, None, None, None) => constraint::Request::On(r.clone()),
-                (None, Some(r), None, None, None, None) => {
+            let request = match (on, mirrors, matches, distance, align, from, orientation) {
+                (Some(r), None, None, None, None, None, None) => constraint::Request::On(r.clone()),
+                (None, Some(r), None, None, None, None, None) => {
                     constraint::Request::Mirrors(r.clone(), axis.unwrap_or_default())
                 }
-                (None, None, Some(r), None, None, None) => constraint::Request::Matches(r.clone()),
-                (None, None, None, Some(d), None, Some(r)) => {
+                (None, None, Some(r), None, None, None, None) => {
+                    constraint::Request::Matches(r.clone())
+                }
+                (None, None, None, Some(d), None, Some(r), None) => {
                     constraint::Request::Distance(r.clone(), *d)
                 }
-                (None, None, None, None, Some(axes), Some(r)) => {
+                (None, None, None, None, Some(axes), Some(r), None) => {
                     constraint::Request::Align(r.clone(), *axes)
+                }
+                (None, None, None, None, None, None, Some(r)) => {
+                    constraint::Request::Orientation(r.clone())
                 }
                 _ => {
                     return err(
-                        "constrain needs exactly one of `on`, `mirrors`, `matches`, `distance` with `from`, or `align` with `from`",
+                        "constrain needs exactly one of `on`, `mirrors`, `matches`, `distance` with `from`, or `align` with `from`, or `orientation`",
                     );
                 }
             };

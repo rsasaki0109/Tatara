@@ -1036,7 +1036,7 @@ function renderProperties(o) {
       <label class="row">Type<select id="light-kind"><option value="point" ${o.light.kind==='point'?'selected':''}>Point</option><option value="sun" ${o.light.kind==='sun'?'selected':''}>Sun</option></select></label>
       <label class="row">Colour<input type="color" id="light-color" value="${o.light.color}"></label>
       <label class="vec-row"><span>Intensity (${o.light.kind==='point'?'cd':'lx'})</span><input type="number" id="light-intensity" min="0" max="100000" step=".1" value="${o.light.intensity}"></label>
-      <p class="muted small">Point lights fall off with distance squared. Sun rays travel down local −Z. Intensity 0 switches the light off. Transform tracks animate the light.</p></div>`
+      <p class="muted small">Point lights fall off with distance squared. Sun rays travel down local −Z. Intensity 0 switches the light off. Transform tracks animate the light.</p></div>${constraintCard(o)}`
     return
   }
   if (o.camera) {
@@ -1048,7 +1048,7 @@ function renderProperties(o) {
       <div class="vec-row"><span>Rotation°${keyed('rotation')}</span>${vec('rotation', t.rotation, 5, r => r * 180 / Math.PI)}</div></div>
       <div class="card"><div class="card-title">Perspective lens</div>
       ${[['fov','Vertical FOV°',1,170,.1],['aperture','Lens radius m',0,1,.01],['focus','Focus m',.001,10000,.1]].map(([f,label,min,max,step]) => `<label class="vec-row"><span>${label}</span><input type="number" id="camera-${f}" data-camera-lens="${f}" min="${min}" max="${max}" step="${step}" value="${o.camera[f]}"></label>`).join('')}
-      <p class="muted small">Looks along local −Z. Lens and animation are used by Render while looking through this camera.</p></div>`
+      <p class="muted small">Looks along local −Z. Lens and animation are used by Render while looking through this camera.</p></div>${constraintCard(o)}`
     return
   }
   const glazes = GLAZES.map(
@@ -1251,9 +1251,9 @@ function currentBone(o) {
 const subjectOf = (o) => o.group ?? o.id
 const whoName = (who) => (typeof who === 'number' ? (objectById(who)?.name ?? `#${who}`) : who)
 const involves = (o, who) => who === o.id || (o.group != null && who === o.group)
-const RULES = { on: 'Keep on', mirrors: 'Mirror of', matches: 'Match look of', distance: 'Keep distance', align: 'Keep aligned' }
+const RULES = { on: 'Keep on', mirrors: 'Mirror of', matches: 'Match look of', distance: 'Keep distance', align: 'Keep aligned', orientation: 'Keep relative orientation' }
 
-const LINK = { on: 0x4fd1c5, mirrors: 0xa78bfa, matches: 0xffb02e, distance: 0x67b8ff, align: 0xe4bd69 }
+const LINK = { on: 0x4fd1c5, mirrors: 0xa78bfa, matches: 0xffb02e, distance: 0x67b8ff, align: 0xe4bd69, orientation: 0xef94c8 }
 const idsOf = (who) => app.scene.objects.filter((x) => x.id === who || (x.group != null && x.group === who)).map((x) => x.id)
 
 /** Dashed lines from the selection to what its constraints tie it to. */
@@ -1291,23 +1291,25 @@ function constraintCard(o) {
     if (c.kind === 'mirrors') return `Mirrors ${other}${c.axis === 'z' ? ' (front/back)' : ''}`
     if (c.kind === 'distance') return `${c.distance} m from ${other}`
     if (c.kind === 'align') return `Aligned ${c.axes.toUpperCase()} with ${other}`
+    if (c.kind === 'orientation') return `Keeps relative orientation to ${other}`
     return `Matches ${other}`
   }
   const rows = mine
     .map((c) => `<div class="constraint-row"><span class="c-kind c-${c.kind}">${c.kind === 'on' ? '⤓' : c.kind === 'mirrors' ? '⇋' : c.kind === 'distance' ? '↔' : '≡'}</span><span>${escapeHtml(describe(c))}</span><button class="chip" data-unconstrain="${escapeHtml(JSON.stringify([c.subject, c.kind]))}" title="Stop keeping this">✕</button></div>`)
     .join('')
+  const rules = Object.entries(RULES).filter(([k]) => o.camera || o.light ? k === 'orientation' : !o.group || k !== 'orientation')
+  const kind = rules.some(([k]) => k === app.constraintKind) ? app.constraintKind : rules[0][0]
   const self = subjectOf(o)
   const seen = new Set()
   const targets = []
   for (const x of app.scene.objects) {
-    const who = x.group ?? x.id
-    if (x.camera || x.light || who === self || seen.has(who)) continue
+    const who = kind === 'orientation' ? x.id : x.group ?? x.id
+    if ((kind !== 'orientation' && (x.camera || x.light)) || who === self || x.id === o.id || seen.has(who)) continue
     seen.add(who)
     targets.push(who)
   }
-  const kind = app.constraintKind ?? 'on'
   const add = targets.length
-    ? `<div class="row constraint-add"><select id="c-kind">${Object.entries(RULES).map(([k, label]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${label}</option>`).join('')}</select><select id="c-target">${targets.map((w) => `<option value="${escapeHtml(JSON.stringify(w))}">${escapeHtml(whoName(w))}</option>`).join('')}</select><button class="small-btn" data-constrain>Keep</button></div>`
+    ? `<div class="row constraint-add"><select id="c-kind">${rules.map(([k, label]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${label}</option>`).join('')}</select><select id="c-target">${targets.map((w) => `<option value="${escapeHtml(JSON.stringify(w))}">${escapeHtml(whoName(w))}</option>`).join('')}</select><button class="small-btn" data-constrain>Keep</button></div>`
     : ''
   const axes = kind === 'align' && targets.length
     ? `<label class="row small">World axes<select id="c-align">${['x', 'y', 'z', 'xy', 'xz', 'yz', 'xyz'].map((a) => `<option value="${a}" ${a === (app.constraintAxes ?? 'y') ? 'selected' : ''}>${a.toUpperCase()}</option>`).join('')}</select></label>`

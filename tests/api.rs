@@ -618,6 +618,25 @@ async fn mcp_bridge_edits_the_shared_scene() {
             .iter()
             .any(|v| v["type"] == "image")
     );
+    let r=call(json!({"jsonrpc":"2.0","id":72,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"constrain","id":"MCP Key","orientation":"MCP Shot"},{"op":"transform","id":"MCP Shot","rotation":[0.2,0.4,0.1]}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":73,"method":"tools/call","params":{"name":"get_scene","arguments":{}}})).await;
+    let scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(
+        scene["constraints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["kind"] == "orientation")
+    );
+    let light = scene["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "MCP Key")
+        .unwrap();
+    assert!(light["transform"]["rotation"][1].as_f64().unwrap().abs() > 0.1);
     child.kill().await.unwrap();
 }
 

@@ -129,6 +129,17 @@ try {
   })
   check(JSON.stringify(layout.moved.objects[1].transform.translation) === '[0.5,0.5,3]' && JSON.stringify(layout.moved.objects[2].transform.translation) === '[3.5,0.5,3]', 'maintained layouts follow their reference in WebAssembly')
   check(JSON.stringify(layout.undone.objects[1].transform.translation) === '[-1.5,0.5,0]' && layout.undone.arrangements.length === 1, 'WebAssembly keeps layout intent through Undo')
+  const orientation = await page.evaluate(async () => {
+    const post=commands=>fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commands})}).then(r=>r.json())
+    await post([{op:'clear'},{op:'add_camera',name:'Shot'},{op:'add_light',name:'Key',rotation:[0,.3,0]},{op:'constrain',id:'Key',orientation:'Shot'}])
+    await post([{op:'transform',id:'Shot',rotation:[0,.4,0]}])
+    const turned=await(await fetch('/api/scene')).json()
+    await fetch('/api/undo',{method:'POST'})
+    const undone=await(await fetch('/api/scene')).json()
+    return {turned,undone}
+  })
+  check(Math.abs(orientation.turned.objects[1].transform.rotation[1]-.7)<1e-6,'WebAssembly keeps camera/light relative orientation')
+  check(Math.abs(orientation.undone.objects[1].transform.rotation[1]-.3)<1e-6,'WebAssembly Undo restores both orientation endpoints')
   const creations = await page.evaluate(async () => {
     const post = body => fetch('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json())
     const base = await post({commands:[{op:'clear'},{op:'add_camera',name:'First shot'}]})
