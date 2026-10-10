@@ -1047,6 +1047,62 @@ mod tests {
     }
 
     #[test]
+    fn pole_target_frames_and_previews_preserve_authored_state() {
+        let mut ed = Editor::new();
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[
+                {"op":"add","name":"Leg","primitive":{"kind":"cylinder","height":2,"rings":8},"translation":[0,1,0]},
+                {"op":"rig","id":"Leg","chain":2},
+                {"op":"add","name":"Foot","primitive":{"kind":"sphere"},"translation":[0,1.4,0]},
+                {"op":"add","name":"Knee","primitive":{"kind":"sphere"},"translation":[1,0.7,0]},
+                {"op":"track_target","id":"Leg","bone":"Bone 2","target":"Foot","pole":"Knee","chain":2},
+                {"op":"set_keyframe","id":"Knee","property":"translation","frame":1,"value":[1,0.7,0],"interpolation":"linear"},
+                {"op":"set_keyframe","id":"Knee","property":"translation","frame":3,"value":[-1,0.7,0]}
+            ]}),
+        );
+        assert_eq!(status, 200);
+        let rest = serde_json::to_value(ed.scene()).unwrap();
+        let mut bends = Vec::new();
+        for frame in [1., 3.] {
+            let path = format!("/frame?frame={frame}");
+            let (status, packet) = call(&mut ed, "GET", &path, Value::Null);
+            assert_eq!(status, 200);
+            let bones: Vec<crate::rig::Bone> =
+                serde_json::from_value(packet["objects"][0]["bones"].clone()).unwrap();
+            let rotations: Vec<_> = bones.iter().map(|b| b.rotation).collect();
+            let matrices = crate::rig::matrices(&bones, &rotations);
+            bends.push(
+                matrices[1]
+                    .transform_point3(glam::DVec3::from(bones[1].head))
+                    .x,
+            );
+            assert!(
+                crate::rig::tip(&bones, &rotations, 1).distance(glam::DVec3::new(0., 0.4, 0.))
+                    < 1e-8
+            );
+            let (status, preview) = call(&mut ed, "POST", &path, rest.clone());
+            assert_eq!(status, 200);
+            assert_eq!(preview, packet);
+        }
+        assert!(bends[0] > 0.6 && bends[1] < -0.6);
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), rest);
+        let (status, error) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[
+                {"op":"track_target","id":"Leg","bone":"Bone 2","target":"Foot","pole":"Foot","chain":2}
+            ]}),
+        );
+        assert_eq!(status, 422);
+        assert!(error.to_string().contains("different, existing object"));
+        assert_eq!(serde_json::to_value(ed.scene()).unwrap(), rest);
+    }
+
+    #[test]
     fn persistent_ik_packets_previews_and_rendering_share_the_same_pose() {
         let mut ed = Editor::new();
         let (status, _) = call(

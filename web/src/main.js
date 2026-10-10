@@ -1367,6 +1367,11 @@ function rigCard(o) {
   const keyed = boneTrack(o, bone.name) ? ' <span class="keyed" title="Animated: edits key this frame">◆</span>' : ''
   const deg = (v) => Math.round((v * 180) / Math.PI)
   const binding = app.scene.ik_targets?.find(t => t.rig === o.id)
+  const bindingKey = JSON.stringify(binding ?? null)
+  if (app.ikDraft?.id !== o.id || app.ikDraft.binding !== bindingKey) {
+    app.ikDraft = { id: o.id, binding: bindingKey, target: binding?.target ?? '', pole: binding?.pole ?? '' }
+  }
+  const draft = app.ikDraft
   const targets = app.scene.objects.filter(t => t.id !== o.id)
   return `${head(`${o.bones.length} bones`)}
     <div class="brushes">${o.bones.map((b) => `<button class="chip ${b === bone ? 'on' : ''}" data-bone="${escapeHtml(b.name)}">${escapeHtml(b.name)}</button>`).join('')}</div>
@@ -1374,7 +1379,9 @@ function rigCard(o) {
       .map((a, i) => `<label class="slider"><span>Turn ${a}${keyed}</span><input type="range" min="-180" max="180" step="1" id="p-bone-${i}" value="${deg(r[i])}"><b>${deg(r[i])}°</b></label>`)
       .join('')}
     <div class="row"><button class="small-btn ${app.ik ? 'on' : ''}" data-rig="ik" title="Drag a handle at the bone's tip; the chain bends to follow (inverse kinematics)">Reach (IK)</button><button class="small-btn" data-rig="key" title="Key every bone at this frame">◆ Key pose</button></div>
-    <label class="row"><span class="muted small">Follow target</span><select id="ik-target"><option value="">None</option>${targets.map(t => `<option value="${t.id}" ${binding?.target === t.id ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}</select><button class="small-btn" data-rig="follow">Follow ${escapeHtml(bone.name)}</button></label>
+    <label class="row"><span class="muted small">Follow target</span><select id="ik-target"><option value="">None</option>${targets.map(t => `<option value="${t.id}" ${Number(draft.target) === t.id ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}</select><button class="small-btn" data-rig="follow">Follow ${escapeHtml(bone.name)}</button></label>
+    <label class="row"><span class="muted small">Pole target</span><select id="ik-pole"><option value="">None</option>${targets.map(t=>`<option value="${t.id}" ${Number(draft.pole)===t.id?'selected':''}>${escapeHtml(t.name)}</option>`).join('')}</select></label>
+    <div class="muted small">A pole controls the bend direction of a connected two-bone chain.</div>
     ${binding ? `<div class="muted small">${escapeHtml(binding.bone)} follows the target origin · every frame</div>` : ''}
     <div class="row"><button class="small-btn" data-rig="reset">Reset pose</button><button class="small-btn" data-rig="remove">Remove rig</button></div>
   </div>`
@@ -1425,6 +1432,10 @@ $('properties').addEventListener('change', (e) => {
   if (target.id === 'w-bg') return run([{ op: 'world', background: target.checked }]).catch(() => {})
   const o = objectById(app.selected)
   if (!o) return
+  if (target.id === 'ik-target' || target.id === 'ik-pole') {
+    if (app.ikDraft?.id === o.id) app.ikDraft[target.id === 'ik-target' ? 'target' : 'pole'] = target.value
+    return
+  }
   if (/^p-bone-\d$/.test(target.id)) return run(poseCommands(o, currentBone(o).name, boneSliders())).catch(() => {})
   if (['light-kind','light-color','light-intensity','light-inner_cone','light-outer_cone','light-range'].includes(target.id)) {
     const field = target.id.slice(6)
@@ -1535,7 +1546,8 @@ $('properties').addEventListener('click', (e) => {
   if (rigAction && rigObject?.bones?.length) {
     if (rigAction === 'follow') {
       const target = Number($('ik-target').value)
-      return run([target ? {op:'track_target',id:rigObject.id,bone:currentBone(rigObject).name,target} : {op:'clear_target',id:rigObject.id}]).catch(() => {})
+      const pole=Number($('ik-pole').value)
+      return run([target ? {op:'track_target',id:rigObject.id,bone:currentBone(rigObject).name,target,...(pole?{pole,chain:2}:{})} : {op:'clear_target',id:rigObject.id}]).catch(() => {})
     }
     if (rigAction === 'ik') {
       app.ik = !app.ik

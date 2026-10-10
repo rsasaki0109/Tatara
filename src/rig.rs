@@ -44,6 +44,8 @@ pub struct Bone {
 pub struct Target {
     pub rig: u64,
     pub target: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pole: Option<u64>,
     pub bone: String,
     pub chain: u32,
 }
@@ -74,6 +76,33 @@ pub fn validate_targets(scene: &Scene) -> Result<(), EngineError> {
                 "IK chain must contain 1-{MAX_BONES} bones"
             )));
         }
+        if let Some(pole) = t.pole {
+            if pole == t.rig || pole == t.target || !scene.objects.iter().any(|o| o.id == pole) {
+                return Err(EngineError::new(
+                    "IK pole needs a different, existing object",
+                ));
+            }
+            let end = o
+                .bones
+                .iter()
+                .position(|b| b.name == t.bone)
+                .expect("validated");
+            let parent = o.bones[end]
+                .parent
+                .as_ref()
+                .and_then(|name| o.bones.iter().position(|b| &b.name == name));
+            if t.chain != 2
+                || parent.is_none_or(|root| {
+                    DVec3::from(o.bones[root].tail).distance(DVec3::from(o.bones[end].head)) > 1e-6
+                        || DVec3::from(o.bones[root].head).distance(DVec3::from(o.bones[end].head))
+                            < 1e-6
+                })
+            {
+                return Err(EngineError::new(
+                    "IK poles need chain 2 with connected parent and end bones",
+                ));
+            }
+        }
         if scene.ik_targets[..i].iter().any(|p| p.rig == t.rig) {
             return Err(EngineError::new("at most one IK target per rig"));
         }
@@ -93,6 +122,17 @@ pub fn solve_targets(scene: &mut Scene) -> Result<(), EngineError> {
             .expect("validated")
             .transform
             .translation;
+        let pole = t.pole.map(|id| {
+            DVec3::from(
+                scene
+                    .objects
+                    .iter()
+                    .find(|o| o.id == id)
+                    .expect("validated")
+                    .transform
+                    .translation,
+            )
+        });
         let o = scene
             .objects
             .iter_mut()
@@ -108,7 +148,17 @@ pub fn solve_targets(scene: &mut Scene) -> Result<(), EngineError> {
             .matrix()
             .inverse()
             .transform_point3(DVec3::from(target));
-        let rotations = reach(&o.bones, &rotations(o, None), end, t.chain as usize, local);
+        let rotations = if let Some(pole) = pole {
+            reach_pole(
+                &o.bones,
+                &rotations(o, None),
+                end,
+                local,
+                o.transform.matrix().inverse().transform_point3(pole),
+            )
+        } else {
+            reach(&o.bones, &rotations(o, None), end, t.chain as usize, local)
+        };
         for (bone, rotation) in o.bones.iter_mut().zip(rotations) {
             bone.rotation = rotation;
         }
@@ -385,6 +435,81 @@ pub fn reach(
     rot
 }
 
+/// Analytic two-bone IK: the pole chooses the bend plane. Collinear poles
+/// preserve the current plane, or use a deterministic perpendicular fallback.
+/// Unreachable targets clamp to the chain's reachable distance in object space.
+pub fn reach_pole(
+    bones: &[Bone],
+    rotations: &[[f64; 3]],
+    end: usize,
+    target: DVec3,
+    pole: DVec3,
+) -> Vec<[f64; 3]> {
+    let root = bones[end]
+        .parent
+        .as_ref()
+        .and_then(|name| bones.iter().position(|b| &b.name == name))
+        .expect("validated two-bone chain");
+    let mut rot = rotations.to_vec();
+    let m = matrices(bones, &rot);
+    let origin = m[root].transform_point3(DVec3::from(bones[root].head));
+    let elbow = m[end].transform_point3(DVec3::from(bones[end].head));
+    let old_tip = m[end].transform_point3(DVec3::from(bones[end].tail));
+    let l1 = elbow.distance(origin);
+    let l2 = old_tip.distance(elbow);
+    let delta = target - origin;
+    let axis = delta
+        .try_normalize()
+        .or_else(|| (old_tip - origin).try_normalize())
+        .unwrap_or(DVec3::Y);
+    let project = |v: DVec3| v - axis * v.dot(axis);
+    let fallback = if axis.x.abs() < 0.8 {
+        DVec3::X
+    } else {
+        DVec3::Z
+    };
+    let bend = project(pole - origin)
+        .try_normalize()
+        .or_else(|| project(elbow - origin).try_normalize())
+        .unwrap_or_else(|| project(fallback).normalize());
+    let d = delta.length().clamp((l1 - l2).abs().max(1e-9), l1 + l2);
+    let along = ((l1 * l1 + d * d - l2 * l2) / (2. * d)).clamp(-l1, l1);
+    let height = (l1 * l1 - along * along).max(0.).sqrt();
+    let desired_elbow = origin + axis * along + bend * height;
+    let desired_tip = origin + axis * d;
+    let turn_joint = |rot: &mut Vec<[f64; 3]>, j: usize, turn: DQuat, m: &[DMat4]| {
+        let parent = bones[j]
+            .parent
+            .as_ref()
+            .and_then(|name| bones.iter().position(|b| &b.name == name))
+            .map_or(DQuat::IDENTITY, |i| DQuat::from_mat4(&m[i]).normalize());
+        let [x, y, z] = rot[j];
+        let own = DQuat::from_euler(EulerRot::XYZ, x, y, z);
+        let next = (parent.inverse() * turn * parent * own).normalize();
+        let (x, y, z) = next.to_euler(EulerRot::XYZ);
+        rot[j] = [x, y, z];
+    };
+    turn_joint(
+        &mut rot,
+        root,
+        DQuat::from_rotation_arc(
+            (elbow - origin).normalize(),
+            (desired_elbow - origin).normalize(),
+        ),
+        &m,
+    );
+    let m = matrices(bones, &rot);
+    let elbow = m[end].transform_point3(DVec3::from(bones[end].head));
+    let tip = m[end].transform_point3(DVec3::from(bones[end].tail));
+    turn_joint(
+        &mut rot,
+        end,
+        DQuat::from_rotation_arc((tip - elbow).normalize(), (desired_tip - elbow).normalize()),
+        &m,
+    );
+    rot
+}
+
 /// Where the tip of bone `k` is with the bones at `rotations` (object space).
 pub fn tip(bones: &[Bone], rotations: &[[f64; 3]], k: usize) -> DVec3 {
     matrices(bones, rotations)[k].transform_point3(DVec3::from(bones[k].tail))
@@ -423,6 +548,119 @@ mod tests {
         o.transform
             .matrix()
             .transform_point3(tip(&o.bones, &rotations(o, None), 3))
+    }
+
+    fn pole_editor() -> Editor {
+        let mut ed = Editor::new();
+        apply(&mut ed,json!([
+            {"op":"add","name":"Leg","primitive":{"kind":"cylinder","height":2,"rings":8},"translation":[0,1,0]},
+            {"op":"rig","id":"Leg","chain":2,"axis":"y"},
+            {"op":"add","name":"Foot","primitive":{"kind":"sphere"},"translation":[0,1.4,0]},
+            {"op":"add","name":"Knee","primitive":{"kind":"sphere"},"translation":[1,0.7,0]},
+            {"op":"track_target","id":"Leg","bone":"Bone 2","target":"Foot","pole":"Knee","chain":2}
+        ])).unwrap();
+        ed
+    }
+    fn pole_points(scene: &Scene) -> (DVec3, DVec3) {
+        let o = &scene.objects[0];
+        let matrices = matrices(&o.bones, &rotations(o, None));
+        let world = o.transform.matrix();
+        (
+            world.transform_point3(matrices[1].transform_point3(DVec3::from(o.bones[1].head))),
+            world.transform_point3(tip(&o.bones, &rotations(o, None), 1)),
+        )
+    }
+    #[test]
+    fn pole_controls_bend_plane_and_samples_without_mutation() {
+        let mut ed = pole_editor();
+        let (knee, tip) = pole_points(ed.scene());
+        assert!(knee.x > 0.6);
+        assert!(tip.distance(DVec3::new(0., 1.4, 0.)) < 1e-8);
+        let before = ed.scene().clone();
+        apply(
+            &mut ed,
+            json!([{"op":"move","id":"Knee","offset":[-2,0,0]}]),
+        )
+        .unwrap();
+        let (knee, tip) = pole_points(ed.scene());
+        assert!(knee.x < -0.6);
+        assert!(tip.distance(DVec3::new(0., 1.4, 0.)) < 1e-8);
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().objects, before.objects);
+        ed.redo().unwrap();
+        apply(&mut ed,json!([
+            {"op":"set_keyframe","id":"Knee","property":"translation","frame":1,"value":[1,0.7,0],"interpolation":"linear"},
+            {"op":"set_keyframe","id":"Knee","property":"translation","frame":3,"value":[-1,0.7,0]}
+        ])).unwrap();
+        let rest = ed.scene().clone();
+        let first = ed.scene_at(1.).unwrap();
+        assert!(pole_points(&first).0.x > 0.6);
+        assert!(pole_points(&ed.scene_at(3.).unwrap()).0.x < -0.6);
+        assert_eq!(first, ed.scene_at(1.).unwrap());
+        assert_eq!(*ed.scene(), rest);
+        apply(
+            &mut ed,
+            json!([{"op":"transform","id":"Leg","rotation":[0.2,0.4,0.1],"scale":[1.2,0.9,1.1]}]),
+        )
+        .unwrap();
+        assert!(pole_points(ed.scene()).1.distance(DVec3::new(0., 1.4, 0.)) < 1e-8);
+    }
+    #[test]
+    fn pole_singular_and_unreachable_targets_stay_finite() {
+        let mut ed = pole_editor();
+        for p in [[0., 1.4, 0.], [0., 0., 0.], [0., 20., 0.]] {
+            apply(&mut ed,json!([{"op":"transform","id":"Foot","translation":p},{"op":"transform","id":"Knee","translation":p}])).unwrap();
+            let (knee, tip) = pole_points(ed.scene());
+            assert!(knee.is_finite() && tip.is_finite());
+            assert!(
+                ed.scene().objects[0]
+                    .bones
+                    .iter()
+                    .flat_map(|b| b.rotation)
+                    .all(f64::is_finite)
+            );
+            if p[1] < 2. {
+                assert!(tip.distance(DVec3::from(p)) < 1e-7);
+            } else {
+                assert!(tip.distance(DVec3::new(0., 2., 0.)) < 1e-7);
+            }
+        }
+    }
+    #[test]
+    fn pole_bindings_validate_and_deletion_releases_only_pole() {
+        let mut ed = pole_editor();
+        let before = ed.scene().clone();
+        for command in [
+            json!({"op":"track_target","id":"Leg","bone":"Bone 2","target":"Foot","pole":"Leg","chain":2}),
+            json!({"op":"track_target","id":"Leg","bone":"Bone 2","target":"Foot","pole":"Foot","chain":2}),
+            json!({"op":"track_target","id":"Leg","bone":"Bone 2","target":"Foot","pole":"Knee","chain":1}),
+            json!({"op":"track_target","id":"Leg","bone":"Bone 1","target":"Foot","pole":"Knee","chain":2}),
+        ] {
+            assert!(
+                apply(
+                    &mut ed,
+                    json!([{"op":"move","id":"Foot","offset":[0.1,0,0]},command])
+                )
+                .is_err()
+            );
+            assert_eq!(*ed.scene(), before);
+        }
+        let mut invalid = before.clone();
+        invalid.ik_targets[0].pole = Some(999);
+        assert!(ed.load(invalid).is_err());
+        // The connection tolerance must not admit a zero-length joint span.
+        let mut collapsed = before.clone();
+        collapsed.objects[0].bones[0].head = [0.; 3];
+        collapsed.objects[0].bones[0].tail = [0., 1e-6, 0.];
+        collapsed.objects[0].bones[1].head = [0.; 3];
+        collapsed.objects[0].bones[1].tail = [0., 1., 0.];
+        assert!(ed.load(collapsed).is_err());
+        assert_eq!(*ed.scene(), before);
+        apply(&mut ed, json!([{"op":"delete","id":"Knee"}])).unwrap();
+        assert_eq!(ed.scene().ik_targets.len(), 1);
+        assert!(ed.scene().ik_targets[0].pole.is_none());
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().ik_targets, before.ik_targets);
     }
 
     #[test]
