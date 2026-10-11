@@ -3014,7 +3014,7 @@ pub fn set_material(m: &mut Material, e: &MaterialEdit) -> Result<(), EngineErro
         }
     }
     if let Some(t) = e.texture {
-        if t.pattern == Pattern::None && t.normal_map.is_none() {
+        if !t.has_surface() {
             m.texture = None;
         } else {
             t.validate()?;

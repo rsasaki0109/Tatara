@@ -789,9 +789,10 @@ export class Viewport {
     if (m.userData.uvPreview) this.applyUvGrid(m)
     else this.applyTexture(m, mat)
     if (!m.userData.bakedColor || !m.map) m.color.set(mat.color)
-    // A baked roughness/metalness map already holds the material's values.
-    m.roughness = m.userData.ormUrl ? 1 : mat.roughness
-    m.metalness = m.userData.ormUrl ? 1 : mat.metalness
+    // Node bakes hold absolute values; packed images multiply scalar factors.
+    const bakedOrm = m.userData.ormUrl && !mat.texture?.metallic_roughness_map
+    m.roughness = bakedOrm ? 1 : mat.roughness
+    m.metalness = bakedOrm ? 1 : mat.metalness
     // Glass has its own reflections; a clearcoat on top only clouds it.
     m.clearcoat = mat.transmission ? 0 : Math.max(0, 0.65 - mat.roughness)
     m.emissive.set(mat.emissive || '#000000')
@@ -841,12 +842,12 @@ export class Viewport {
             ? `/api/texture?${params({ kind: 'normal', relief: String(t.relief), ...imageVersion })}`
             : null
     // A node graph's roughness (G) and metalness (B) come as one map.
-    const ormUrl = graph && (graph.output?.roughness || graph.output?.metalness) ? nodeUrl('orm') : null
+    const ormUrl = t?.metallic_roughness_map ? this.imageUrl(t.metallic_roughness_map) : graph && (graph.output?.roughness || graph.output?.metalness) ? nodeUrl('orm') : null
     m.userData.ormUrl = ormUrl
     // A baked pattern already holds the colour; an image is tinted by it.
     m.userData.bakedColor = Boolean(colorUrl) && t.pattern !== 'image'
     m.userData.textureScale = t?.scale ?? 0.5
-    m.userData.textured = Boolean(colorUrl || normalUrl)
+    m.userData.textured = Boolean(colorUrl || normalUrl || ormUrl)
     this.setMap(m, 'map', colorUrl)
     this.setMap(m, 'normalMap', normalUrl)
     this.setMap(m, 'roughnessMap', ormUrl)

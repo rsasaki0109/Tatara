@@ -291,6 +291,7 @@ fn texture(ed: &Editor, query: &str) -> Result<Response, Response> {
         texture: &t,
         image: image.as_ref().map(|(_, px)| px),
         normal_map: None,
+        metallic_roughness_map: None,
         baked: None,
     };
     let body = match query_param(query, "kind").as_deref() {
@@ -348,6 +349,7 @@ fn node_tile(ed: &Editor, query: &str) -> Result<Response, Response> {
                 texture: t,
                 image: None,
                 normal_map: None,
+                metallic_roughness_map: None,
                 baked: Some(&baked),
             },
             size,
@@ -2388,6 +2390,77 @@ mod tests {
         let (status, _) = call(&mut ed, "POST", "/undo", json!({}));
         assert_eq!(status, 200);
         assert!(ed.scene().objects.is_empty());
+    }
+
+    #[test]
+    fn packed_material_map_is_atomic_undoable_and_keeps_its_image_alive() {
+        let mut ed = Editor::new();
+        let data = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            crate::image::tests::tiny_png(),
+        );
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands": [
+                {"op":"add", "name":"Mapped", "primitive":{"kind":"cube"}},
+                {"op":"add_image", "name":"Packed", "data":data}
+            ]}),
+        );
+        assert_eq!(status, 200);
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[
+                {"op":"material", "id":"Mapped", "roughness":0.4, "metalness":0.8,
+                 "texture":{"pattern":"none", "metallic_roughness_map":"Packed"}}
+            ]}),
+        );
+        assert_eq!(status, 200);
+        let saved = ed.scene().clone();
+        assert_eq!(
+            saved.objects[0]
+                .material
+                .texture
+                .as_ref()
+                .unwrap()
+                .metallic_roughness_map
+                .as_deref(),
+            Some("Packed")
+        );
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[
+                {"op":"material", "id":"Mapped", "color":"#ff0000"},
+                {"op":"material", "id":"Mapped", "texture":{"pattern":"none", "metallic_roughness_map":"Missing"}}
+            ]}),
+        );
+        assert_eq!(status, 422);
+        assert_eq!(ed.scene(), &saved);
+        let (status, _) = call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"delete_image", "name":"Packed"}]}),
+        );
+        assert_eq!(status, 422);
+        assert_eq!(ed.scene(), &saved);
+        assert_eq!(call(&mut ed, "POST", "/undo", Value::Null).0, 200);
+        assert!(ed.scene().objects[0].material.texture.is_none());
+        assert_eq!(call(&mut ed, "POST", "/redo", Value::Null).0, 200);
+        let mut restored = ed.scene().clone();
+        assert_eq!(restored.revision, saved.revision + 2);
+        restored.revision = saved.revision;
+        assert_eq!(restored, saved);
+        let recipe = serde_json::from_slice(&serde_json::to_vec(&ed.project()).unwrap()).unwrap();
+        let mut reopened = Editor::new();
+        reopened.load_project(recipe).unwrap();
+        assert_eq!(reopened.scene().objects, saved.objects);
+        assert_eq!(reopened.scene().images, saved.images);
     }
 
     fn call(ed: &mut Editor, method: &str, path: &str, body: Value) -> (u16, Value) {

@@ -1877,4 +1877,23 @@ export const mergeVertices = {
   ]
 }
 
-export const SCENARIOS = { mergeVertices, propertyRebase, nativeRestart, solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const packedMaterials = {
+  title:'One image, two surface properties',width:960,gizmo:false,
+  setup:[
+    {op:'add',name:'Surface',primitive:{kind:'sphere',radius:1,segments:64,rings:32},translation:[0,1,0],color:'#bd8847',roughness:0.7,metalness:1},
+    {op:'add_image',name:'Metal and roughness',data:'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAALklEQVR4nGP4r/aJNHRGkiTEMGrBqAWjFoxaMGrBqAWjFoxaMGrBqAWjFgwVCwC23/ZqWUxILQAAAABJRU5ErkJggg=='}
+  ],
+  camera:{azimuth:25,elevation:12,distance:4.5,target:[0,1,0]},
+  steps:[
+    {caption:'Give one surface different material regions',hint:'packed image · G roughness · B metalness'},
+    {pick:'Surface',after:400},
+    {choose:'#p-metallic-roughness-map',value:'Metal and roughness',after:1800},
+    {caption:'One image controls shine and metal',hint:'linear channels × material factors'},
+    {camera:{azimuth:95,elevation:15},ms:1800},
+    {caption:'The same command path keeps edits undoable',hint:'UI · agents · project history'},
+    {click:'[data-action=undo]',after:1200},{click:'[data-action=redo]',after:1500},
+    {cursor:false},{wait:500}
+  ]
+}
+
+export const SCENARIOS = { packedMaterials, mergeVertices, propertyRebase, nativeRestart, solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

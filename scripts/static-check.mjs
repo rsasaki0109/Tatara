@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkPackedMaterials } from './packed-material-check.mjs'
 import { checkMerge } from './merge-check.mjs'
 import { checkProperties } from './property-check.mjs'
 import { checkSolidify } from './solidify-check.mjs'
@@ -314,6 +315,7 @@ try {
   await checkSolidify(page,check)
   await checkProperties(page,check)
   await checkMerge(page,check)
+  await checkPackedMaterials(page,check)
   await checkRecovery(browser,base,check)
   await checkCoreCache(browser,path.join(root,'web/dist-static/tatara.wasm'),check)
   check(apiHits === 0, `no request reached a server API (${apiHits})`)

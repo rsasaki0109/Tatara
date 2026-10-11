@@ -67,6 +67,10 @@ pub struct Texture {
     /// A scene image used as a tangent-space normal map (overrides relief).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub normal_map: Option<String>,
+    /// Packed linear glTF data: green is roughness, blue is metalness.
+    /// The samples multiply the material's scalar factors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metallic_roughness_map: Option<String>,
     /// For pattern `nodes`: the node graph.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<Graph>,
@@ -96,6 +100,7 @@ impl Texture {
             image: None,
             relief: 0.0,
             normal_map: None,
+            metallic_roughness_map: None,
             graph: None,
             fit: false,
         }
@@ -126,10 +131,21 @@ impl Texture {
                 "pattern \"nodes\" needs a `graph` (and only it takes one)",
             ));
         }
+        if self.graph.is_some() && self.metallic_roughness_map.is_some() {
+            return Err(EngineError::new(
+                "node graphs provide their own roughness and metalness; remove the packed image map",
+            ));
+        }
         if let Some(g) = &self.graph {
             g.validate()?;
         }
         Ok(())
+    }
+
+    pub fn has_surface(&self) -> bool {
+        self.pattern != Pattern::None
+            || self.normal_map.is_some()
+            || self.metallic_roughness_map.is_some()
     }
 
     /// Scene images this texture refers to.
@@ -137,6 +153,7 @@ impl Texture {
         self.image
             .iter()
             .chain(&self.normal_map)
+            .chain(&self.metallic_roughness_map)
             .map(String::as_str)
             .chain(self.graph.iter().flat_map(Graph::images))
     }
@@ -149,6 +166,7 @@ pub struct Look<'a> {
     pub texture: &'a Texture,
     pub image: Option<&'a Pixels>,
     pub normal_map: Option<&'a Pixels>,
+    pub metallic_roughness_map: Option<&'a Pixels>,
     pub baked: Option<&'a Baked>,
 }
 
@@ -160,6 +178,7 @@ impl<'a> Look<'a> {
             texture,
             image: None,
             normal_map: None,
+            metallic_roughness_map: None,
             baked: None,
         }
     }
@@ -176,8 +195,12 @@ impl<'a> Look<'a> {
         }
     }
 
-    /// Roughness and metalness at (u, v), where a node graph drives them.
+    /// Raw linear packed image multipliers, or absolute node-graph values.
     pub fn roughness_metalness(&self, u: f64, v: f64) -> Option<(f64, f64)> {
+        if let Some(image) = self.metallic_roughness_map {
+            let c = image.sample(u, v);
+            return Some((c[1].clamp(0.0, 1.0), c[2].clamp(0.0, 1.0)));
+        }
         let orm = self.baked?.orm.as_ref()?;
         let c = orm.sample(u, v);
         Some((c[1], c[2]))
@@ -244,7 +267,9 @@ impl<'a> Look<'a> {
         n: DVec3,
         repeat: f64,
     ) -> Option<(f64, f64)> {
-        self.baked?.orm.as_ref()?;
+        if self.metallic_roughness_map.is_none() {
+            self.baked?.orm.as_ref()?;
+        }
         let (mut r, mut m) = (0.0, 0.0);
         for plane in triplanar(p, n) {
             if plane.weight > 0.0 {
@@ -563,6 +588,35 @@ fn bake(size: u32, at: impl Fn(f64, f64) -> [f64; 3]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_material_channels_are_linear_repeatable_and_preserve_albedo() {
+        let mut texture = Texture::new(Pattern::None, "#ffffff", 1.0);
+        texture.metallic_roughness_map = Some("Packed".into());
+        assert!(texture.validate().is_ok());
+        assert!(texture.has_surface());
+        assert_eq!(texture.images().collect::<Vec<_>>(), ["Packed"]);
+        let pixels = Pixels {
+            width: 1,
+            height: 1,
+            rgb: vec![[0.9, 0.25, 0.75]],
+        };
+        let mut look = Look::plain("#804020", &texture);
+        assert_eq!(look.roughness_metalness(0.2, 0.4), None);
+        let albedo = look.color(0.2, 0.4);
+        look.metallic_roughness_map = Some(&pixels);
+        assert_eq!(look.roughness_metalness(0.2, 0.4), Some((0.25, 0.75)));
+        assert_eq!(look.roughness_metalness(-2.8, 5.4), Some((0.25, 0.75)));
+        assert_eq!(look.color(0.2, 0.4), albedo);
+        let blended = look
+            .triplanar_roughness_metalness(DVec3::new(2.3, -1.2, 0.7), DVec3::ONE.normalize(), 2.0)
+            .unwrap();
+        assert!((blended.0 - 0.25).abs() < 1e-12);
+        assert!((blended.1 - 0.75).abs() < 1e-12);
+        let restored: Texture =
+            serde_json::from_value(serde_json::to_value(&texture).unwrap()).unwrap();
+        assert_eq!(restored, texture);
+    }
 
     #[test]
     fn patterns_tile_seamlessly_and_stay_in_range() {
