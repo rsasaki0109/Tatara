@@ -44,6 +44,13 @@ pub fn tools() -> Value {
         obj.remove("$schema");
         obj.remove("title");
     }
+    let mut project_schema =
+        serde_json::to_value(schemars::schema_for!(crate::project::LoadRequest))
+            .expect("schema serializes");
+    if let Some(obj) = project_schema.as_object_mut() {
+        obj.remove("$schema");
+        obj.remove("title");
+    }
     let presence_schema =
         serde_json::to_value(schemars::schema_for!(crate::collaboration::Presence))
             .expect("schema serializes");
@@ -51,6 +58,8 @@ pub fn tools() -> Value {
         { "name": "get_presence", "description": "Read participants in this local shared session: their selections, cursors, camera and advisory editing locks. Presence expires after 30 seconds without a heartbeat.", "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false } },
         { "name": "update_presence", "description": "Join or heartbeat a shared session with actor {id,name}, optional selection, cursor (0..1), camera {eye,target,fov, optional up/aspect/ortho_height} and editing object IDs. Heartbeat every 5-10 seconds; editing is advisory, not an exclusive lock. Pass the same actor to apply_commands to attribute edits, and expected_revision to prevent lost updates.", "inputSchema": presence_schema },
         { "name": "leave_presence", "description": "Leave the session and release your advisory editing locks.", "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"], "additionalProperties": false } },
+        { "name": "get_project", "description": "Read a versioned native project containing the folded base scene and editable command recipe, including authors, images and animation controls. Save this JSON to keep parametric history across sessions. It does not contain the Undo stack or pending proposals.", "inputSchema": {"type":"object","properties":{},"additionalProperties":false} },
+        { "name": "load_project", "description": "Validate and replay a native project, then replace the live scene and editable recipe as one Undo step. Pass expected_revision to refuse replacing a changed shared scene. Invalid versions, scenes or steps leave the editor unchanged.", "inputSchema": project_schema },
         {
             "name": "get_scene",
             "description": "Read the shared Tatara scene: object IDs, names, transforms, materials, world bounds, counts and revision. Set include_mesh to read the native scene, including vertices, polygon indices and authored animation keys with Bezier controls. Otherwise frame reports sampled poses.",
@@ -295,6 +304,8 @@ async fn call_tool(http: &reqwest::Client, base: &str, name: &str, args: Value) 
         return file_tool(http, base, name, &args).await;
     }
     let request = match name {
+        "get_project" => http.get(format!("{base}/api/project")),
+        "load_project" => http.put(format!("{base}/api/project")).json(&args),
         "get_presence" => http.get(format!("{base}/api/presence")),
         "update_presence" => http.post(format!("{base}/api/presence")).json(&args),
         "leave_presence" => http.delete(format!("{base}/api/presence")).json(&args),

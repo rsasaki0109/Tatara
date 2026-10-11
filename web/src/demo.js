@@ -130,6 +130,12 @@ export class DemoRunner {
       return this.sleep(s.after ?? 500)
     }
     if (s.slide) return this.slide(s)
+    if (s.projectRemember) {
+      this.savedProject = await this.clock.track(fetch('/api/project').then(r=>r.json()))
+      this.savedProjectObjects = await this.clock.track(fetch('/api/scene').then(r=>r.json()).then(s=>s.objects.map(o=>[o.id,o.name])))
+      return s.after ? this.sleep(s.after) : undefined
+    }
+    if (s.projectFileOpen) return this.openProjectFile(s)
     if (s.curveHandleDrag) return this.curveHandleDrag(s)
     if (s.curveDrag) return this.curveDrag(s)
     if (s.scrubNumber) return this.dragNumber(s)
@@ -497,6 +503,20 @@ export class DemoRunner {
     for (let i = 0; i < 4000 && preview.samples < s.samples; i++) await this.sleep(66)
     if (preview.samples < s.samples) throw new Error(`demo: the render stopped at ${preview.samples} samples`)
     if (s.after) await this.sleep(s.after)
+  }
+
+  /** Reopen the same project payload written by Save, through the real file input. */
+  async openProjectFile(s) {
+    if (!this.savedProject) throw new Error('demo: no saved project')
+    const input=document.querySelector('#open-input'),files=new DataTransfer()
+    files.items.add(new File([JSON.stringify(this.savedProject)],'scene.tatara.json',{type:'application/json'}))
+    input.files=files.files;input.dispatchEvent(new Event('change',{bubbles:true}))
+    for(let i=0;i<200;i++){
+      const scene=await this.clock.track(fetch('/api/scene').then(r=>r.json()))
+      if(JSON.stringify(scene.objects.map(o=>[o.id,o.name]))===JSON.stringify(this.savedProjectObjects)&&document.querySelector('#status-rev')?.textContent===`Revision ${scene.revision}`){await this.idle();if(s.after)await this.sleep(s.after);return}
+      await this.sleep(50)
+    }
+    throw new Error('demo: saved project did not reopen')
   }
 
   /** Hand a file input a painted PNG, as if the user had picked it. */

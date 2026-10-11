@@ -28,3 +28,5 @@ pub mod server;
 pub mod texture;
 pub mod uv;
 pub mod world;
+
+pub mod project;

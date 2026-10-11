@@ -833,6 +833,16 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
     let result: Result<Response, Response> = (|| match (method, path) {
         ("GET", "/state") => Ok(Response::json(200, state(ed, ai))),
         ("GET", "/scene") => Ok(Response::json(200, json!(ed.scene()))),
+        ("GET", "/project") => Ok(Response::json(200, json!(ed.project()))),
+        ("PUT", "/project") => {
+            let request: crate::project::LoadRequest = parse(body)?;
+            ed.ensure_revision(request.expected_revision)?;
+            let revision = ed.load_project(request.project)?;
+            Ok(
+                Response::json(200, json!({"revision": revision, "history": history(ed)}))
+                    .changed(revision),
+            )
+        }
         ("GET" | "POST", "/frame") => {
             let f = query_param(query, "frame")
                 .ok_or_else(|| Response::error(400, "frame is required"))?;
@@ -1345,6 +1355,93 @@ mod tests {
         let mut loaded = serde_json::to_value(ed.scene()).unwrap();
         loaded["objects"][0]["light"]["intensity"] = json!(-1);
         assert_eq!(call(&mut ed, "PUT", "/scene", loaded).0, 422);
+    }
+
+    #[test]
+    fn project_files_keep_revisable_steps_and_guard_atomic_replacement() {
+        let mut ed = Editor::new();
+        for commands in [
+            json!([{"op":"add","name":"Box","primitive":{"kind":"cube"}}]),
+            json!([{"op":"extrude","id":"Box","face":4,"distance":0.5}]),
+        ] {
+            assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":commands,"source":"UI","actor":{"id":"artist","name":"Artist"}})).0,200);
+        }
+        let (status, project) = call(&mut ed, "GET", "/project", Value::Null);
+        assert_eq!(status, 200);
+        assert_eq!(project["format"], "tatara-project");
+        assert_eq!(project["steps"][0]["actor"]["name"], "Artist");
+        let saved_objects = ed.scene().objects.clone();
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[{"op":"clear"}]})
+            )
+            .0,
+            200
+        );
+        let before = ed.scene().clone();
+        let before_recipe = ed.project();
+        let (_, offered) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"A new object","commands":[{"op":"add","name":"Offer","primitive":{"kind":"cube"}}]}),
+        );
+        assert!(offered["ids"].is_array());
+        let proposal_version = ed.proposals_version();
+        assert_eq!(
+            call(
+                &mut ed,
+                "PUT",
+                "/project",
+                json!({"project":project,"expected_revision":before.revision-1})
+            )
+            .0,
+            409
+        );
+        let mut invalid = project.clone();
+        invalid["version"] = json!(99);
+        assert_eq!(
+            call(&mut ed, "PUT", "/project", json!({"project":invalid})).0,
+            422
+        );
+        let mut exhausted = project.clone();
+        exhausted["base"]["next_id"] = json!(u64::MAX);
+        let (status, failure) = call(&mut ed, "PUT", "/project", json!({"project":exhausted}));
+        assert_eq!(status, 422);
+        assert!(failure["error"].as_str().unwrap().contains("exhausted"));
+        assert_eq!(*ed.scene(), before);
+        assert_eq!(ed.project(), before_recipe);
+        assert_eq!(ed.proposals_version(), proposal_version);
+        assert_eq!(
+            call(
+                &mut ed,
+                "PUT",
+                "/project",
+                json!({"project":project,"expected_revision":before.revision})
+            )
+            .0,
+            200
+        );
+        assert_eq!(ed.scene().objects, saved_objects);
+        assert_eq!(call(&mut ed, "POST", "/undo", json!({})).0, 200);
+        assert_eq!(ed.scene().objects, before.objects);
+        assert_eq!(ed.project(), before_recipe);
+        assert_eq!(call(&mut ed, "POST", "/redo", json!({})).0, 200);
+        assert_eq!(ed.scene().objects, saved_objects);
+        assert_eq!(call(&mut ed,"POST","/history/revise",json!({"step":1,"commands":[{"op":"add","name":"Box","primitive":{"kind":"cube","size":2}}]})).0,200);
+        assert_ne!(
+            ed.scene().objects[0].mesh.vertices,
+            saved_objects[0].mesh.vertices
+        );
+        let (_, legacy) = call(&mut ed, "GET", "/scene", Value::Null);
+        assert_eq!(call(&mut ed, "PUT", "/scene", legacy).0, 200);
+        assert!(
+            ed.history().0.is_empty(),
+            "legacy scene files retain their existing load semantics"
+        );
     }
 
     #[test]
