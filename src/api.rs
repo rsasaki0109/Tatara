@@ -1983,6 +1983,59 @@ mod tests {
     }
 
     #[test]
+    fn same_object_property_rebase_preserves_authors_and_the_first_edit_on_undo() {
+        let mut editor = Editor::new();
+        assert_eq!(
+            call(
+                &mut editor,
+                "POST",
+                "/commands",
+                json!({"commands":[{"op":"add","name":"Box","primitive":{"kind":"cube"}}]})
+            )
+            .0,
+            200
+        );
+        assert_eq!(call(&mut editor, "POST", "/commands", json!({"expected_revision":1,"actor":{"id":"alice","name":"Alice"},"commands":[{"op":"move","id":"Box","offset":[2,0,0]}]})).0, 200);
+        let (status, result) = call(
+            &mut editor,
+            "POST",
+            "/commands",
+            json!({"expected_revision":1,"rebase":true,"actor":{"id":"bob","name":"Bob"},"commands":[{"op":"material","id":"Box","color":"#ff8800"}]}),
+        );
+        assert_eq!(status, 200, "{result}");
+        assert_eq!(result["rebased_from"], 1);
+        assert_eq!(
+            editor.scene().objects[0].transform.translation,
+            [2., 0., 0.]
+        );
+        assert_eq!(editor.scene().objects[0].material.color, "#ff8800");
+        let (_, history) = call(&mut editor, "GET", "/history", Value::Null);
+        assert_eq!(history["steps"][1]["actor"]["name"], "Alice");
+        assert_eq!(history["steps"][2]["actor"]["name"], "Bob");
+        assert_eq!(history["steps"][2]["rebased_from"], 1);
+        let before = editor.scene().clone();
+        for rebase in [false, true] {
+            let (status, response) = call(
+                &mut editor,
+                "POST",
+                "/commands",
+                json!({"expected_revision":2,"rebase":rebase,"commands":[{"op":"material","id":"Box","color":"#ffffff"}]}),
+            );
+            assert_eq!(status, 409);
+            assert_eq!(response["detail"]["stale"], true);
+            assert_eq!(*editor.scene(), before);
+        }
+        assert_eq!(call(&mut editor, "POST", "/undo", Value::Null).0, 200);
+        assert_eq!(
+            editor.scene().objects[0].transform.translation,
+            [2., 0., 0.]
+        );
+        assert_ne!(editor.scene().objects[0].material.color, "#ff8800");
+        assert_eq!(call(&mut editor, "POST", "/redo", Value::Null).0, 200);
+        assert_eq!(editor.scene().objects[0].material.color, "#ff8800");
+    }
+
+    #[test]
     fn rebased_commands_expose_context_and_history_but_keep_strict_conflicts() {
         let mut ed = Editor::new();
         assert_eq!(

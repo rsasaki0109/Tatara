@@ -1801,6 +1801,24 @@ export const browserRecovery = {
   ]
 }
 
+export const propertyRebase = {
+  title:'Shape and shade together',gizmo:false,
+  camera:{azimuth:20,elevation:20,distance:6,target:[0,.7,0]},
+  setup:[{op:'add',name:'Shared sculpture',primitive:{kind:'cube'},translation:[0,.5,0],color:'#769c8b'}],
+  steps:[
+    {caption:'Two people start with the same object',hint:'one shared scene · one typed command path'},
+    {rememberRevision:true},{wait:700},
+    {submitBatch:{actor:{id:'alice',name:'Alice'},source:'UI',commands:[{op:'transform',id:'Shared sculpture',translation:[0,1.2,0]}]},contextRevision:true,after:1000},
+    {caption:'Alice lifts it; Bob shades an older context',hint:'independent properties on the same object'},
+    {submitBatch:{actor:{id:'bob',name:'Bob'},source:'UI',rebase:true,commands:[{op:'material',id:'Shared sculpture',preset:'gold'}]},contextRevision:true,expectRebase:true,after:1200},
+    {tab:'history'},{wait:800},
+    {caption:'Both changes survive, with their authors',hint:'same-property conflicts still require review'},
+    {wait:1000},{click:'[data-action=undo]',after:1100},
+    {caption:'Undo Bob, keep Alice’s movement',hint:'the rebased batch is one Undo'},
+    {cursor:false},{wait:1000}
+  ]
+}
+
 export const nativeRestart = {
   title:'Continue after a server restart',nativeRestart:true,gizmo:false,
   camera:{azimuth:28,elevation:20,distance:7,target:[0,.5,0]},
@@ -1840,4 +1858,4 @@ export const solidifyShell = {
   ]
 }
 
-export const SCENARIOS = { nativeRestart, solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const SCENARIOS = { propertyRebase, nativeRestart, solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkProperties, checkPeerProperties } from './property-check.mjs'
 import { checkDurable } from './durable-check.mjs'
 import { checkSolidify } from './solidify-check.mjs'
 // Browser smoke test against an isolated editor: real clicks and keys for
@@ -808,7 +809,8 @@ try {
     const responses = await Promise.all(['First', 'Second'].map((name) => fetch('/api/commands', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({expected_revision: s.revision, rebase: true, commands: [{op: 'rename', id: s.objects[0].id, name}]})})))
     return Promise.all(responses.map(async (r) => ({status: r.status, data: await r.json()})))
   })
-  check(rebasedConflict.map((r) => r.status).sort().join(',') === '200,409' && rebasedConflict.find((r) => r.status === 409).data.error.includes('cannot rebase'), 'same-object concurrent edits are refused even when rebase is enabled')
+  check(rebasedConflict.map((r) => r.status).sort().join(',') === '200,409' && rebasedConflict.find((r) => r.status === 409).data.error.includes('cannot rebase'), 'same-property rename conflicts are refused even when rebase is enabled')
+  await checkPeerProperties(alice,bob,until,check)
   // A new server starts at revision/presence version zero. Open tabs must
   // recover from that, not confuse it with an old response from this session.
   const exited = new Promise((resolve) => server.once('exit', resolve))
@@ -1098,6 +1100,7 @@ try {
   await checkBezier(curves,check)
   await checkProjects(curves,check)
   await checkSolidify(curves,check)
+  await checkProperties(curves,check)
   await curves.close()
 
   // The browser-only backend shares the same UI under ?wasm, with local state.
