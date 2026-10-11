@@ -17,6 +17,7 @@ pub mod layout;
 pub mod light;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
+pub mod merge;
 pub mod modifiers;
 pub mod nodes;
 pub mod pathtrace;

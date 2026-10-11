@@ -755,6 +755,13 @@ pub enum Command {
         vertices: Vec<u32>,
         offset: Vec3,
     },
+    /// Collapse a connected selection, preserving surviving corner UVs.
+    MergeVertices {
+        id: ObjRef,
+        vertices: Vec<u32>,
+        #[serde(default)]
+        at: crate::merge::MergeAt,
+    },
     /// Chamfer edges given as `[a, b]` vertex pairs, or every edge when
     /// `edges` is omitted. Each touched edge must be longer than `2 * width`.
     Bevel {
@@ -2326,6 +2333,10 @@ fn apply_command(
         } => {
             let i = resolve(scene, id)?;
             edit::move_vertices(&mut scene.objects[i].mesh, vertices, *offset)?;
+        }
+        Command::MergeVertices { id, vertices, at } => {
+            let i = resolve(scene, id)?;
+            crate::merge::vertices(&mut scene.objects[i].mesh, vertices, *at)?;
         }
         Command::Bevel { id, edges, width } => {
             let i = resolve(scene, id)?;

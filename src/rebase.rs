@@ -22,6 +22,7 @@ fn target(command: &Command) -> Result<&ObjRef, EngineError> {
         | Command::Subdivide { id, .. }
         | Command::Inset { id, .. }
         | Command::MoveVertices { id, .. }
+        | Command::MergeVertices { id, .. }
         | Command::Bevel { id, .. }
         | Command::LoopCut { id, .. }
         | Command::Sculpt { id, .. }
