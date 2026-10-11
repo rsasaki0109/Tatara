@@ -11,6 +11,7 @@ Usage:
 Environment:
   TATARA_PORT         Editor port (default 3000)
   TATARA_WEB_DIR      Built web assets (default web/dist)
+  TATARA_PROJECT      Durable native workspace database (optional)
   TATARA_URL          Editor URL used by --mcp (default http://127.0.0.1:3000)
   TATARA_AI_BASE_URL  OpenAI-compatible endpoint for in-editor chat (optional)
   TATARA_AI_MODEL     Model name for in-editor chat

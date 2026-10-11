@@ -45,8 +45,10 @@ export class DemoRunner {
     this.running = true
     this.captionN = 0
     try {
-      if (app.capture) await app.api.reset()
-      else if (app.scene.objects.length) await app.api.commands([{ op: 'clear' }])
+      if (!scenario.preserveScene) {
+        if (app.capture) await app.api.reset()
+        else if (app.scene.objects.length) await app.api.commands([{ op: 'clear' }])
+      }
       app.select(null)
       app.activity.length = 0
       app.actions.wireframe(false)

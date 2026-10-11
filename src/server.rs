@@ -51,6 +51,7 @@ impl AiConfig {
 pub struct AppState {
     presence: Mutex<crate::collaboration::Room>,
     editor: Mutex<Editor>,
+    storage: Option<Arc<crate::checkpoint::Checkpoint>>,
     /// Live updates: ("revision", scene revision) or ("proposals", their version).
     events: broadcast::Sender<(&'static str, u64)>,
     ai: Option<AiConfig>,
@@ -60,10 +61,30 @@ pub struct AppState {
 pub type Shared = Arc<AppState>;
 
 pub fn state(ai: Option<AiConfig>) -> Shared {
+    assemble(ai, Editor::new(), None)
+}
+
+pub fn persistent_state(ai: Option<AiConfig>, path: &std::path::Path) -> anyhow::Result<Shared> {
+    use crate::engine::CommitSink;
+    let (checkpoint, archived) = crate::checkpoint::Checkpoint::open(path)?;
+    let (project, revision) = archived.unwrap_or_else(|| (Editor::new().project(), 0));
+    let mut editor = Editor::from_checkpoint(project, revision)?;
+    checkpoint.persist(&editor.project(), editor.scene().revision)?;
+    let checkpoint = Arc::new(checkpoint);
+    editor.set_commit_sink(checkpoint.clone());
+    Ok(assemble(ai, editor, Some(checkpoint)))
+}
+
+fn assemble(
+    ai: Option<AiConfig>,
+    editor: Editor,
+    storage: Option<Arc<crate::checkpoint::Checkpoint>>,
+) -> Shared {
     let (events, _) = broadcast::channel(64);
     Arc::new(AppState {
         presence: Mutex::new(crate::collaboration::Room::default()),
-        editor: Mutex::new(Editor::new()),
+        editor: Mutex::new(editor),
+        storage,
         events,
         ai,
         http: reqwest::Client::builder()
@@ -82,6 +103,7 @@ pub fn router(state: Shared, web_dir: PathBuf) -> Router {
             get(get_presence).post(post_presence).delete(leave_presence),
         )
         .route("/ai", get(get_ai))
+        .route("/storage", get(get_storage))
         .route("/chat", post(post_chat))
         .fallback(core)
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
@@ -98,12 +120,19 @@ pub async fn serve(addr: SocketAddr, web_dir: PathBuf, ai: Option<AiConfig>) -> 
             web_dir.display()
         );
     }
+    let shared = match std::env::var("TATARA_PROJECT")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        Some(path) => persistent_state(ai.clone(), std::path::Path::new(&path))?,
+        None => state(ai.clone()),
+    };
     let listener = tokio::net::TcpListener::bind(addr).await?;
     eprintln!("Tatara is running at http://{}", listener.local_addr()?);
     if let Some(ai) = &ai {
         eprintln!("In-editor chat: {} via {}", ai.model, ai.base_url);
     }
-    axum::serve(listener, router(state(ai), web_dir)).await?;
+    axum::serve(listener, router(shared, web_dir)).await?;
     Ok(())
 }
 
@@ -119,7 +148,9 @@ impl IntoResponse for ApiError {
 
 impl From<EngineError> for ApiError {
     fn from(e: EngineError) -> Self {
-        let status = if e.stale {
+        let status = if e.storage {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else if e.stale {
             StatusCode::CONFLICT
         } else {
             StatusCode::UNPROCESSABLE_ENTITY
@@ -182,12 +213,24 @@ async fn core(
         };
         return reply(r);
     }
-    let (r, before, after) = {
-        let mut ed = s.editor.lock().await;
+    let path = path.to_owned();
+    let shared = s.clone();
+    let (r, before, after, storage_changed) = match tokio::task::spawn_blocking(move || {
+        let mut ed = shared.editor.blocking_lock();
         let before = ed.proposals_version();
-        let r = crate::api::handle(&mut ed, method.as_str(), path, &body, s.ai.is_some());
-        (r, before, ed.proposals_version())
+        let storage_before = shared.storage.as_ref().map(|c| c.status());
+        let r = crate::api::handle(&mut ed, method.as_str(), &path, &body, shared.ai.is_some());
+        let storage_changed = storage_before != shared.storage.as_ref().map(|c| c.status());
+        (r, before, ed.proposals_version(), storage_changed)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => return reply(crate::api::Response::error(500, e.to_string())),
     };
+    if storage_changed {
+        let _ = s.events.send(("storage", 0));
+    }
     if let Some(revision) = r.changed {
         changed(&s, revision);
     }
@@ -286,6 +329,16 @@ async fn leave_presence(State(s): State<Shared>, body: axum::body::Bytes) -> Api
     Ok(Json(presence_snapshot(&room)))
 }
 
+async fn get_storage(State(s): State<Shared>) -> Json<Value> {
+    Json(
+        s.storage
+            .as_ref()
+            .map_or(json!({"configured":false}), |checkpoint| {
+                json!(checkpoint.status())
+            }),
+    )
+}
+
 async fn get_ai(State(s): State<Shared>) -> Json<Value> {
     Json(json!({ "enabled": s.ai.is_some(), "model": s.ai.as_ref().map(|a| a.model.clone()) }))
 }
@@ -325,17 +378,27 @@ async fn post_chat(State(s): State<Shared>, body: axum::body::Bytes) -> ApiResul
         )
     })?;
     batch.expected_revision = Some(revision);
-    let mut ed = s.editor.lock().await;
-    let before = ed.proposals_version();
-    let before_revision = ed.scene().revision;
-    let result = crate::api::complete_chat(&mut ed, prompt, &batch, req.mode)?;
-    if ed.scene().revision != before_revision {
-        changed(&s, ed.scene().revision);
-    }
-    if ed.proposals_version() != before {
-        proposals_changed(&s, ed.proposals_version());
-    }
-    Ok(Json(result))
+    let prompt = prompt.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let mut ed = s.editor.blocking_lock();
+        let before = ed.proposals_version();
+        let before_revision = ed.scene().revision;
+        let storage_before = s.storage.as_ref().map(|c| c.status());
+        let result = crate::api::complete_chat(&mut ed, &prompt, &batch, req.mode);
+        if storage_before != s.storage.as_ref().map(|c| c.status()) {
+            let _ = s.events.send(("storage", 0));
+        }
+        let result = result?;
+        if ed.scene().revision != before_revision {
+            changed(&s, ed.scene().revision);
+        }
+        if ed.proposals_version() != before {
+            proposals_changed(&s, ed.proposals_version());
+        }
+        Ok(Json(result))
+    })
+    .await
+    .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
 }
 
 pub fn system_prompt(context: &Value) -> String {

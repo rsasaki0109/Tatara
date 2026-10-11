@@ -1327,3 +1327,131 @@ async fn distance_http_rejects_conflicts_and_inspects_imported_residuals() {
             .any(|i| i["kind"] == "constraint_violation" && i["actual"] == 9.0)
     );
 }
+
+#[tokio::test]
+async fn durable_workspace_recovers_over_http_and_rejects_previous_revision() {
+    let folder =
+        std::env::temp_dir().join(format!("tatara-http-checkpoint-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("workspace.db");
+    let client = reqwest::Client::new();
+    async fn start(path: &std::path::Path) -> (String, tokio::task::JoinHandle<()>) {
+        let shared = server::persistent_state(None, path).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, server::router(shared, "web/dist".into()))
+                .await
+                .unwrap();
+        });
+        (url, task)
+    }
+    let (url, task) = start(&path).await;
+    let mut bridge = tokio::process::Command::new(env!("CARGO_BIN_EXE_tatara"))
+        .arg("--mcp")
+        .env("TATARA_URL", &url)
+        .kill_on_drop(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = bridge.stdin.take().unwrap();
+    let mut output = BufReader::new(bridge.stdout.take().unwrap()).lines();
+    let mut call = async |message: Value| -> Value {
+        input
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .unwrap();
+        let line = tokio::time::timeout(std::time::Duration::from_secs(10), output.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    let initialized = call(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"durable-test","version":"1"}}})).await;
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "tatara");
+    let tools = call(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).await;
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 18);
+    let applied = call(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"apply_commands","arguments":{"expected_revision":1,"actor":{"id":"saved-author","name":"Saved Artist"},"commands":[{"op":"add","name":"Persistent box","primitive":{"kind":"cube"}}]}}})).await;
+    assert_ne!(applied["result"]["isError"], true);
+    bridge.kill().await.unwrap();
+    let saved: Value = client
+        .get(format!("{url}/api/project"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let health: Value = client
+        .get(format!("{url}/api/storage"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        health,
+        json!({"configured":true,"available":true,"saved_revision":2})
+    );
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let (url, task) = start(&path).await;
+    let restored: Value = client
+        .get(format!("{url}/api/project"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(restored, saved);
+    assert_eq!(restored["steps"][0]["actor"]["name"], "Saved Artist");
+    let scene: Value = client
+        .get(format!("{url}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(scene["revision"], 3);
+    assert_eq!(scene["objects"][0]["name"], "Persistent box");
+    let stale = client
+        .post(format!("{url}/api/commands"))
+        .json(&json!({"expected_revision":2,"commands":[{"op":"clear"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), 409);
+    let edit = client
+        .post(format!("{url}/api/commands"))
+        .json(&json!({"expected_revision":3,"commands":[{"op":"clear"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert!(edit.status().is_success());
+    assert!(
+        client
+            .post(format!("{url}/api/undo"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    let after: Value = client
+        .get(format!("{url}/api/project"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after, saved);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    std::fs::remove_dir_all(folder).unwrap();
+}

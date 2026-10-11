@@ -373,6 +373,7 @@ async function refresh(animate = true) {
     $('checks-out').querySelector('.checks-summary')?.classList.add('stale')
   }
   syncEdit()
+  if (!browserOnly) refreshStorage()
   recovery?.schedule(app.scene.revision)
   collaboration?.set({ version: collaboration.version, peers: collaboration.peers })
 }
@@ -2039,6 +2040,22 @@ viewport.onFrameError = (message) => {
   toast(message, 'error')
 }
 
+async function refreshStorage() {
+  if (browserOnly) return
+  const badge = $('status-storage')
+  try {
+    const response = await fetch('/api/storage', {cache: 'no-store'})
+    if (!response.ok) throw new Error('Storage status unavailable')
+    const state = await response.json()
+    badge.hidden = !state.configured
+    badge.textContent = state.available ? `Saved · revision ${state.saved_revision}` : 'Saving stopped · save a project copy'
+    badge.title = state.available ? 'Scene and editable history are saved on the server.' : 'Storage failed. Edits are paused. Save a project copy, fix storage, and restart the server.'
+    badge.dataset.available = String(state.available)
+  } catch {
+    if (!badge.hidden) badge.textContent = 'Checking saved workspace…'
+  }
+}
+
 const status = { done: false, error: null, started: false }
 const ready = (async () => {
   if (browserOnly) {
@@ -2050,6 +2067,7 @@ const ready = (async () => {
     }
   }
   await refresh(false)
+  await refreshStorage()
   setFrame(app.scene.animation?.start ?? 1)
   if (app.scene.objects.length) viewport.frameAll(0)
   stepFrame()
@@ -2063,6 +2081,7 @@ const ready = (async () => {
   if (!capture && !browserOnly) {
     const events = new EventSource('/api/events')
     events.addEventListener('open', () => {
+      refreshStorage()
       connectionEpoch++
       allowRevisionReset = true
       remoteRevision = Infinity
@@ -2071,6 +2090,7 @@ const ready = (async () => {
       collaboration.send(true)
       collaboration.load()
     })
+    events.addEventListener('storage', () => refreshStorage())
     events.addEventListener('presence', () => collaboration.load())
     events.addEventListener('resync', () => { remoteRevision = Infinity; catchUp().catch(() => {}); collaboration.load() })
     events.addEventListener('proposals', (e) => {
@@ -2102,11 +2122,11 @@ window.__tatara = {
   refresh: (animate = false) => refresh(animate),
   meta: (id) => {
     const s = SCENARIOS[id]
-    return s && { id, title: s.title, width: s.width || 800, external: Boolean(s.external), browserOnly: Boolean(s.browserOnly), restart: Boolean(s.resume) }
+    return s && { id, title: s.title, width: s.width || 800, external: Boolean(s.external), browserOnly: Boolean(s.browserOnly), restart: Boolean(s.resume), nativeRestart: Boolean(s.nativeRestart) }
   },
   play(id, phase = 0) {
     const original = SCENARIOS[id]
-    const s = phase ? {...original, setup:undefined, steps:original?.resume} : original
+    const s = phase ? {...original, preserveScene:Boolean(original.nativeRestart), setup:undefined, steps:original?.resume} : original
     if (!original || !s.steps) throw new Error(`unknown scenario phase ${id}:${phase}`)
     status.started = true
     demo

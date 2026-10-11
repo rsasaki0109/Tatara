@@ -12,6 +12,8 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
+import { once } from 'node:events'
 import net from 'node:net'
 import path from 'node:path'
 import readline from 'node:readline'
@@ -65,17 +67,17 @@ function freePort() {
   })
 }
 
-async function startServer(bin, browserOnly = false) {
-  const port = await freePort()
+async function startServer(bin, browserOnly = false, checkpoint = '', fixedPort) {
+  const port = fixedPort ?? await freePort()
   const child = spawn(bin, [], {
     cwd: root,
-    env: { ...process.env, TATARA_PORT: String(port), TATARA_WEB_DIR: path.join(root, browserOnly ? 'web/dist-static' : 'web/dist'), TATARA_AI_BASE_URL: '' },
+    env: { ...process.env, TATARA_PORT: String(port), TATARA_PROJECT: checkpoint, TATARA_WEB_DIR: path.join(root, browserOnly ? 'web/dist-static' : 'web/dist'), TATARA_AI_BASE_URL: '' },
     stdio: ['ignore', 'ignore', 'pipe'],
   })
   const url = `http://127.0.0.1:${port}`
   for (let i = 0; i < 100; i++) {
     try {
-      if ((await fetch(`${url}/api/state`)).ok) return { child, url }
+      if ((await fetch(`${url}/api/state`)).ok) return { child, url, port }
     } catch {}
     await new Promise((r) => setTimeout(r, 100))
   }
@@ -118,7 +120,9 @@ function startMcp(bin, url) {
 }
 
 async function record(browser, bin, id) {
-  const server = await startServer(bin, Boolean(SCENARIOS[id]?.browserOnly))
+  const checkpointFolder = SCENARIOS[id]?.nativeRestart ? fs.mkdtempSync(path.join(os.tmpdir(), 'tatara-record-checkpoint-')) : null
+  const checkpoint = checkpointFolder ? path.join(checkpointFolder, 'workspace.db') : ''
+  let server = await startServer(bin, Boolean(SCENARIOS[id]?.browserOnly), checkpoint)
   let mcp
   const page = await browser.newPage({ viewport: VIEW, deviceScaleFactor: 1 })
   const pageErrors = []
@@ -152,6 +156,20 @@ async function record(browser, bin, id) {
       await page.screenshot({ path: path.join(frames, `${String(++n).padStart(4, '0')}.png`) })
       if (st.done) {
         if (meta.restart && !resumed) {
+          if (meta.nativeRestart) {
+            const saved = await (await fetch(`${server.url}/api/project`)).json()
+            const stopped = once(server.child, 'exit')
+            server.child.kill()
+            await stopped
+            server = await startServer(bin, false, checkpoint, server.port)
+            const restored = await (await fetch(`${server.url}/api/project`)).json()
+            if (JSON.stringify(saved) !== JSON.stringify(restored)) throw new Error('native restart changed the saved recipe')
+            await page.reload()
+            await page.evaluate(() => window.__tatara.ready)
+            await page.evaluate((id) => window.__tatara.play(id, 1), id)
+            resumed = true
+            continue
+          }
           await page.evaluate(() => window.__tatara.recoveryFlush())
           await page.waitForFunction(() => ['saved', 'error'].includes(document.querySelector('.recovery-status')?.dataset.state))
           if (await page.getAttribute('.recovery-status', 'data-state') !== 'saved') throw new Error('local snapshot did not complete before reload')
@@ -184,7 +202,12 @@ async function record(browser, bin, id) {
   } finally {
     await page.close()
     mcp?.child.kill()
-    server.child.kill()
+    if (server.child.exitCode === null) {
+      const exited = once(server.child, 'exit')
+      server.child.kill()
+      await exited
+    }
+    if (checkpointFolder) fs.rmSync(checkpointFolder, {recursive:true,force:true})
   }
 }
 
