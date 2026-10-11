@@ -171,6 +171,10 @@ Create in your browser. Give your agent the same tools. Keep every edit inspecta
     <td><b>Edit the lighting</b> — point and sun lights belong to the scene, with shared command edits, shadow rays and glTF punctual-light interchange.</td>
   </tr>
   <tr>
+    <td colspan="2"><img src="docs/media/solidifyShell.gif" alt="Give a sheet inward thickness, undo and redo the thickness edit, then bake its closed Solidify shell"></td>
+  </tr>
+  <tr><td colspan="2"><b>Give surfaces thickness</b> — editable Solidify shells preserve the outer surface and close open boundaries.</td></tr>
+  <tr>
     <td colspan="2"><img src="docs/media/browserRecovery.gif" alt="A browser-only editor saves a local recipe, reloads to an empty WASM instance, restores the prior session and revises the first step to replay a later extrusion"></td>
   </tr>
   <tr><td colspan="2"><b>Recover the recipe</b> — local snapshots restore editable projects after a real browser reload, with one Undo.</td></tr>
@@ -251,7 +255,7 @@ The Rust process owns the scene and keeps it in memory. Use **Save** to download
 
 - **Workspace:** studio lighting with shadows, orbit and zoom, outliner, properties panel, transform gizmo, polygon wireframe, axis widget and a phone layout.
 - **Geometry (Rust):** cube, plane, UV sphere, quad sphere (even quads for sculpting), cylinder or cone, torus, and hollow **vessels** revolved from a smoothed cross section.
-- **Modeling:** transform, glaze presets and PBR material, rename, duplicate, array, delete, per-face inset and extrusion, and Catmull-Clark subdivision.
+- **Modeling:** transform, glaze presets and PBR material, rename, duplicate, array, delete, per-face inset and extrusion, Catmull-Clark subdivision, and a non-destructive **Solidify** shell with editable inward thickness.
 - **Sculpt mode:** draw, inflate, smooth, flatten and grab brushes with a smooth falloff and X mirror symmetry. Ctrl carves, Shift smooths and `[` `]` resize the brush. The stroke previews live while you drag and is committed as one `sculpt` command (one undo step), so agents sculpt with exactly the same operation. **Dynamic detail** (dynamic topology) splits the edges under the brush that are longer than the detail size, so a coarse ball grows fine faces exactly where you sculpt and stays light everywhere else. **Smooth shading** blends normals across edges, in the viewport, agent renders and glTF export alike.
 - **Booleans:** `boolean` cuts one object out of another (`difference`), merges them (`union`) or keeps their overlap (`intersect`), with a BSP-tree CSG in Rust. The result is welded and its T-junctions repaired, so it stays watertight and renders without cracks. The Properties panel has a Boolean card, and the cutter is consumed unless you keep it.
 - **Edit mode (Tab):** vertex, edge and face selection with Shift+click and select all; move a selection with the gizmo; loop cut; bevel selected edges or every edge; extrude and inset several faces at once.
@@ -397,7 +401,7 @@ curl http://127.0.0.1:3000/api/commands \
 | `set_bone_limits` | `id`, `bone`, optional `limits: {min: [x,y,z], max: [x,y,z]}`; local Euler XYZ radians within -π..π, minimum ≤ maximum; omit/null limits to clear, keys remain authored |
 | `track_target` / `clear_target` | `id`, `bone`, `target` (another object name/id), optional `chain` (1–64), optional `pole` (another object, connected two-bone chain with `chain: 2`) / `id`; one persistent bone-tip target per rig |
 | `set_animation` | `fps`, `start`, `end` |
-| `add_modifier` / `set_modifier` / `remove_modifier` | `id`, `modifier` (`mirror`, `subdivision`, `array`, `twist`, `taper`), `index` |
+| `add_modifier` / `set_modifier` / `remove_modifier` | `id`, `modifier` (`mirror`, `subdivision`, `array`, `twist`, `taper`, `solidify`), `index` |
 | `apply_modifiers` | `id`: bake the stack into the base mesh |
 | `add_mesh` | explicit `vertices` and `faces` (CCW loops), plus the optional fields of `add` |
 | `subdivide` | `id`, `levels` (1–4) |
@@ -459,6 +463,8 @@ cargo run --release
 
 Chat sends your prompt, a scene summary and the command schema to `/chat/completions`. The UI enables **Review AI changes before applying** by default. A validated reply appears in the Proposals tray without changing the scene or undo history: hover to preview, accept it as one undo step, or reject it. Turn review off for immediate application. The HTTP API accepts `mode: "proposal"` or `mode: "apply"`; omitted modes preserve immediate application for existing clients. Both modes require the revision the prompt saw, so invalid or stale replies leave the scene and proposals unchanged. Pending proposals are re-applied when later edits change the scene and show a reason if they conflict. Integration and browser tests use a mock provider; live hosted models have not been tested.
 
+Solidify gives a surface an inward shell without changing the original outer vertices. Add `{"op":"add_modifier","id":"Panel","modifier":{"type":"solidify","thickness":0.05}}` through the UI, chat or MCP `apply_commands`; edit it with `set_modifier`, or bake it with `apply_modifiers`. Thickness is in object-local units (positive, 0.000001–10000). Open boundaries receive wall quads; authored face-corner UVs are retained on the outer surface and reversed on the inner surface, with rectangular wall UVs. Projects retain the editable modifier recipe. Inconsistent winding, degenerate faces, non-manifold edges, face-budget overflow and offsets greater than eight times thickness are rejected atomically. Self-intersections are not repaired.
+
 ## README GIFs
 
 The GIFs come from scripted workflows in [`web/src/scenarios.js`](web/src/scenarios.js). They are rendered with the following pipeline:
@@ -505,7 +511,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Scene images (PNG, JPEG) | Rust: `src/image.rs` (served by `/api/image`) |
 | Shared API router (server and browser) | Rust: `src/api.rs` |
 | Browser-only build | Rust → WebAssembly: `wasm/` (plain C ABI, no bindgen) + `web/src/backend.js` |
-| Modifier stack evaluation | Rust: `src/modifiers.rs` |
+| Modifier stack evaluation | Rust: `src/modifiers.rs`; inward Solidify shells in `src/solidify.rs` |
 | Bevel, loop cut, vertex moves | Rust: `src/edit.rs` |
 | Transform, material, lens and light keyframes and sampling | Rust: `src/anim.rs` (collision-checked `edit_keyframe`, component-wise time-inverted Bezier sampling and `set_key_handle`); `web/src/curves.js` plots and edits authored keys and handles; `Editor::scene_at` samples animation, solves object constraints, then persistent target IK; `web/src/anim.js` samples unconstrained scenes, while `web/src/viewport.js` consumes Rust `/api/frame` packets for constrained playback |
 | Sculpt brushes | Rust: `src/sculpt.rs` (mirrored for the live stroke preview in `web/src/sculpt.js`) |
@@ -543,7 +549,7 @@ node scripts/static-check.mjs    # drives it under a /Tatara/ sub-path with no s
 
 The aim is a creation suite that surpasses Blender for human and agent collaboration, taken one verifiable step at a time:
 
-1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓, ~~sculpting~~ ✓; ~~booleans~~ ✓, ~~dynamic topology~~ ✓; next: edge collapse for dynamic topology, multires sculpting, multi-segment bevel, knife, merge and dissolve, and solidify/bevel/boolean modifiers.
+1. **Modeling depth:** ~~modifier stack~~ ✓, ~~inset~~ ✓, ~~edit mode, bevel, loop cut~~ ✓, ~~sculpting~~ ✓; ~~booleans~~ ✓, ~~dynamic topology~~ ✓; next: edge collapse for dynamic topology, multires sculpting, multi-segment bevel, knife, merge and dissolve, and bevel/boolean modifiers; solidify is available.
 2. **Interchange:** ~~glTF import and export~~ ✓, ~~browser-only Rust/WASM build~~ ✓, ~~textures and UVs in glTF~~ ✓, ~~image and normal textures both ways~~ ✓; next: metallic-roughness, occlusion and emissive maps, and opening `.tatara.json` links directly in the web build.
 3. **Look development:** ~~emission, glass, opacity and material presets~~ ✓, ~~procedural textures~~ ✓, ~~relief, image textures and normal maps~~ ✓, ~~seamless triplanar blending~~ ✓, ~~node-based materials~~ ✓, ~~UV unwrapping and editing~~ ✓, ~~path-traced rendered preview~~ ✓, ~~depth of field and final renders to PNG and animated PNG~~ ✓, ~~HDRI and sky lighting~~ ✓, ~~perspective scene cameras with lens settings, animated transforms and glTF export~~ ✓, ~~lens and light property animation~~ ✓, ~~orthographic scene cameras with shared peer views~~ ✓, ~~editable point/sun/spot lights with animation and glTF punctual-light interchange~~ ✓; next: more nodes (emission, 3D noise, curves), UV pinning and stitching, texture painting, area lights and render passes.
 4. **Motion:** ~~keyframes and timeline~~ ✓, ~~rigging with bones, automatic weights and glTF skins~~ ✓, ~~inverse kinematics~~ ✓, ~~IK constraints that follow a target object~~ ✓, ~~per-frame constraint and maintained-layout evaluation~~ ✓, ~~baking follower motion for interchange~~ ✓, ~~authored curve graph with atomic key edits~~ ✓; ~~two-bone IK pole targets~~ ✓, ~~joint-angle limits and target diagnostics~~ ✓, ~~component-wise Bezier curve handles~~ ✓; next: weight painting, animating modifier parameters and constraint parameters.

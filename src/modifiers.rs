@@ -34,10 +34,19 @@ fn d_levels() -> u32 {
     2
 }
 
+fn d_thickness() -> f64 {
+    0.05
+}
+
 /// One step of an object's modifier stack, evaluated in object space.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Modifier {
+    /// Keep the original surface and add an inward shell with closed boundaries.
+    Solidify {
+        #[serde(default = "d_thickness")]
+        thickness: f64,
+    },
     /// Mirror across the object's local plane through the origin. Vertices
     /// within `merge` of the plane are welded, and faces lying on it removed.
     Mirror {
@@ -61,6 +70,9 @@ pub enum Modifier {
 impl Modifier {
     pub fn validate(&self) -> Result<(), EngineError> {
         let ok = match self {
+            Modifier::Solidify { thickness } => {
+                thickness.is_finite() && (1e-6..=1e4).contains(thickness)
+            }
             Modifier::Mirror { merge, .. } => merge.is_finite() && (0.0..=1.0).contains(merge),
             Modifier::Subdivision { levels } => (1..=4).contains(levels),
             Modifier::Array { count, offset } => {
@@ -75,6 +87,9 @@ impl Modifier {
             return Ok(());
         }
         Err(EngineError::new(match self {
+            Modifier::Solidify { .. } => {
+                "solidify thickness must be finite and between 0.000001 and 10000"
+            }
             Modifier::Mirror { .. } => "mirror merge must be between 0 and 1",
             Modifier::Subdivision { .. } => "subdivision levels must be between 1 and 4",
             Modifier::Array { .. } => "array count must be 1-100 with a finite offset",
@@ -90,6 +105,7 @@ pub fn evaluate(base: &Mesh, stack: &[Modifier]) -> Result<Mesh, EngineError> {
     for m in stack {
         m.validate()?;
         mesh = match *m {
+            Modifier::Solidify { thickness } => crate::solidify::shell(&mesh, thickness)?,
             Modifier::Mirror { axis, merge } => mirror(&mesh, axis, merge),
             Modifier::Subdivision { levels } => {
                 for _ in 0..levels {
@@ -212,6 +228,23 @@ mod tests {
 
     fn cube() -> Mesh {
         build_primitive(&Primitive::Cube { size: 1.0 }).unwrap()
+    }
+
+    #[test]
+    fn solidify_parameters_defaults_and_budget_are_checked() {
+        let default: Modifier = serde_json::from_str(r#"{"type":"solidify"}"#).unwrap();
+        assert_eq!(default, Modifier::Solidify { thickness: 0.05 });
+        for thickness in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e-7, 10001.0] {
+            assert!(evaluate(&cube(), &[Modifier::Solidify { thickness }]).is_err());
+        }
+        let mut huge = cube();
+        huge.faces = vec![huge.faces[0].clone(); MAX_FACES / 2 + 1];
+        assert!(
+            evaluate(&huge, &[default])
+                .unwrap_err()
+                .message
+                .contains("budget")
+        );
     }
 
     #[test]

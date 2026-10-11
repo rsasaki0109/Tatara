@@ -1801,4 +1801,20 @@ export const browserRecovery = {
   ]
 }
 
-export const SCENARIOS = { browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const solidifyShell = {
+  title:'Give a surface thickness',gizmo:false,
+  camera:{azimuth:28,elevation:16,distance:5,target:[0,.4,0]},
+  setup:[{op:'add_mesh',name:'Panel',vertices:[[-1,.8,-1],[1,.8,-1],[1,.8,1],[-1,.8,1]],faces:[[0,3,2,1]],color:'#eb9566'}],
+  steps:[
+    {pick:'Panel',after:600},
+    {caption:'Turn a surface into a closed shell',hint:'Solidify · non-destructive thickness'},
+    {click:'[data-add-mod=solidify]',after:1200},
+    {caption:'Keep the original surface, change its depth',hint:'typed modifier · one Undo'},
+    {type:'0.4',into:'[data-mod="0"][data-field=thickness]',cps:4,after:1400},
+    {click:'[data-action=undo]',after:1000},{click:'[data-action=redo]',after:1000},
+    {caption:'Bake the shell when you are ready',hint:'the editable stack remains undoable'},
+    {click:'[data-mod-apply]',after:1400},{cursor:false},{wait:800}
+  ]
+}
+
+export const SCENARIOS = { solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
