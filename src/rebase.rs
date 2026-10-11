@@ -1,6 +1,6 @@
 //! Conservative optimistic collaboration. Reapply a stale edit only when every
 //! object it reads (including group members and connected constraints) is still
-//! identical to the retained context. Other edits remain in the current scene.
+//! identical to the retained context, or only unrelated static properties changed. Other edits remain in the current scene.
 
 use std::collections::HashSet;
 
@@ -55,6 +55,176 @@ fn members_unchanged(base: &Scene, current: &Scene, who: &Who) -> Result<Vec<u64
     Ok(members)
 }
 
+// Only explicit, independent static fields can relax object-level rejection.
+// Unknown commands, structural changes and relation/animation dependencies stay strict.
+fn independent_properties(
+    scene: &Scene,
+    original: &engine::Object,
+    current: &engine::Object,
+    commands: &[Command],
+) -> bool {
+    if original.group.is_some()
+        || !original.tracks.is_empty()
+        || !current.tracks.is_empty()
+        || !original.bones.is_empty()
+        || !current.bones.is_empty()
+        || scene.ik_targets.iter().any(|target| {
+            target.rig == original.id
+                || target.target == original.id
+                || target.pole == Some(original.id)
+        })
+        || scene.constraints.iter().any(|c| {
+            ids(scene, &c.subject).contains(&original.id)
+                || ids(scene, c.rule.other()).contains(&original.id)
+        })
+    {
+        return false;
+    }
+    const TRANSLATION: u16 = 1;
+    const ROTATION: u16 = 2;
+    const SCALE: u16 = 4;
+    const COLOR: u16 = 8;
+    const ROUGHNESS: u16 = 16;
+    const METALNESS: u16 = 32;
+    const EMISSIVE: u16 = 64;
+    const EMISSIVE_STRENGTH: u16 = 128;
+    const OPACITY: u16 = 256;
+    const TRANSMISSION: u16 = 512;
+    const TEXTURE: u16 = 1024;
+    const MATERIAL: u16 = COLOR
+        | ROUGHNESS
+        | METALNESS
+        | EMISSIVE
+        | EMISSIVE_STRENGTH
+        | OPACITY
+        | TRANSMISSION
+        | TEXTURE;
+    let flag = |present: bool, bit: u16| if present { bit } else { 0 };
+    let mut protected = 0;
+    for command in commands {
+        let Ok(reference) = target(command) else {
+            return false;
+        };
+        let Ok(who) = constraint::who(scene, reference) else {
+            return false;
+        };
+        if who != Who::Id(original.id) {
+            if ids(scene, &who).contains(&original.id) {
+                return false;
+            }
+            continue;
+        }
+        let fields = match command {
+            Command::Move {
+                offset: Some(_),
+                rotate_y: None,
+                ..
+            } => TRANSLATION,
+            Command::Transform {
+                translation,
+                rotation,
+                scale,
+                ..
+            } => {
+                flag(translation.is_some(), TRANSLATION)
+                    | flag(rotation.is_some(), ROTATION)
+                    | flag(scale.is_some(), SCALE)
+            }
+            Command::Material {
+                preset,
+                color,
+                roughness,
+                metalness,
+                emissive,
+                emissive_strength,
+                opacity,
+                transmission,
+                texture,
+                ..
+            } => {
+                if preset.is_some() {
+                    MATERIAL
+                } else {
+                    flag(color.is_some(), COLOR)
+                        | flag(roughness.is_some(), ROUGHNESS)
+                        | flag(metalness.is_some(), METALNESS)
+                        | flag(emissive.is_some(), EMISSIVE)
+                        | flag(emissive_strength.is_some(), EMISSIVE_STRENGTH)
+                        | flag(opacity.is_some(), OPACITY)
+                        | flag(transmission.is_some(), TRANSMISSION)
+                        | flag(texture.is_some(), TEXTURE)
+                }
+            }
+            _ => return false,
+        };
+        if fields == 0 {
+            return false;
+        }
+        protected |= fields;
+    }
+    if protected == 0 {
+        return false;
+    }
+    fn field<T: Clone + PartialEq>(claimed: bool, observed: &mut T, old: &T) -> bool {
+        if claimed && *observed != *old {
+            return false;
+        }
+        observed.clone_from(old);
+        true
+    }
+    let mut observed = current.clone();
+    // Normalize only known static fields after checking all claimed ones.
+    // Full Object equality below keeps new or unknown structural fields strict.
+    if !field(
+        protected & TRANSLATION != 0,
+        &mut observed.transform.translation,
+        &original.transform.translation,
+    ) || !field(
+        protected & ROTATION != 0,
+        &mut observed.transform.rotation,
+        &original.transform.rotation,
+    ) || !field(
+        protected & SCALE != 0,
+        &mut observed.transform.scale,
+        &original.transform.scale,
+    ) || !field(
+        protected & COLOR != 0,
+        &mut observed.material.color,
+        &original.material.color,
+    ) || !field(
+        protected & ROUGHNESS != 0,
+        &mut observed.material.roughness,
+        &original.material.roughness,
+    ) || !field(
+        protected & METALNESS != 0,
+        &mut observed.material.metalness,
+        &original.material.metalness,
+    ) || !field(
+        protected & EMISSIVE != 0,
+        &mut observed.material.emissive,
+        &original.material.emissive,
+    ) || !field(
+        protected & EMISSIVE_STRENGTH != 0,
+        &mut observed.material.emissive_strength,
+        &original.material.emissive_strength,
+    ) || !field(
+        protected & OPACITY != 0,
+        &mut observed.material.opacity,
+        &original.material.opacity,
+    ) || !field(
+        protected & TRANSMISSION != 0,
+        &mut observed.material.transmission,
+        &original.material.transmission,
+    ) || !field(
+        protected & TEXTURE != 0,
+        &mut observed.material.texture,
+        &original.material.texture,
+    ) {
+        return false;
+    }
+    observed == *original
+}
+
 pub(crate) fn validate(
     base: &Scene,
     current: &Scene,
@@ -78,6 +248,7 @@ pub(crate) fn validate(
         || base.images != current.images
         || base.animation != current.animation
         || base.constraints != current.constraints
+        || base.ik_targets != current.ik_targets
         || base.arrangements != current.arrangements
     {
         return Err(EngineError::new(
@@ -160,12 +331,18 @@ pub(crate) fn validate(
     for id in dependencies {
         let old = base.objects.iter().find(|o| o.id == id);
         let now = current.objects.iter().find(|o| o.id == id);
-        if old.is_none() || old != now {
-            let name = old.map(|o| o.name.as_str()).unwrap_or("unknown object");
-            return Err(EngineError::new(format!(
-                "object {name:?} (#{id}) was changed or removed by another edit"
-            )));
+        if old.is_some() && old == now {
+            continue;
         }
+        if let (Some(original), Some(current_object)) = (old, now)
+            && independent_properties(base, original, current_object, commands)
+        {
+            continue;
+        }
+        let name = old.map(|o| o.name.as_str()).unwrap_or("unknown object");
+        return Err(EngineError::new(format!(
+            "object {name:?} (#{id}) was changed or removed by another edit"
+        )));
     }
     Ok(())
 }
@@ -651,5 +828,304 @@ mod tests {
         .unwrap_err();
         assert!(error.stale && error.message.contains("snapshot is no longer available"));
         assert_eq!(*ed.scene(), before);
+    }
+
+    #[test]
+    fn different_static_properties_on_one_object_rebase_in_both_orders() {
+        let edits = [
+            json!({"op":"transform","id":"A","translation":[1,2,3]}),
+            json!({"op":"transform","id":"A","rotation":[0,0.2,0]}),
+            json!({"op":"transform","id":"A","scale":[2,2,2]}),
+            json!({"op":"material","id":"A","color":"#ff8800"}),
+            json!({"op":"material","id":"A","roughness":0.15}),
+            json!({"op":"material","id":"A","metalness":0.85}),
+            json!({"op":"material","id":"A","emissive":"#ff8800"}),
+            json!({"op":"material","id":"A","emissive_strength":3}),
+            json!({"op":"material","id":"A","opacity":0.4}),
+            json!({"op":"material","id":"A","transmission":0.7}),
+            json!({"op":"material","id":"A","texture":{"pattern":"checker"}}),
+        ];
+        for (first_index, first) in edits.iter().enumerate() {
+            for (second_index, second) in edits.iter().enumerate() {
+                if first_index == second_index {
+                    continue;
+                }
+                let mut editor = pair();
+                apply(&mut editor, json!([first]), None, false).unwrap();
+                let before = editor.scene().clone();
+                let result = apply(&mut editor, json!([second]), Some(1), true).unwrap();
+                assert_eq!(result.rebased_from, Some(1));
+                let mut sequential = pair();
+                apply(&mut sequential, json!([first, second]), None, false).unwrap();
+                assert_eq!(
+                    editor.scene().objects,
+                    sequential.scene().objects,
+                    "{first} then {second}"
+                );
+                assert_eq!(editor.undo(), Some(4));
+                assert_eq!(editor.scene().objects, before.objects);
+                assert_eq!(editor.history().0.len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn same_fields_presets_and_no_op_overwrites_remain_atomic_conflicts() {
+        for requested in [
+            json!({"op":"material","id":"A","color":"#ffffff"}),
+            json!({"op":"material","id":"A","preset":"gold"}),
+            json!({"op":"material","id":"A","color":engine::Material::default().color,"roughness":0.2}),
+            json!({"op":"material","id":"A"}),
+        ] {
+            let mut editor = pair();
+            apply(
+                &mut editor,
+                json!([{"op":"material","id":"A","color":"#ff8800"}]),
+                None,
+                false,
+            )
+            .unwrap();
+            let before = editor.scene().clone();
+            let recipe = editor.project();
+            let error = apply(
+                &mut editor,
+                json!([{"op":"material","id":"B","roughness":0.3},requested]),
+                Some(1),
+                true,
+            )
+            .unwrap_err();
+            assert!(error.stale && error.message.contains("A"));
+            assert_eq!(*editor.scene(), before);
+            assert_eq!(editor.project(), recipe);
+        }
+    }
+
+    #[test]
+    fn movement_and_a_material_preset_keep_both_edits_and_one_undo() {
+        let mut editor = pair();
+        apply(
+            &mut editor,
+            json!([{"op":"move","id":"A","offset":[2,0,0]}]),
+            None,
+            false,
+        )
+        .unwrap();
+        let first = editor.scene().objects.clone();
+        apply(
+            &mut editor,
+            json!([{"op":"material","id":"A","preset":"gold"}]),
+            Some(1),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            editor.scene().objects[0].transform.translation,
+            [2., 0., 0.]
+        );
+        assert_eq!(editor.scene().objects[0].material.metalness, 1.);
+        editor.undo().unwrap();
+        assert_eq!(editor.scene().objects, first);
+        let mut editor = pair();
+        apply(
+            &mut editor,
+            json!([{"op":"material","id":"A","color":"#ff8800"}]),
+            None,
+            false,
+        )
+        .unwrap();
+        apply(
+            &mut editor,
+            json!([{"op":"move","id":"A","offset":[2,0,0]}]),
+            Some(1),
+            true,
+        )
+        .unwrap();
+        assert_eq!(editor.scene().objects[0].material.color, "#ff8800");
+        assert_eq!(
+            editor.scene().objects[0].transform.translation,
+            [2., 0., 0.]
+        );
+    }
+
+    #[test]
+    fn structural_and_unsupported_edits_keep_whole_object_conflict_detection() {
+        for remote in [
+            json!({"op":"subdivide","id":"A","levels":1}),
+            json!({"op":"add_modifier","id":"A","modifier":{"type":"twist","angle":0.2}}),
+            json!({"op":"rename","id":"A","name":"Renamed"}),
+            json!({"op":"shade","id":"A","smooth":true}),
+        ] {
+            let mut editor = pair();
+            apply(&mut editor, json!([remote]), None, false).unwrap();
+            let before = editor.scene().clone();
+            let error = apply(
+                &mut editor,
+                json!([{"op":"material","id":1,"color":"#ff8800"}]),
+                Some(1),
+                true,
+            )
+            .unwrap_err();
+            assert!(error.stale);
+            assert_eq!(*editor.scene(), before);
+        }
+        let mut editor = pair();
+        apply(
+            &mut editor,
+            json!([{"op":"material","id":"A","color":"#ff8800"}]),
+            None,
+            false,
+        )
+        .unwrap();
+        let before = editor.scene().clone();
+        assert!(
+            apply(
+                &mut editor,
+                json!([{"op":"move","id":"A","rotate_y":0.2}]),
+                Some(1),
+                true
+            )
+            .unwrap_err()
+            .stale
+        );
+        assert_eq!(*editor.scene(), before);
+    }
+
+    #[test]
+    fn rig_targets_poles_and_animation_keep_conservative_dependencies() {
+        let mut editor = pair();
+        apply(
+            &mut editor,
+            json!([
+                {"op":"rig","id":"A","chain":2},
+                {"op":"add","name":"Pole","primitive":{"kind":"cube"},"translation":[0,0,2]},
+                {"op":"track_target","id":"A","bone":"Bone 2","target":"B","pole":"Pole","chain":2}
+            ]),
+            None,
+            false,
+        )
+        .unwrap();
+        for name in ["A", "B", "Pole"] {
+            let scene = editor.scene().clone();
+            let mut scoped = Editor::new();
+            scoped.load(scene).unwrap();
+            apply(
+                &mut scoped,
+                json!([{"op":"material","id":name,"color":"#ff8800"}]),
+                None,
+                false,
+            )
+            .unwrap();
+            let before = scoped.scene().clone();
+            assert!(
+                apply(
+                    &mut scoped,
+                    json!([{"op":"move","id":name,"offset":[0.1,0,0]}]),
+                    Some(1),
+                    true
+                )
+                .unwrap_err()
+                .stale
+            );
+            assert_eq!(*scoped.scene(), before);
+        }
+        let mut animated = pair();
+        apply(&mut animated, json!([{"op":"set_keyframe","id":"A","property":"translation","frame":1,"value":[0,0,0]}]), None, false).unwrap();
+        apply(
+            &mut animated,
+            json!([{"op":"move","id":"A","offset":[1,0,0]}]),
+            None,
+            false,
+        )
+        .unwrap();
+        let before = animated.scene().clone();
+        assert!(
+            apply(
+                &mut animated,
+                json!([{"op":"material","id":"A","color":"#ff8800"}]),
+                Some(2),
+                true
+            )
+            .unwrap_err()
+            .stale
+        );
+        assert_eq!(*animated.scene(), before);
+        let mut linking = pair();
+        apply(
+            &mut linking,
+            json!([{"op":"rig","id":"A","chain":2}]),
+            None,
+            false,
+        )
+        .unwrap();
+        apply(
+            &mut linking,
+            json!([{"op":"track_target","id":"A","bone":"Bone 2","target":"B"}]),
+            None,
+            false,
+        )
+        .unwrap();
+        let error = apply(
+            &mut linking,
+            json!([{"op":"material","id":"B","color":"#ff8800"}]),
+            Some(2),
+            true,
+        )
+        .unwrap_err();
+        assert!(error.stale && error.message.contains("relation rules"));
+    }
+
+    #[test]
+    fn every_claimed_static_field_rejects_a_concurrent_write() {
+        for edit in [
+            json!({"op":"transform","id":"A","translation":[1,0,0]}),
+            json!({"op":"transform","id":"A","rotation":[0,0.2,0]}),
+            json!({"op":"transform","id":"A","scale":[2,2,2]}),
+            json!({"op":"material","id":"A","color":"#ff8800"}),
+            json!({"op":"material","id":"A","roughness":0.15}),
+            json!({"op":"material","id":"A","metalness":0.85}),
+            json!({"op":"material","id":"A","emissive":"#ff8800"}),
+            json!({"op":"material","id":"A","emissive_strength":3}),
+            json!({"op":"material","id":"A","opacity":0.4}),
+            json!({"op":"material","id":"A","transmission":0.7}),
+            json!({"op":"material","id":"A","texture":{"pattern":"checker"}}),
+        ] {
+            let mut editor = pair();
+            apply(&mut editor, json!([edit]), None, false).unwrap();
+            let before = editor.scene().clone();
+            assert!(
+                apply(&mut editor, json!([edit]), Some(1), true)
+                    .unwrap_err()
+                    .stale
+            );
+            assert_eq!(*editor.scene(), before);
+        }
+    }
+
+    #[test]
+    fn grouped_parts_do_not_relax_whole_object_checks() {
+        let mut editor = pair();
+        let mut scene = editor.scene().clone();
+        scene.objects[0].group = Some("Assembly".into());
+        editor.load(scene).unwrap();
+        let revision = editor.scene().revision;
+        apply(
+            &mut editor,
+            json!([{"op":"material","id":"A","color":"#ff8800"}]),
+            None,
+            false,
+        )
+        .unwrap();
+        let before = editor.scene().clone();
+        assert!(
+            apply(
+                &mut editor,
+                json!([{"op":"move","id":"A","offset":[1,0,0]}]),
+                Some(revision),
+                true
+            )
+            .unwrap_err()
+            .stale
+        );
+        assert_eq!(*editor.scene(), before);
     }
 }

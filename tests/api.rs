@@ -1455,3 +1455,104 @@ async fn durable_workspace_recovers_over_http_and_rejects_previous_revision() {
     assert!(task.await.unwrap_err().is_cancelled());
     std::fs::remove_dir_all(folder).unwrap();
 }
+
+#[tokio::test]
+async fn mcp_rebases_a_static_property_on_the_http_edited_object() {
+    let base = editor(None).await;
+    let client = reqwest::Client::new();
+    for batch in [
+        json!({"commands":[{"op":"add","name":"Shared box","primitive":{"kind":"cube"}}]}),
+        json!({"expected_revision":1,"actor":{"id":"http-alice","name":"Alice"},"commands":[{"op":"move","id":"Shared box","offset":[2,0,0]}]}),
+    ] {
+        client
+            .post(format!("{base}/api/commands"))
+            .json(&batch)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+    }
+    let mut bridge = tokio::process::Command::new(env!("CARGO_BIN_EXE_tatara"))
+        .arg("--mcp")
+        .env("TATARA_URL", &base)
+        .kill_on_drop(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = bridge.stdin.take().unwrap();
+    let mut output = BufReader::new(bridge.stdout.take().unwrap()).lines();
+    let mut call = async |message: Value| -> Value {
+        input
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .unwrap();
+        let line = tokio::time::timeout(std::time::Duration::from_secs(10), output.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    let init = call(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"property-test","version":"1"}}})).await;
+    assert_eq!(init["result"]["serverInfo"]["name"], "tatara");
+    let tools = call(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).await;
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 18);
+    let reply = call(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"apply_commands","arguments":{"expected_revision":1,"rebase":true,"actor":{"id":"mcp-bob","name":"Bob"},"commands":[{"op":"material","id":"Shared box","color":"#ff8800"}]}}})).await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    let applied: Value =
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(applied["rebased_from"], 1);
+    let history: Value = client
+        .get(format!("{base}/api/history"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(history["steps"][1]["actor"]["name"], "Alice");
+    assert_eq!(history["steps"][2]["actor"]["name"], "Bob");
+    assert_eq!(history["steps"][2]["rebased_from"], 1);
+    let scene: Value = client
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        scene["objects"][0]["transform"]["translation"],
+        json!([2.0, 0.0, 0.0])
+    );
+    assert_eq!(scene["objects"][0]["material"]["color"], "#ff8800");
+    let conflict = call(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"apply_commands","arguments":{"expected_revision":2,"rebase":true,"commands":[{"op":"material","id":"Shared box","color":"#ffffff"}]}}})).await;
+    assert_eq!(conflict["result"]["isError"], true);
+    let after: Value = client
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after, scene);
+    let undo = call(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"undo","arguments":{}}})).await;
+    assert_eq!(undo["result"]["isError"], false);
+    let undone: Value = client
+        .get(format!("{base}/api/scene"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        undone["objects"][0]["transform"]["translation"],
+        json!([2.0, 0.0, 0.0])
+    );
+    assert_ne!(undone["objects"][0]["material"]["color"], "#ff8800");
+    bridge.kill().await.unwrap();
+}
