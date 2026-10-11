@@ -1167,6 +1167,7 @@ function renderProperties(o) {
       <label class="slider"><span>Roughness</span><input type="range" min="0" max="1" step="0.01" id="p-rough" value="${shown.material.roughness}"><b>${fmt(shown.material.roughness)}</b></label>
       <label class="slider"><span>Metalness</span><input type="range" min="0" max="1" step="0.01" id="p-metal" value="${shown.material.metalness}"><b>${fmt(shown.material.metalness)}</b></label>
       <label class="slider"><span>Glass</span><input type="range" min="0" max="1" step="0.01" id="p-trans" value="${m.transmission}"><b>${fmt(m.transmission)}</b></label>
+      <label class="row"><span>Metal/rough image</span><select id="p-metallic-roughness-map" title="Packed image: green roughness, blue metalness; multiplies the scalar factors" ${m.texture?.graph ? 'disabled' : ''}><option value="">None</option>${Object.keys(app.scene.images || {}).map(name => `<option value="${escapeHtml(name)}" ${m.texture?.metallic_roughness_map === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}</select></label>
       <label class="slider"><span>Opacity${keyed('opacity')}</span><input type="range" min="0" max="1" step="0.01" id="p-opacity" value="${m.opacity}"><b>${fmt(m.opacity)}</b></label>
       <div class="row texture-row"><span>Texture</span>${PATTERNS.map(([id, label]) => `<button class="chip ${(m.texture?.pattern ?? 'none') === id ? 'on' : ''}" data-pattern="${id}">${label}</button>`).join('')}</div>
       ${m.texture ? textureControls(m.texture, hasUvs(displayMesh(o))) : ''}
@@ -1512,6 +1513,12 @@ $('properties').addEventListener('change', (e) => {
   if (target.dataset.cameraLens) {
     const field=target.dataset.cameraLens, property=field==='ortho_height'?'camera_height':`camera_${field}`, value=Number(target.value)
     return run(trackOf(o,property) ? [{op:'set_keyframe',id:o.id,property,frame:Math.round(app.frame),value}] : [{op:'camera_settings',id:o.id,lens:{...o.camera,[field]:value}}]).catch(() => {})
+  }
+  if (target.id === 'p-metallic-roughness-map') {
+    const texture = {pattern:'none', ...o.material.texture}
+    if (target.value) texture.metallic_roughness_map = target.value
+    else delete texture.metallic_roughness_map
+    return run([{op:'material',id:o.id,texture}]).catch(()=>{})
   }
   if (target.id === 'p-name') return run([{ op: 'rename', id: o.id, name: target.value }]).catch(() => {})
   if (target.id === 'p-dist') {
@@ -2163,6 +2170,7 @@ window.__tatara = {
   spotAttenuationProbe: (...args) => viewport.spotAttenuationProbe(...args),
   debug: () => ({ sceneLightValues: [...viewport.nodes.values()].filter(n=>n.light).map(n=>({kind:n.lightKind,angle:n.light.angle,penumbra:n.light.penumbra,distance:n.light.distance,target:n.light.target?.position.toArray(),intensity:n.light.intensity,color:n.light.color.getHexString()})), sceneLights: [...viewport.nodes.values()].filter(n=>n.light?.visible).length, sceneCamera: viewport.sceneCameraId ?? null, renderCamera: { eye: viewport.camera.position.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov ?? 36, orthographic:Boolean(viewport.camera.isOrthographicCamera), ortho_height:viewport.effectiveOrthoHeight() }, pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
+    packedMaterials: [...viewport.nodes.values()].filter(n=>n.mesh.material.roughnessMap?.image).map(n=>({id:n.id,roughness:n.mesh.material.roughness,metalness:n.mesh.material.metalness,colorSpace:n.mesh.material.roughnessMap.colorSpace,packed:Boolean(n.mesh.material.userData.ormUrl),triplanar:'TRIPLANAR' in n.mesh.material.defines})),
     pathSamples: preview.active ? preview.samples : null,
     finalSamples: finalRender.open ? finalRender.samples : null,
     world: viewport.worldMap?.source ?? null,

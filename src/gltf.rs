@@ -233,8 +233,14 @@ fn material_json(
     if let Some(index) = orm_map {
         let pbr = &mut out["pbrMetallicRoughness"];
         pbr["metallicRoughnessTexture"] = json!({ "index": index });
-        pbr["metallicFactor"] = json!(1.0);
-        pbr["roughnessFactor"] = json!(1.0);
+        if !m
+            .texture
+            .as_ref()
+            .is_some_and(|t| t.metallic_roughness_map.is_some())
+        {
+            pbr["metallicFactor"] = json!(1.0);
+            pbr["roughnessFactor"] = json!(1.0);
+        }
     }
     if let Some(t) = &m.texture {
         // The factors may be 1 for a baked roughness map: keep the real ones.
@@ -582,6 +588,7 @@ fn export_glb_inner(ed: &Editor, motion: Option<&HashMap<u64, Vec<Track>>>) -> V
                         texture: t,
                         image: t.image.as_ref().and_then(|n| decoded[n].as_ref()),
                         normal_map: None,
+                        metallic_roughness_map: None,
                         baked: graph.as_ref(),
                     };
                     let key = serde_json::to_string(&(t.pattern, &t.image, t.relief, &graph_key))
@@ -597,15 +604,19 @@ fn export_glb_inner(ed: &Editor, motion: Option<&HashMap<u64, Vec<Track>>>) -> V
                 } else {
                     None
                 };
-                orm_map = graph.as_ref().and_then(|b| b.orm.as_ref()).map(|orm| {
-                    texture_of(format!("orm:{graph_key}"), &|| {
-                        (
-                            texture::pixels_png(orm),
-                            "image/png",
-                            format!("{} roughness", o.name),
-                        )
+                orm_map = if let Some(name) = &t.metallic_roughness_map {
+                    Some(texture_of(format!("image:{name}"), &|| stored(name)))
+                } else {
+                    graph.as_ref().and_then(|b| b.orm.as_ref()).map(|orm| {
+                        texture_of(format!("orm:{graph_key}"), &|| {
+                            (
+                                texture::pixels_png(orm),
+                                "image/png",
+                                format!("{} roughness", o.name),
+                            )
+                        })
                     })
-                });
+                };
             }
             if normal_map.is_some() {
                 let tangent_bytes: Vec<u8> = tangents(&shaded)
@@ -933,7 +944,11 @@ fn imported_material(m: Option<&Value>, images: &mut ImageImport) -> Option<Mate
     // names travel as glTF images. Other files' base colour and normal
     // textures become an image texture (tinted by the colour factor).
     let ours = &m["extras"]["tatara_texture"];
-    let (color_map, normal_map) = (&pbr["baseColorTexture"], &m["normalTexture"]);
+    let (color_map, normal_map, orm_map) = (
+        &pbr["baseColorTexture"],
+        &m["normalTexture"],
+        &pbr["metallicRoughnessTexture"],
+    );
     let texture = match serde_json::from_value::<Texture>(ours["texture"].clone()) {
         Ok(mut t) => {
             if let Some(name) = t.image.clone() {
@@ -942,24 +957,31 @@ fn imported_material(m: Option<&Value>, images: &mut ImageImport) -> Option<Mate
             if let Some(name) = t.normal_map.clone() {
                 t.normal_map = images.image(normal_map, Some(&name));
             }
+            if let Some(name) = t.metallic_roughness_map.clone() {
+                t.metallic_roughness_map = images.image(orm_map, Some(&name));
+            }
             Some(t)
         }
         Err(_) => {
             let image = images.image(color_map, None);
             let normal_map = images.image(normal_map, None);
-            (image.is_some() || normal_map.is_some()).then(|| Texture {
-                pattern: if image.is_some() {
-                    Pattern::Image
-                } else {
-                    Pattern::None
+            let metallic_roughness_map = images.image(orm_map, None);
+            (image.is_some() || normal_map.is_some() || metallic_roughness_map.is_some()).then(
+                || Texture {
+                    pattern: if image.is_some() {
+                        Pattern::Image
+                    } else {
+                        Pattern::None
+                    },
+                    image,
+                    normal_map,
+                    metallic_roughness_map,
+                    ..Texture::new(Pattern::None, "#3b2a22", 1.0)
                 },
-                image,
-                normal_map,
-                ..Texture::new(Pattern::None, "#3b2a22", 1.0)
-            })
+            )
         }
     }
-    .filter(|t| t.validate().is_ok() && (t.pattern != Pattern::None || t.normal_map.is_some()));
+    .filter(|t| t.validate().is_ok() && t.has_surface());
     let own_color = ours["color"]
         .as_str()
         .filter(|_| texture.is_some() && !ours.is_null())
@@ -1717,6 +1739,68 @@ mod tests {
         ed.apply(&serde_json::from_value::<CommandBatch>(json!({ "commands": commands })).unwrap())
             .unwrap();
         ed
+    }
+
+    #[test]
+    fn foreign_packed_material_maps_preserve_scalar_factors_on_roundtrip() {
+        let mut doc: Value = serde_json::from_slice(&foreign_gltf()).unwrap();
+        let pbr = &mut doc["materials"][0]["pbrMetallicRoughness"];
+        pbr["metallicRoughnessTexture"] = json!({"index": 0});
+        pbr["roughnessFactor"] = json!(0.4);
+        pbr["metallicFactor"] = json!(0.8);
+        let ed = reimport(&serde_json::to_vec(&doc).unwrap());
+        let material = &ed.scene().objects[0].material;
+        assert_eq!(material.roughness, 0.4);
+        assert_eq!(material.metalness, 0.8);
+        assert_eq!(
+            material
+                .texture
+                .as_ref()
+                .unwrap()
+                .metallic_roughness_map
+                .as_deref(),
+            Some("photo")
+        );
+        let exported = export_glb(&ed);
+        let len = u32::from_le_bytes(exported[12..16].try_into().unwrap()) as usize;
+        let document: Value = serde_json::from_slice(&exported[20..20 + len]).unwrap();
+        let pbr = &document["materials"][0]["pbrMetallicRoughness"];
+        assert_eq!(pbr["roughnessFactor"], 0.4);
+        assert_eq!(pbr["metallicFactor"], 0.8);
+        assert!(pbr["metallicRoughnessTexture"]["index"].is_u64());
+        let restored = reimport(&exported);
+        let material = &restored.scene().objects[0].material;
+        assert_eq!(material.roughness, 0.4);
+        assert_eq!(material.metalness, 0.8);
+        let name = material
+            .texture
+            .as_ref()
+            .unwrap()
+            .metallic_roughness_map
+            .as_ref()
+            .unwrap();
+        assert!(restored.scene().images.contains_key(name));
+    }
+
+    #[test]
+    fn foreign_packed_map_only_material_does_not_invent_a_color_texture() {
+        let mut doc: Value = serde_json::from_slice(&foreign_gltf()).unwrap();
+        doc["materials"][0]["pbrMetallicRoughness"]
+            .as_object_mut()
+            .unwrap()
+            .remove("baseColorTexture");
+        doc["materials"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("normalTexture");
+        doc["materials"][0]["pbrMetallicRoughness"]["metallicRoughnessTexture"] =
+            json!({"index":0});
+        let ed = reimport(&serde_json::to_vec(&doc).unwrap());
+        let texture = ed.scene().objects[0].material.texture.as_ref().unwrap();
+        assert_eq!(texture.pattern, crate::texture::Pattern::None);
+        assert!(texture.image.is_none());
+        assert!(texture.normal_map.is_none());
+        assert_eq!(texture.metallic_roughness_map.as_deref(), Some("photo"));
     }
 
     fn reimport(bytes: &[u8]) -> Editor {

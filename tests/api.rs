@@ -1076,6 +1076,28 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let unchanged: Value =
         serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(unchanged, merged_scene);
+    let packed = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        tatara::texture::pixels_png(&tatara::image::Pixels {
+            width: 1,
+            height: 1,
+            rgb: vec![[1.0, 0.25, 0.75]],
+        }),
+    );
+    let r=call(json!({"jsonrpc":"2.0","id":131,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"add_image","name":"MCP packed","data":packed},{"op":"material","id":"MCP pyramid","roughness":0.4,"metalness":0.8,"texture":{"pattern":"none","metallic_roughness_map":"MCP packed"}}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":132,"method":"tools/call","params":{"name":"get_scene","arguments":{}}})).await;
+    let mapped: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let material = &mapped["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "MCP pyramid")
+        .unwrap()["material"];
+    assert_eq!(material["texture"]["metallic_roughness_map"], "MCP packed");
+    assert_eq!(material["roughness"], 0.4);
+    assert_eq!(material["metalness"], 0.8);
     child.kill().await.unwrap();
 }
 

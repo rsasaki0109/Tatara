@@ -91,6 +91,7 @@ struct Textured {
     texture: Texture,
     image: Option<Arc<Pixels>>,
     normal_map: Option<Arc<Pixels>>,
+    metallic_roughness_map: Option<Arc<Pixels>>,
     /// A node graph's tiles.
     baked: Option<Baked>,
 }
@@ -102,6 +103,7 @@ impl Textured {
             texture: &self.texture,
             image: self.image.as_deref(),
             normal_map: self.normal_map.as_deref(),
+            metallic_roughness_map: self.metallic_roughness_map.as_deref(),
             baked: self.baked.as_ref(),
         }
     }
@@ -173,6 +175,17 @@ impl Shading {
     }
 
     fn point(&self, albedo: DVec3, normal: DVec3, rm: Option<(f64, f64)>) -> Point {
+        let rm = rm.map(|(r, m)| {
+            if self
+                .texture
+                .as_ref()
+                .is_some_and(|t| t.metallic_roughness_map.is_some())
+            {
+                (r * self.roughness, m * self.metalness)
+            } else {
+                (r, m)
+            }
+        });
         let (roughness, metalness) = rm.unwrap_or((self.roughness, self.metalness));
         Point {
             albedo,
@@ -303,6 +316,7 @@ pub(crate) fn prepare(
             baked: crate::nodes::bake_material(&material, images, 512),
             image: pixels(&t.image),
             normal_map: pixels(&t.normal_map),
+            metallic_roughness_map: pixels(&t.metallic_roughness_map),
             texture: t,
         });
         // Box projection blends its planes per pixel; own and fitted UVs
@@ -1080,6 +1094,46 @@ pub fn parse_views(spec: &str) -> Result<Vec<View>, EngineError> {
 mod tests {
     use super::*;
     use crate::engine::CommandBatch;
+
+    #[test]
+    fn packed_image_channels_multiply_material_factors_once() {
+        let pixels = Arc::new(Pixels {
+            width: 1,
+            height: 1,
+            rgb: vec![[1.0, 0.25, 0.75]],
+        });
+        let mut texture = Texture::new(crate::texture::Pattern::None, "#ffffff", 1.0);
+        texture.metallic_roughness_map = Some("Packed".into());
+        let shading = Shading {
+            color: DVec3::ONE,
+            texture: Some(Textured {
+                base: "#ffffff".into(),
+                texture,
+                image: None,
+                normal_map: None,
+                metallic_roughness_map: Some(pixels),
+                baked: None,
+            }),
+            triplanar: None,
+            roughness: 0.4,
+            metalness: 0.8,
+            emissive: DVec3::ZERO,
+            opacity: 1.0,
+            transmission: 0.0,
+        };
+        let rm = shading
+            .texture
+            .as_ref()
+            .unwrap()
+            .look()
+            .roughness_metalness(0.5, 0.5);
+        let point = shading.point(DVec3::ONE, DVec3::Z, rm);
+        assert!((point.roughness - 0.1).abs() < 1e-12);
+        assert!((point.metalness - 0.6).abs() < 1e-12);
+        let fallback = shading.point(DVec3::ONE, DVec3::Z, None);
+        assert_eq!(fallback.roughness, 0.4);
+        assert_eq!(fallback.metalness, 0.8);
+    }
 
     fn decode(png_bytes: &[u8]) -> (u32, u32, Vec<u8>) {
         let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkPackedMaterials } from './packed-material-check.mjs'
 import { checkMerge } from './merge-check.mjs'
 import { checkProperties, checkPeerProperties } from './property-check.mjs'
 import { checkDurable } from './durable-check.mjs'
@@ -1103,6 +1104,7 @@ try {
   await checkSolidify(curves,check)
   await checkProperties(curves,check)
   await checkMerge(curves,check)
+  await checkPackedMaterials(curves,check)
   await curves.close()
 
   // The browser-only backend shares the same UI under ?wasm, with local state.
