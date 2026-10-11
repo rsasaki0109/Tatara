@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkSolidify } from './solidify-check.mjs'
 // Browser smoke test against an isolated editor: real clicks and keys for
 // editing, history and files, then every demo scenario in capture mode.
 // Requires `npm --prefix web run build` and `cargo build --release`.
@@ -1095,6 +1096,7 @@ try {
   await checkJointLimits(curves,check)
   await checkBezier(curves,check)
   await checkProjects(curves,check)
+  await checkSolidify(curves,check)
   await curves.close()
 
   // The browser-only backend shares the same UI under ?wasm, with local state.

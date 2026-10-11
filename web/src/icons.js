@@ -30,6 +30,7 @@ const P = {
   'mod-array': '<rect x="1.6" y="9.6" width="4" height="4" rx=".8"/><rect x="6" y="5.8" width="4" height="4" rx=".8"/><rect x="10.4" y="2" width="4" height="4" rx=".8"/>',
   'mod-twist': '<path d="M4 2c5 2 3 4 8 4M4 6c5 2 3 4 8 4M4 10c5 2 3 4 8 4"/>',
   'mod-taper': '<path d="M3 14h10L10 2H6z"/>',
+  'mod-solidify': '<path d="M2 5 8 2l6 3-6 3zM2 5v6l6 3 6-3V5M8 8v6"/>',
   bevel: '<path d="M2 14V6l4-4h8"/><path d="M2 6h4V2" opacity=".55"/>',
   loopcut: '<rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M8 2v12" stroke-dasharray="2 1.6"/>',
   object: '<path d="M8 1.8 13.6 5v6L8 14.2 2.4 11V5z"/>',

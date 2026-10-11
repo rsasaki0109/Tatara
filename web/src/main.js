@@ -1235,13 +1235,15 @@ function selectionText() {
   return app.face != null ? `Face <b>${app.face}</b> selected` : ''
 }
 
-const MODIFIER_TYPES = ['mirror', 'subdivision', 'array', 'twist', 'taper']
-const MODIFIER_LABEL = { mirror: 'Mirror', subdivision: 'Subdivision', array: 'Array', twist: 'Twist', taper: 'Taper' }
+const MODIFIER_TYPES = ['mirror', 'subdivision', 'solidify', 'array', 'twist', 'taper']
+const MODIFIER_LABEL = { mirror: 'Mirror', subdivision: 'Subdivision', solidify: 'Solidify', array: 'Array', twist: 'Twist', taper: 'Taper' }
 
 function defaultModifier(type, o) {
   const xs = o.mesh.vertices.map((v) => v[1])
   const height = Math.max(...xs) - Math.min(...xs) || 1
   switch (type) {
+    case 'solidify':
+      return { type, thickness: 0.05 }
     case 'mirror':
       return { type, axis: 'x' }
     case 'subdivision':
@@ -1263,6 +1265,7 @@ function modifierCard(m, i) {
       .map((v) => `<button class="${String(v) === String(current) ? 'on' : ''}" data-mod="${i}" data-set="${name}" data-value="${v}">${String(v).toUpperCase()}</button>`)
       .join('')}</div>`
   let body = ''
+  if (m.type === 'solidify') body = `<div class="mod-row"><span>Thickness</span>${field('thickness', m.thickness)}</div><p class="muted small">Inward shell · original surface stays</p>`
   if (m.type === 'mirror') body = `<div class="mod-row"><span>Axis</span>${segment('axis', ['x', 'y', 'z'], m.axis)}</div>`
   if (m.type === 'subdivision') body = `<div class="mod-row"><span>Levels</span>${segment('levels', [1, 2, 3, 4], m.levels)}</div>`
   if (m.type === 'array') {

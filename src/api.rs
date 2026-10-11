@@ -1022,6 +1022,51 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn solidify_api_keeps_the_base_and_rejects_bad_batches_atomically() {
+        let mut ed = Editor::new();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"add_mesh","name":"Panel","vertices":[[-1,0,-1],[1,0,-1],[1,0,1],[-1,0,1]],"faces":[[0,3,2,1]]}]})).0,200);
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"add_modifier","id":"Panel","modifier":{"type":"solidify","thickness":0.2}}]})).0,200);
+        let (_, scene) = call(&mut ed, "GET", "/scene", Value::Null);
+        assert_eq!(
+            scene["objects"][0]["mesh"]["faces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(ed.evaluated(&ed.scene().objects[0]).faces.len(), 6);
+        let before = ed.scene().clone();
+        let recipe = ed.project();
+        let proposals = ed.proposals_version();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"move","id":"Panel","offset":[1,0,0]},{"op":"set_modifier","id":"Panel","index":0,"modifier":{"type":"solidify","thickness":0}}]})).0,422);
+        assert_eq!(*ed.scene(), before);
+        assert_eq!(ed.project(), recipe);
+        assert_eq!(ed.proposals_version(), proposals);
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[{"op":"apply_modifiers","id":"Panel"}]})
+            )
+            .0,
+            200
+        );
+        assert_eq!(ed.scene().objects[0].mesh.faces.len(), 6);
+        assert!(ed.scene().objects[0].modifiers.is_empty());
+        ed.undo().unwrap();
+        assert_eq!(ed.scene().objects, before.objects);
+        assert_eq!(ed.project(), recipe);
+        let saved = ed.project();
+        let mut reopened = Editor::new();
+        reopened.load_project(saved).unwrap();
+        assert_eq!(
+            reopened.evaluated(&reopened.scene().objects[0]).faces.len(),
+            6
+        );
+        assert_eq!(reopened.scene().objects[0].mesh.faces.len(), 1);
+    }
+    #[test]
     fn motion_glb_is_bounded_and_read_only() {
         let mut ed = Editor::new();
         let (status, _) = call(

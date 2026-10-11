@@ -1039,6 +1039,24 @@ async fn mcp_bridge_edits_the_shared_scene() {
         .unwrap();
     assert_eq!(follower["pose"]["transform"]["translation"][1], 2.0);
 
+    let r=call(json!({"jsonrpc":"2.0","id":124,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"add_mesh","name":"MCP shell","vertices":[[-1,0,-1],[1,0,-1],[1,0,1],[-1,0,1]],"faces":[[0,3,2,1]]},
+        {"op":"add_modifier","id":"MCP shell","modifier":{"type":"solidify","thickness":0.2}}
+    ]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":125,"method":"tools/call","params":{"name":"get_scene","arguments":{"include_mesh":true}}})).await;
+    let shell_scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let shell = shell_scene["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "MCP shell")
+        .unwrap();
+    assert_eq!(shell["mesh"]["faces"].as_array().unwrap().len(), 1);
+    assert_eq!(shell["modifiers"][0]["type"], "solidify");
+    let r=call(json!({"jsonrpc":"2.0","id":126,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"set_modifier","id":"MCP shell","index":0,"modifier":{"type":"solidify","thickness":-1}}]}}})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
     child.kill().await.unwrap();
 }
 
