@@ -182,11 +182,18 @@ async fn core(
     body: axum::body::Bytes,
 ) -> Response {
     let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    if method == axum::http::Method::POST && uri.path() == "/history/preview" {
+    let proposal_preview = method == axum::http::Method::GET && uri.path() == "/proposal";
+    if proposal_preview || (method == axum::http::Method::POST && uri.path() == "/history/preview")
+    {
         let shared = s.clone();
+        let query = uri.query().unwrap_or("").to_owned();
         let job = tokio::task::spawn_blocking(move || {
             let ed = shared.editor.blocking_lock();
-            crate::api::history_preview_job(&ed, &body)
+            if proposal_preview {
+                crate::api::proposal_preview_job(&ed, &query)
+            } else {
+                crate::api::history_preview_job(&ed, &body)
+            }
         })
         .await;
         let response = match job {

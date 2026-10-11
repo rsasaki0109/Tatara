@@ -1,0 +1,81 @@
+// Candidate assets must be displayed from the proposal, never the live scene.
+export async function checkProposalAssets(page, check) {
+  const send = (path, body) => page.evaluate(async ({path,body})=>{
+    const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    return {status:response.status,data:await response.json()}
+  },{path,body})
+  const scene=()=>page.evaluate(()=>fetch('/api/scene').then(r=>r.json()))
+  const wait=async predicate=>{for(let i=0;i<600;i++){if(await predicate())return;await page.waitForTimeout(50)}throw new Error('proposal assets did not settle')}
+  const png=async (size,color)=>page.evaluate(({size,color})=>{
+    const c=document.createElement('canvas');c.width=c.height=size;const g=c.getContext('2d');g.fillStyle=color;g.fillRect(0,0,size,size);return c.toDataURL('image/png').split(',')[1]
+  },{size,color})
+  const original=await png(2,'#ff8800'),blue=await png(1,'#0044ff'),red=await png(3,'#ff0000')
+  const setup=await send('commands',{commands:[{op:'clear'},{op:'add_image',name:'Proposal image',data:original},{op:'add',name:'Proposal box',primitive:{kind:'cube',size:1}},{op:'material',id:'Proposal box',texture:{pattern:'image',image:'Proposal image'}},{op:'world',image:'Proposal image',background:true}]})
+  if(setup.status!==200)throw new Error(JSON.stringify(setup))
+  await page.evaluate(()=>window.__tatara.refresh(false))
+  const before=await scene()
+  const offered=await send('proposals',{title:'Image options',variants:[{title:'Blue image',commands:[{op:'add_image',name:'Proposal image',data:blue}]},{title:'Red image',commands:[{op:'add_image',name:'Proposal image',data:red}]}]})
+  if(offered.status!==200)throw new Error(JSON.stringify(offered))
+  await page.evaluate(()=>window.__tatara.refresh(false))
+  await wait(async()=>await page.locator('#proposals .proposal-card').count()===2)
+  check(JSON.stringify(await scene())===JSON.stringify(before),'offering image variants leaves the live image, scene revision and environment unchanged')
+  const blueCard=page.locator('#proposals .proposal-card').filter({has:page.locator('.pc-title',{hasText:'Blue image'})})
+  const redCard=page.locator('#proposals .proposal-card').filter({has:page.locator('.pc-title',{hasText:'Red image'})})
+  await blueCard.locator('.pc-title').click()
+  await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>m.preview && m.width===1)))
+  await wait(()=>page.evaluate(()=>{const c=window.__tatara.debug().worldRadiance;return c && c[2]>.99 && c[0]<.01}))
+  check(JSON.stringify(await scene())===JSON.stringify(before),'a pinned image proposal displays its own texture pixels and blue environment without applying')
+  await redCard.locator('.pc-title').click()
+  await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>m.preview && m.width===3)))
+  await wait(()=>page.evaluate(()=>{const c=window.__tatara.debug().worldRadiance;return c && c[0]>.99 && c[2]<.01}))
+  check(JSON.stringify(await scene())===JSON.stringify(before),'switching image variants replaces both candidate texture and environment while retaining live bytes')
+  await blueCard.locator('.pc-title').click()
+  await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>m.preview && m.width===1)))
+  await blueCard.locator('[data-pc=accept]').click()
+  await wait(async()=> (await scene()).images['Proposal image'].width===1)
+  await wait(async()=>await page.locator('#proposals .proposal-card').count()===0)
+  check((await scene()).objects[0].material.texture.image==='Proposal image','accepting an image variant applies its bytes and removes sibling options as one batch')
+  await page.click('[data-action=undo]');await wait(async()=> (await scene()).images['Proposal image'].width===2)
+  await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>!m.preview && m.width===2)))
+  check((await scene()).images['Proposal image'].hash===before.images['Proposal image'].hash,'one Undo restores the original image and live material map after proposal acceptance')
+  const restored=await scene()
+  const rejected=await send('proposals',{title:'Reject this image',commands:[{op:'add_image',name:'Proposal image',data:red}]})
+  if(rejected.status!==200)throw new Error(JSON.stringify(rejected))
+  await page.evaluate(()=>window.__tatara.refresh(false));await wait(async()=>await page.locator('#proposals .proposal-card').count()===1)
+  await page.click('#proposals .pc-title');await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>m.preview && m.width===3)))
+  await page.click('#proposals [data-pc=reject]');await wait(async()=>await page.locator('#proposals .proposal-card').count()===0)
+  await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>!m.preview && m.width===2)))
+  check(JSON.stringify(await scene())===JSON.stringify(restored),'rejecting an image proposal restores the live texture and changes no scene state')
+  const nodes=await send('proposals',{title:'New image node',commands:[
+    {op:'add_image',name:'Candidate node image',data:blue},
+    {op:'material',id:'Proposal box',texture:{pattern:'nodes',relief:0.1,graph:{nodes:[{id:'photo',type:'image',image:'Candidate node image'}],output:{color:{node:'photo'},roughness:0.4,metalness:0.8,height:{node:'photo'}}}}}
+  ]})
+  if(nodes.status!==200)throw new Error(JSON.stringify(nodes))
+  await page.evaluate(()=>window.__tatara.refresh(false));await wait(async()=>await page.locator('#proposals .proposal-card').count()===1)
+  await page.click('#proposals .pc-title')
+  await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>m.preview && m.width===512)))
+  const nodePreview=await page.evaluate(id=>fetch('/api/proposal?id='+id).then(r=>r.json()),nodes.data.ids[0])
+  const maps=nodePreview.scene.objects[0].material.texture.preview_maps
+  check(['color','normal','orm'].every(k=>maps[k]?.startsWith('data:image/png;base64,')) && !('Candidate node image' in (await scene()).images),'a newly proposed image node uses scoped color, normal and packed bakes without creating a live asset')
+  await page.click('#proposals [data-pc=reject]');await wait(async()=>await page.locator('#proposals .proposal-card').count()===0)
+  await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>!m.preview && m.width===2)))
+  const retained=await send('commands',{commands:[{op:'add_image',name:'Existing blue',data:blue}]})
+  if(retained.status!==200)throw new Error(JSON.stringify(retained))
+  await page.evaluate(()=>window.__tatara.refresh(false));const existingBefore=await scene()
+  const changed=await send('proposals',{title:'Use existing blue',commands:[
+    {op:'material',id:'Proposal box',texture:{pattern:'nodes',relief:0.1,graph:{nodes:[{id:'photo',type:'image',image:'Existing blue'}],output:{color:{node:'photo'},height:{node:'photo'},roughness:0,metalness:0}}}},
+    {op:'world',image:'Existing blue',background:true}
+  ]})
+  if(changed.status!==200)throw new Error(JSON.stringify(changed))
+  await page.evaluate(()=>window.__tatara.refresh(false));await wait(async()=>await page.locator('#proposals .proposal-card').count()===1)
+  await page.click('#proposals .pc-title');await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>m.preview && m.width===512)))
+  await wait(()=>page.evaluate(()=>{const rgb=window.__tatara.debug().worldRadiance;return rgb && rgb[2]>.99 && rgb[0]<.01}))
+  await wait(()=>page.evaluate(()=>window.__tatara.debug().packedMaterials.some(m=>m.roughness===1 && m.metalness===1 && m.colorSpace==='')))
+  const baked=await page.evaluate(()=>window.__tatara.debug().packedMaterials)
+  check(baked.some(m=>m.roughness===1 && m.metalness===1 && m.colorSpace===''),'changed image nodes bake candidate material maps even with retained assets and zero roughness/metalness outputs')
+  check(JSON.stringify(await scene())===JSON.stringify(existingBefore),'switching to an existing image previews its blue environment without replacing assets or applying the proposal')
+  await page.click('#proposals [data-pc=reject]');await wait(async()=>await page.locator('#proposals .proposal-card').count()===0)
+  await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>!m.preview && m.width===2)))
+  const gone=await page.evaluate(async()=>{const r=await fetch('/api/proposal?id=999999');return r.status})
+  check(gone===404,'an unknown image proposal returns a clear missing-proposal response')
+}

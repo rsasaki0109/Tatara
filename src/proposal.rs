@@ -287,6 +287,56 @@ mod tests {
     }
 
     #[test]
+    fn image_replacement_variants_preserve_live_assets_until_review() {
+        use base64::Engine as _;
+        let encoded = |rgb| {
+            base64::engine::general_purpose::STANDARD.encode(crate::texture::pixels_png(
+                &crate::image::Pixels {
+                    width: 1,
+                    height: 1,
+                    rgb: vec![rgb],
+                },
+            ))
+        };
+        let mut ed = Editor::new();
+        apply(
+            &mut ed,
+            json!([
+                {"op":"add_image","name":"Artwork","data":encoded([1.0,0.5,0.0])},
+                {"op":"add","name":"Panel","primitive":{"kind":"cube"}},
+                {"op":"material","id":"Panel","texture":{"pattern":"image","image":"Artwork"}}
+            ]),
+        );
+        let before = ed.scene().clone();
+        let ids = ed.propose(&request(json!({"title":"Image choices","variants":[
+            {"title":"Blue","commands":[{"op":"add_image","name":"Artwork","data":encoded([0.0,0.0,1.0])}]},
+            {"title":"Red","commands":[{"op":"add_image","name":"Artwork","data":encoded([1.0,0.0,0.0])}]}
+        ]}))).unwrap();
+        assert_eq!(ed.scene(), &before);
+        for (id, expected) in ids.iter().zip([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]) {
+            let preview = ed.preview(*id).unwrap();
+            assert_eq!(
+                preview.scene().images["Artwork"]
+                    .decode()
+                    .unwrap()
+                    .sample(0.5, 0.5),
+                expected
+            );
+        }
+        ed.accept(ids[0]).unwrap();
+        assert_eq!(
+            ed.scene().images["Artwork"]
+                .decode()
+                .unwrap()
+                .sample(0.5, 0.5),
+            [0.0, 0.0, 1.0]
+        );
+        assert!(ed.proposals().is_empty());
+        assert!(ed.undo().is_some());
+        assert_eq!(ed.scene().images, before.images);
+    }
+
+    #[test]
     fn a_proposal_changes_nothing_until_accepted() {
         let mut ed = table();
         let revision = ed.scene().revision;

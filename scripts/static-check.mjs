@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkProposalAssets } from './proposal-assets-check.mjs'
 import { checkImageHistory } from './image-history-check.mjs'
 import { checkPackedMaterials } from './packed-material-check.mjs'
 import { checkMerge } from './merge-check.mjs'
@@ -318,6 +319,7 @@ try {
   await checkMerge(page,check)
   await checkPackedMaterials(page,check)
   await checkImageHistory(page,check)
+  await checkProposalAssets(page,check)
   await checkRecovery(browser,base,check)
   await checkCoreCache(browser,path.join(root,'web/dist-static/tatara.wasm'),check)
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
