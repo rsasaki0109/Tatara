@@ -1011,6 +1011,34 @@ async fn mcp_bridge_edits_the_shared_scene() {
         serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(unchanged, revised);
 
+    let r=call(json!({"jsonrpc":"2.0","id":119,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
+        {"op":"add","name":"Recovery anchor","primitive":{"kind":"cube"},"translation":[100,0,0]},
+        {"op":"add","name":"Recovery follower","primitive":{"kind":"cube"},"translation":[100,3,0]},
+        {"op":"constrain","id":"Recovery follower","on":"Recovery anchor"},
+        {"op":"set_keyframe","id":"Recovery anchor","property":"translation","frame":1,"value":[100,0,0]},
+        {"op":"set_keyframe","id":"Recovery anchor","property":"translation","frame":11,"value":[100,2,0]}
+    ]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":120,"method":"tools/call","params":{"name":"get_project","arguments":{}}})).await;
+    let archive: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let r=call(json!({"jsonrpc":"2.0","id":121,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"clear"}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let cleared: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let r=call(json!({"jsonrpc":"2.0","id":122,"method":"tools/call","params":{"name":"load_project","arguments":{"project":archive,"expected_revision":cleared["revision"]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":123,"method":"tools/call","params":{"name":"get_scene","arguments":{"frame":6}}})).await;
+    let recovered: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let follower = recovered["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Recovery follower")
+        .unwrap();
+    assert_eq!(follower["pose"]["transform"]["translation"][1], 2.0);
+
     child.kill().await.unwrap();
 }
 

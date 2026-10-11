@@ -8,6 +8,7 @@ import { UvEditor } from './uveditor.js'
 import { PathPreview } from './pathpreview.js'
 import { FinalRender } from './finalrender.js'
 import { ProposalTray } from './proposals.js'
+import { Recovery } from './recovery.js'
 
 let chatBusy = false
 import { Collaboration } from './collaboration.js'
@@ -330,6 +331,7 @@ function objectById(id) {
   return app.scene.objects.find((o) => o.id === id)
 }
 
+let recovery = null
 let collaboration = null
 let remoteRevision = 0
 let connectionEpoch = 0
@@ -371,6 +373,7 @@ async function refresh(animate = true) {
     $('checks-out').querySelector('.checks-summary')?.classList.add('stale')
   }
   syncEdit()
+  recovery?.schedule(app.scene.revision)
   collaboration?.set({ version: collaboration.version, peers: collaboration.peers })
 }
 
@@ -2038,6 +2041,10 @@ const ready = (async () => {
   if (browserOnly) {
     await installWasmBackend(`${import.meta.env.BASE_URL}tatara.wasm`)
     $('status-hint').dataset.static = '1'
+    if (!capture || params.has('local-recovery')) {
+      recovery = new Recovery({api, revision:()=>app.scene.revision, restored:async()=>{select(null);await refresh(false);viewport.frameAll()}})
+      await recovery.start()
+    }
   }
   await refresh(false)
   setFrame(app.scene.animation?.start ?? 1)
@@ -2077,6 +2084,7 @@ const ready = (async () => {
 
 window.__tatara = {
   ready,
+  recoveryFlush:()=>recovery?.flush(),
   scenarios: Object.keys(SCENARIOS),
   presence: () => collaboration?.peers ?? [],
   actor: () => collaboration?.actor ?? null,
@@ -2091,11 +2099,12 @@ window.__tatara = {
   refresh: (animate = false) => refresh(animate),
   meta: (id) => {
     const s = SCENARIOS[id]
-    return s && { id, title: s.title, width: s.width || 800, external: Boolean(s.external) }
+    return s && { id, title: s.title, width: s.width || 800, external: Boolean(s.external), browserOnly: Boolean(s.browserOnly), restart: Boolean(s.resume) }
   },
-  play(id) {
-    const s = SCENARIOS[id]
-    if (!s) throw new Error(`unknown scenario ${id}`)
+  play(id, phase = 0) {
+    const original = SCENARIOS[id]
+    const s = phase ? {...original, setup:undefined, steps:original?.resume} : original
+    if (!original || !s.steps) throw new Error(`unknown scenario phase ${id}:${phase}`)
     status.started = true
     demo
       .play(s)

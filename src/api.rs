@@ -1358,6 +1358,77 @@ mod tests {
     }
 
     #[test]
+    fn recovered_browser_snapshot_preserves_constraint_motion_and_guard() {
+        let mut source = Editor::new();
+        assert_eq!(
+            call(
+                &mut source,
+                "POST",
+                "/commands",
+                json!({"commands":[
+                    {"op":"add","name":"Anchor","primitive":{"kind":"cube"}}
+                ]})
+            )
+            .0,
+            200
+        );
+        assert_eq!(call(&mut source, "POST", "/commands", json!({"commands":[
+            {"op":"add","name":"Follower","primitive":{"kind":"cube"},"translation":[0,3,0]},
+            {"op":"constrain","id":"Follower","on":"Anchor"},
+            {"op":"set_keyframe","id":"Anchor","property":"translation","frame":1,"value":[0,0,0]},
+            {"op":"set_keyframe","id":"Anchor","property":"translation","frame":11,"value":[0,2,0]}
+        ]})).0, 200);
+        let (_, archive) = call(&mut source, "GET", "/project", Value::Null);
+        let mut ed = Editor::new();
+        assert_eq!(
+            call(
+                &mut ed,
+                "PUT",
+                "/project",
+                json!({"project":archive,"expected_revision":0})
+            )
+            .0,
+            200
+        );
+        let (_, frame) = call(&mut ed, "GET", "/context?frame=6", Value::Null);
+        assert_eq!(
+            frame["objects"][1]["pose"]["transform"]["translation"][1],
+            2.0
+        );
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/history/revise",
+                json!({"step":1,"expected_revision":1,"commands":[
+                    {"op":"add","name":"Anchor","primitive":{"kind":"cube","size":2}}
+                ]})
+            )
+            .0,
+            200
+        );
+        let (_, frame) = call(&mut ed, "GET", "/context?frame=6", Value::Null);
+        assert_eq!(
+            frame["objects"][1]["pose"]["transform"]["translation"][1],
+            2.5
+        );
+        let before = ed.scene().clone();
+        let recipe = ed.project();
+        assert_eq!(
+            call(
+                &mut ed,
+                "PUT",
+                "/project",
+                json!({"project":archive,"expected_revision":0})
+            )
+            .0,
+            409
+        );
+        assert_eq!(*ed.scene(), before);
+        assert_eq!(ed.project(), recipe);
+    }
+
+    #[test]
     fn project_files_keep_revisable_steps_and_guard_atomic_replacement() {
         let mut ed = Editor::new();
         for commands in [

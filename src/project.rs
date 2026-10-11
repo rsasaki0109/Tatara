@@ -194,6 +194,76 @@ mod tests {
     }
 
     #[test]
+    fn recovered_recipe_keeps_sampled_constraints_revisable() {
+        let mut source = Editor::new();
+        apply(
+            &mut source,
+            json!([{ "op":"add", "name":"Anchor", "primitive":{"kind":"cube"}}]),
+        );
+        apply(
+            &mut source,
+            json!([
+                {"op":"add","name":"Follower","primitive":{"kind":"cube"},"translation":[0,3,0]},
+                {"op":"constrain","id":"Follower","on":"Anchor"}
+            ]),
+        );
+        apply(
+            &mut source,
+            json!([
+                {"op":"set_keyframe","id":"Anchor","property":"translation","frame":1,"value":[0,0,0]},
+                {"op":"set_keyframe","id":"Anchor","property":"translation","frame":11,"value":[0,2,0]}
+            ]),
+        );
+        let project: Project =
+            serde_json::from_slice(&serde_json::to_vec(&source.project()).unwrap()).unwrap();
+        let mut recovered = Editor::new();
+        recovered.load_project(project).unwrap();
+        let before = recovered.scene().clone();
+        assert_eq!(
+            recovered.scene_at(6.0).unwrap().objects,
+            source.scene_at(6.0).unwrap().objects
+        );
+        assert_eq!(*recovered.scene(), before);
+        assert_eq!(
+            recovered.scene_at(6.0).unwrap().objects[1]
+                .transform
+                .translation[1],
+            2.0
+        );
+        recovered
+            .revise(
+                1,
+                serde_json::from_value(
+                    json!([{"op":"add","name":"Anchor","primitive":{"kind":"cube","size":2}}]),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            recovered.scene_at(6.0).unwrap().objects[1]
+                .transform
+                .translation[1],
+            2.5
+        );
+        recovered.undo().unwrap();
+        assert_eq!(
+            recovered.scene_at(6.0).unwrap().objects[1]
+                .transform
+                .translation[1],
+            2.0
+        );
+        recovered.undo().unwrap();
+        assert!(recovered.scene().objects.is_empty());
+        recovered.redo().unwrap();
+        assert_eq!(
+            recovered.scene_at(6.0).unwrap().objects[1]
+                .transform
+                .translation[1],
+            2.0
+        );
+    }
+
+    #[test]
     fn folded_history_base_reopens_and_remains_revisable() {
         let mut source = Editor::new();
         apply(
