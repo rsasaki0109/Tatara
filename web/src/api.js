@@ -24,6 +24,8 @@ export function createApi(clock) {
   return {
     state: () => request('GET', '/state'),
     scene: () => request('GET', '/scene'),
+    project: () => request('GET', '/project'),
+    putProject: (project, expected_revision) => request('PUT', '/project', {project, expected_revision}),
     setActor: (value) => { actor = value },
     presence: () => request('GET', '/presence'),
     updatePresence: (presence) => request('POST', '/presence', presence),

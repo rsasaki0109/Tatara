@@ -1756,4 +1756,25 @@ export const bezierHandles = {
   ]
 }
 
-export const SCENARIOS = { bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const projectHistory = {
+  title:'Save the result and the recipe',gizmo:false,
+  camera:{azimuth:28,elevation:20,distance:7,target:[0,.5,0]},
+  setup:[{op:'add',name:'Box',primitive:{kind:'cube'},color:'#eb9566'}],
+  steps:[
+    {run:[{op:'extrude',id:'Box',face:4,distance:.5}],after:500},
+    {caption:'Save the result and the editable recipe',hint:'typed steps · authors · assets'},
+    {click:'[data-action=save]',after:600},{projectRemember:true},
+    {run:[{op:'clear'}],after:600},
+    {caption:'Reopen it, keep every editable step',hint:'one file · one Undo'},
+    {projectFileOpen:true,after:900},
+    {camera:{azimuth:28,elevation:20,distance:7,target:[0,.5,0]},ms:700},
+    {tab:'history'},{click:'[data-hs-open="1"]',after:400},
+    {caption:'Revise the first step after reopening',hint:'later geometry replays from the saved recipe'},
+    {scrubNumber:'.hs-key[data-scrub*="size"]',to:1.6,ms:1800,after:500},
+    {click:'[data-hs=apply]',after:1200},
+    {caption:'The recipe remains yours to change',hint:'same history in native and browser-only builds'},
+    {cursor:false},{wait:1000}
+  ]
+}
+
+export const SCENARIOS = { projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

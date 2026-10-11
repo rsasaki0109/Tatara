@@ -1062,7 +1062,7 @@ pub struct CommandBatch {
 }
 
 /// One applied batch in the scene's history.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Step {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<crate::collaboration::Actor>,
@@ -1642,6 +1642,57 @@ impl Editor {
         self.proposals_version += 1;
     }
 
+    /// Save the editable recipe, including the folded base and authors.
+    pub fn project(&self) -> crate::project::Project {
+        crate::project::Project {
+            format: crate::project::Format::Tatara,
+            version: crate::project::VERSION,
+            base: (*self.timeline.base).clone(),
+            steps: self
+                .timeline
+                .steps
+                .iter()
+                .map(|step| (**step).clone())
+                .collect(),
+        }
+    }
+
+    /// Validate/replay a native project before replacing any live state.
+    /// Opening is one Undo step; the imported recipe stays revisable.
+    pub fn load_project(&mut self, project: crate::project::Project) -> Result<u64, EngineError> {
+        if project.version != crate::project::VERSION {
+            return err(format!(
+                "unsupported Tatara project version {}",
+                project.version
+            ));
+        }
+        if project.steps.len() > MAX_STEPS {
+            return err(format!(
+                "a project can retain at most {MAX_STEPS} editable steps"
+            ));
+        }
+        validate_scene(&project.base)?;
+        for (i, step) in project.steps.iter().enumerate() {
+            if step.commands.is_empty() {
+                return err(format!("project step {} has no commands", i + 1));
+            }
+            if let Some(actor) = &step.actor {
+                actor.validate()?;
+            }
+        }
+        let timeline = Timeline {
+            base: Arc::new(project.base),
+            steps: project.steps.into_iter().map(Arc::new).collect(),
+        };
+        let next = timeline.replay()?;
+        validate_scene(&next)?;
+        let evaluated = self.evaluate_all(&next)?;
+        self.commit(next, timeline);
+        self.evaluated = evaluated;
+        self.refresh_proposals();
+        Ok(self.scene.revision)
+    }
+
     /// Replace the whole scene (e.g. opening a file). Undoable.
     pub fn load(&mut self, scene: Scene) -> Result<u64, EngineError> {
         validate_scene(&scene)?;
@@ -1738,7 +1789,7 @@ fn apply_command(
             if scene.objects.len() >= MAX_OBJECTS {
                 return err("scene object limit reached");
             }
-            let id = scene.next_id;
+            let id = allocate_id(scene)?;
             let name = match name {
                 Some(n) => check_name(n)?,
                 None => unique_name(scene, "Light"),
@@ -1760,7 +1811,6 @@ fn apply_command(
                 camera: None,
                 light: Some(lamp.clone()),
             });
-            scene.next_id += 1;
             created.push(id);
         }
         Command::LightSettings { id, lamp } => {
@@ -1781,7 +1831,7 @@ fn apply_command(
             if scene.objects.len() >= MAX_OBJECTS {
                 return err("scene object limit reached");
             }
-            let id = scene.next_id;
+            let id = allocate_id(scene)?;
             let name = match name {
                 Some(n) => check_name(n)?,
                 None => unique_name(scene, "Camera"),
@@ -1803,7 +1853,6 @@ fn apply_command(
                 camera: Some(lens.clone()),
                 light: None,
             });
-            scene.next_id += 1;
             created.push(id);
         }
         Command::CameraSettings { id, lens } => {
@@ -1846,7 +1895,7 @@ fn apply_command(
             }
             let mesh = build_primitive(primitive)?;
             let kind = primitive.kind();
-            let id = scene.next_id;
+            let id = allocate_id(scene)?;
             let name = match name {
                 Some(n) => check_name(n)?,
                 None => unique_name(scene, &capitalize(kind)),
@@ -1870,7 +1919,6 @@ fn apply_command(
                 camera: None,
                 light: None,
             });
-            scene.next_id += 1;
             created.push(id);
         }
         Command::Transform {
@@ -1984,7 +2032,7 @@ fn apply_command(
                 if let (Some(c), true) = (&tint, p.body) {
                     material.color = c.clone();
                 }
-                let id = scene.next_id;
+                let id = allocate_id(scene)?;
                 scene.objects.push(Object {
                     id,
                     name: check_name(&format!("{group} {}", p.name))?,
@@ -2004,7 +2052,6 @@ fn apply_command(
                     camera: None,
                     light: None,
                 });
-                scene.next_id += 1;
                 created.push(id);
             }
         }
@@ -2273,7 +2320,7 @@ fn apply_command(
                 return err("a mesh needs at least one face");
             }
             validate_mesh(&mesh)?;
-            let id = scene.next_id;
+            let id = allocate_id(scene)?;
             let name = match name {
                 Some(n) => check_name(n)?,
                 None => unique_name(scene, "Mesh"),
@@ -2297,7 +2344,6 @@ fn apply_command(
                 camera: None,
                 light: None,
             });
-            scene.next_id += 1;
             created.push(id);
         }
         Command::AddModifier {
@@ -2736,6 +2782,15 @@ fn check_images(scene: &Scene) -> Result<(), EngineError> {
     scene.world.validate(scene)
 }
 
+/// Reserve an ID without wrapping imported scene counters.
+fn allocate_id(scene: &mut Scene) -> Result<u64, EngineError> {
+    let id = scene.next_id;
+    scene.next_id = id
+        .checked_add(1)
+        .ok_or_else(|| EngineError::new("object ID space is exhausted"))?;
+    Ok(id)
+}
+
 fn duplicate(
     scene: &mut Scene,
     i: usize,
@@ -2746,7 +2801,7 @@ fn duplicate(
         return err(format!("scene is limited to {MAX_OBJECTS} objects"));
     }
     let mut copy = scene.objects[i].clone();
-    copy.id = scene.next_id;
+    copy.id = allocate_id(scene)?;
     copy.name = match name {
         Some(n) => n,
         None => unique_name(scene, &base_name(&copy.name)),
@@ -2754,7 +2809,6 @@ fn duplicate(
     for (t, o) in copy.transform.translation.iter_mut().zip(offset) {
         *t += o;
     }
-    scene.next_id += 1;
     let id = copy.id;
     scene.objects.push(copy);
     Ok(id)

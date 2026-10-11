@@ -207,7 +207,7 @@ async fn chat_uses_mock_provider() {
         let response: Value =
             serde_json::from_str(&out.next_line().await.unwrap().unwrap()).unwrap();
         if id == 1 {
-            assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 16);
+            assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 18);
         } else {
             let proposals: Value =
                 serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
@@ -369,7 +369,7 @@ async fn mcp_bridge_edits_the_shared_scene() {
     let init = call(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "tatara");
     let tools = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 16);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 18);
     let r = call(json!({"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"update_presence","arguments":{"actor":{"id":"agent-1","name":"Agent One"},"selection":[1],"editing":[1]}}})).await;
     assert_eq!(r["result"]["isError"], false, "{r}");
     let r = call(json!({"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"get_presence","arguments":{}}})).await;
@@ -508,7 +508,7 @@ async fn mcp_bridge_edits_the_shared_scene() {
             .iter()
             .any(|i| i["kind"] == "constraint_violation")
     );
-    // Alignment is available through the same 16 tools, with free axes retained.
+    // Alignment is available through the same 18 tools, with free axes retained.
     let r = call(json!({"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[
         {"op":"add","name":"Aligned A","primitive":{"kind":"cube"},"translation":[20,1,0]},
         {"op":"add","name":"Aligned B","primitive":{"kind":"cube"},"translation":[23,4,2]},
@@ -929,6 +929,87 @@ async fn mcp_bridge_edits_the_shared_scene() {
         ball["tracks"][0]["keys"][0]["out_handle"]["time"],
         json!([0.8, 0.3, 0.3])
     );
+
+    let r=call(json!({"jsonrpc":"2.0","id":111,"method":"tools/call","params":{"name":"get_project","arguments":{}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let project: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(project["format"], "tatara-project");
+    assert!(!project["steps"].as_array().unwrap().is_empty());
+    let r=call(json!({"jsonrpc":"2.0","id":112,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"clear"}]}}})).await;
+    assert_ne!(r["result"]["isError"], true);
+    let r=call(json!({"jsonrpc":"2.0","id":113,"method":"tools/call","params":{"name":"load_project","arguments":{"project":project}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":114,"method":"tools/call","params":{"name":"get_scene","arguments":{"frame":8.625}}})).await;
+    let restored: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let ball = restored["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Bezier ball")
+        .unwrap();
+    assert!(
+        (ball["pose"]["transform"]["translation"][0]
+            .as_f64()
+            .unwrap()
+            - 8.75)
+            .abs()
+            < 1e-9
+    );
+    let index = project["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|step| {
+            step["commands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["op"] == "add" && c["name"] == "Bezier ball")
+        })
+        .unwrap();
+    let mut commands = project["steps"][index]["commands"].clone();
+    let creation = commands
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|c| c["op"] == "add" && c["name"] == "Bezier ball")
+        .unwrap();
+    creation["primitive"]["size"] = json!(2);
+    let r=call(json!({"jsonrpc":"2.0","id":115,"method":"tools/call","params":{"name":"revise_step","arguments":{"step":index+1,"commands":commands}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":116,"method":"tools/call","params":{"name":"get_scene","arguments":{"include_mesh":true}}})).await;
+    let revised: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let ball = revised["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "Bezier ball")
+        .unwrap();
+    assert!(
+        ball["mesh"]["vertices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v[0] == 1.0)
+    );
+
+    let mut exhausted = project.clone();
+    exhausted["base"]["next_id"] = json!(u64::MAX);
+    let r=call(json!({"jsonrpc":"2.0","id":117,"method":"tools/call","params":{"name":"load_project","arguments":{"project":exhausted}}})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(
+        r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("exhausted")
+    );
+    let r=call(json!({"jsonrpc":"2.0","id":118,"method":"tools/call","params":{"name":"get_scene","arguments":{"include_mesh":true}}})).await;
+    let unchanged: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(unchanged, revised);
 
     child.kill().await.unwrap();
 }

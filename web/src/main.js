@@ -665,8 +665,8 @@ const actions = {
   undo: () => history('undo'),
   redo: () => history('redo'),
   async save() {
-    const scene = await api.scene()
-    const blob = new Blob([JSON.stringify(scene, null, 1)], { type: 'application/json' })
+    const project = await api.project()
+    const blob = new Blob([JSON.stringify(project, null, 1)], { type: 'application/json' })
     download(URL.createObjectURL(blob), 'scene.tatara.json')
     toast('Saved scene.tatara.json')
   },
@@ -751,7 +751,8 @@ $('open-input').addEventListener('change', async (e) => {
     }
     const scene = JSON.parse(await file.text())
     await track(async () => {
-      await api.putScene(scene)
+      if (scene.format != null) await api.putProject(scene, app.scene.revision)
+      else await api.putScene(scene)
       select(null)
       await refresh(false)
       viewport.frameAll()

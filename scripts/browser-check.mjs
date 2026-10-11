@@ -3,6 +3,7 @@
 // editing, history and files, then every demo scenario in capture mode.
 // Requires `npm --prefix web run build` and `cargo build --release`.
 
+import { checkProjects } from './project-check.mjs'
 import { checkBezier } from './bezier-check.mjs'
 import { checkCurves } from './curve-check.mjs'
 import { checkPoles } from './pole-check.mjs'
@@ -144,7 +145,7 @@ try {
 
   const [download] = await Promise.all([page.waitForEvent('download'), page.click('[data-action=save]')])
   const saved = JSON.parse(fs.readFileSync(await download.path(), 'utf8'))
-  check(saved.objects.length === 1, 'save downloads the scene')
+  check(saved.format === 'tatara-project' && saved.steps.length > 0, 'save downloads the scene and editable recipe')
   await page.click('#outliner li')
   await page.click('[data-action=delete]')
   await page.waitForFunction(() => document.querySelectorAll('#outliner li').length === 0)
@@ -1091,6 +1092,7 @@ try {
   await checkPoles(curves,check)
   await checkJointLimits(curves,check)
   await checkBezier(curves,check)
+  await checkProjects(curves,check)
   await curves.close()
 
   // Every scenario must finish without errors (the MCP one falls back to HTTP).
