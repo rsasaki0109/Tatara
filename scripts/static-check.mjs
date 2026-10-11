@@ -3,6 +3,7 @@
 // sub-path like GitHub Pages and drives it in Chromium with no server API.
 // Run `node scripts/build-static.mjs` first.
 
+import { checkBezier } from './bezier-check.mjs'
 import { checkCurves } from './curve-check.mjs'
 import { checkPoles } from './pole-check.mjs'
 import { checkJointLimits } from './limits-check.mjs'
@@ -302,6 +303,7 @@ try {
   await checkCurves(page,check)
   await checkPoles(page,check)
   await checkJointLimits(page,check)
+  await checkBezier(page,check)
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

@@ -337,6 +337,8 @@ pub fn export_glb_frames(ed: &Editor, start: f64, end: f64) -> Result<Vec<u8>, E
                     frame,
                     value: value.to_vec(),
                     interpolation: Interpolation::Linear,
+                    in_handle: None,
+                    out_handle: None,
                 });
             }
         }
@@ -1684,6 +1686,22 @@ fn import_optical_tracks(
                 interpolation: Some(key.interpolation),
                 bone: None,
             });
+            for (side, handle) in [
+                (crate::anim::HandleSide::In, &key.in_handle),
+                (crate::anim::HandleSide::Out, &key.out_handle),
+            ] {
+                if let Some(handle) = handle {
+                    handle.validate(t.property)?;
+                    commands.push(Command::SetKeyHandle {
+                        id: crate::engine::ObjRef::Name(name.into()),
+                        property: t.property,
+                        frame: key.frame,
+                        side,
+                        handle: Some(handle.clone()),
+                        bone: None,
+                    });
+                }
+            }
         }
     }
     Ok(())
@@ -2239,6 +2257,75 @@ mod tests {
         assert_eq!(o.transform.scale, [1.0; 3], "non-TRS world matrix is baked");
         assert_eq!(o.mesh.faces.len(), 6);
     }
+    #[test]
+    fn bezier_motion_export_bakes_constraint_followers_without_mutating_curves() {
+        let ed = editor_with(json!([
+            {"op":"add","name":"Driver","primitive":{"kind":"cube"}},
+            {"op":"add","name":"Follower","primitive":{"kind":"cube"},"translation":[0,3,0]},
+            {"op":"constrain","id":"Follower","align":"x","from":"Driver"},
+            {"op":"set_keyframe","id":"Driver","property":"translation","frame":1,"value":[0,0,0],"interpolation":"bezier"},
+            {"op":"set_keyframe","id":"Driver","property":"translation","frame":5,"value":[2,0,0]},
+            {"op":"set_key_handle","id":"Driver","property":"translation","frame":1,"side":"out","handle":{"time":[0.8,0.3,0.3],"value":[2,0,0]}},
+            {"op":"set_key_handle","id":"Driver","property":"translation","frame":5,"side":"in","handle":{"time":[0.1,0.3,0.3],"value":[0,0,0]}}
+        ]));
+        let original = ed.scene().clone();
+        let bytes = export_glb_frames(&ed, 1.0, 5.0).unwrap();
+        let (doc, bin) = parse_glb(&bytes).unwrap();
+        let buffers = load_buffers(&doc, bin).unwrap();
+        let animation = &doc["animations"][0];
+        let mut followers = 0;
+        for channel in animation["channels"].as_array().unwrap() {
+            let node = &doc["nodes"][channel["target"]["node"].as_u64().unwrap() as usize];
+            if node["name"] != "Follower" || channel["target"]["path"] != "translation" {
+                continue;
+            }
+            followers += 1;
+            let sampler = &animation["samplers"][channel["sampler"].as_u64().unwrap() as usize];
+            let (times, _) =
+                read_accessor(&doc, &buffers, sampler["input"].as_u64().unwrap() as usize).unwrap();
+            let (values, width) =
+                read_accessor(&doc, &buffers, sampler["output"].as_u64().unwrap() as usize)
+                    .unwrap();
+            for (i, time) in times.iter().enumerate() {
+                let expected = ed
+                    .scene_at(time * ed.scene().animation.fps)
+                    .unwrap()
+                    .objects[1]
+                    .transform
+                    .translation;
+                assert!((values[i * width] - expected[0]).abs() < 1e-5);
+            }
+        }
+        assert_eq!(followers, 1);
+        assert_eq!(*ed.scene(), original);
+    }
+
+    #[test]
+    fn bezier_optical_extras_preserve_controls_and_reject_invalid_handles() {
+        let ed = editor_with(json!([
+            {"op":"add_camera","name":"Shot"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":1,"value":20,"interpolation":"bezier"},
+            {"op":"set_keyframe","id":"Shot","property":"camera_fov","frame":11,"value":60},
+            {"op":"set_key_handle","id":"Shot","property":"camera_fov","frame":1,"side":"out","handle":{"time":[0.8],"value":[40]}},
+            {"op":"set_key_handle","id":"Shot","property":"camera_fov","frame":11,"side":"in","handle":{"time":[0.1],"value":[0]}}
+        ]));
+        let bytes = export_glb(&ed);
+        let back = reimport(&bytes);
+        assert_eq!(back.scene().objects[0].tracks, ed.scene().objects[0].tracks);
+        assert!(
+            (crate::anim::lens_at(&back.scene().objects[0], Some(8.625))
+                .unwrap()
+                .fov
+                - 55.0)
+                .abs()
+                < 1e-9
+        );
+        let (doc, _) = parse_glb(&bytes).unwrap();
+        let mut node = doc["nodes"][0].clone();
+        node["extras"]["tataraOpticalTracks"][0]["keys"][0]["out_handle"]["time"] = json!([2.0]);
+        assert!(import_optical_tracks(&node, "Shot", true, &mut Vec::new()).is_err());
+    }
+
     #[test]
     fn optical_tracks_round_trip_as_validated_tatara_extras() {
         let mut ed = Editor::new();

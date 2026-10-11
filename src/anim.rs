@@ -83,8 +83,44 @@ pub enum Interpolation {
     #[default]
     Ease,
     Linear,
+    /// Cubic time/value handles; the left key owns the segment.
+    Bezier,
     /// Hold the value until the next key.
     Step,
+}
+
+/// Component-wise controls relative to a key and its neighbouring interval.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CurveHandle {
+    /// Fraction of the interval, in 0..1; incoming controls point backwards.
+    pub time: Vec<f64>,
+    /// Offset from the key value, in the property's native units.
+    pub value: Vec<f64>,
+}
+
+impl CurveHandle {
+    pub fn validate(&self, property: Property) -> Result<(), EngineError> {
+        if self.time.len() != property.width()
+            || self.value.len() != property.width()
+            || self
+                .time
+                .iter()
+                .any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
+            || self.value.iter().any(|x| !x.is_finite() || x.abs() > 1e6)
+        {
+            return Err(EngineError::new(
+                "curve handles need one time in 0-1 and finite value offset within +/-1000000 per component",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleSide {
+    In,
+    Out,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -94,6 +130,10 @@ pub struct Key {
     pub value: Vec<f64>,
     #[serde(default)]
     pub interpolation: Interpolation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_handle: Option<CurveHandle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_handle: Option<CurveHandle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -259,16 +299,67 @@ pub fn sample_track(track: &Track, frame: f64) -> Vec<f64> {
     let i = keys.partition_point(|k| k.frame <= frame) - 1;
     let (a, b) = (&keys[i], &keys[i + 1]);
     let t = (frame - a.frame) / (b.frame - a.frame);
+    if a.interpolation == Interpolation::Bezier {
+        return a
+            .value
+            .iter()
+            .zip(&b.value)
+            .enumerate()
+            .map(|(k, (&start, &end))| {
+                let x1 = a.out_handle.as_ref().map_or(1.0 / 3.0, |h| h.time[k]);
+                let x2 = 1.0 - b.in_handle.as_ref().map_or(1.0 / 3.0, |h| h.time[k]);
+                let y1 = start + a.out_handle.as_ref().map_or(0.0, |h| h.value[k]);
+                let y2 = end + b.in_handle.as_ref().map_or(0.0, |h| h.value[k]);
+                let (mut lo, mut hi) = (0.0, 1.0);
+                // Bounded time controls make this cubic monotone, including crossed controls.
+                for _ in 0..48 {
+                    let mid = (lo + hi) * 0.5;
+                    let x = cubic(0.0, x1, x2, 1.0, mid);
+                    if x == t {
+                        lo = mid;
+                        hi = mid;
+                        break;
+                    }
+                    if x < t {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                sampled_domain(track.property, cubic(start, y1, y2, end, (lo + hi) * 0.5))
+            })
+            .collect();
+    }
     let t = match a.interpolation {
         Interpolation::Step => 0.0,
         Interpolation::Linear => t,
-        Interpolation::Ease => t * t * (3.0 - 2.0 * t),
+        Interpolation::Ease | Interpolation::Bezier => t * t * (3.0 - 2.0 * t),
     };
     a.value
         .iter()
         .zip(&b.value)
         .map(|(x, y)| x + (y - x) * t)
         .collect()
+}
+
+fn cubic(a: f64, b: f64, c: f64, d: f64, t: f64) -> f64 {
+    let u = 1.0 - t;
+    u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+}
+
+/// Keep overshooting Bezier curves within the property's physical domain.
+fn sampled_domain(property: Property, value: f64) -> f64 {
+    if let Some((lo, hi)) = property.range() {
+        return value.clamp(lo, hi);
+    }
+    if property.is_color() {
+        return value.clamp(0.0, 1.0);
+    }
+    let value = value.clamp(-1e6, 1e6);
+    if property == Property::Scale && value.abs() < 1e-6 {
+        return if value < 0.0 { -1e-6 } else { 1e-6 };
+    }
+    value
 }
 
 /// A property's value at `frame`: from its track, or the static value.
@@ -385,16 +476,18 @@ pub fn set_key(
     if track.keys.len() >= 10_000 {
         return Err(EngineError::new("a track can hold at most 10000 keys"));
     }
+    let existing = track
+        .keys
+        .iter()
+        .position(|k| (k.frame - frame).abs() < 1e-9);
     let key = Key {
         frame,
         value,
         interpolation,
+        in_handle: existing.and_then(|i| track.keys[i].in_handle.clone()),
+        out_handle: existing.and_then(|i| track.keys[i].out_handle.clone()),
     };
-    match track
-        .keys
-        .iter()
-        .position(|k| (k.frame - frame).abs() < 1e-9)
-    {
+    match existing {
         Some(i) => track.keys[i] = key,
         None => {
             let at = track.keys.partition_point(|k| k.frame < frame);
@@ -456,9 +549,44 @@ pub fn edit_key(
             .transpose()?
             .unwrap_or_else(|| old.value.clone()),
         interpolation: interpolation.unwrap_or(old.interpolation),
+        in_handle: old.in_handle.clone(),
+        out_handle: old.out_handle.clone(),
     };
     track.keys[index] = key;
     track.keys.sort_by(|a, b| a.frame.total_cmp(&b.frame));
+    Ok(())
+}
+
+/// Set or clear one existing key's handle without changing its interpolation.
+pub fn set_handle(
+    o: &mut Object,
+    property: Property,
+    bone: Option<&str>,
+    frame: f64,
+    side: HandleSide,
+    handle: Option<&CurveHandle>,
+) -> Result<(), EngineError> {
+    check_frame(frame)?;
+    validate_property(o, property)?;
+    match (property, bone) {
+        (Property::Bone, Some(name)) if o.bones.iter().any(|b| b.name == name) => {}
+        (Property::Bone, _) => return Err(EngineError::new("bone keys need an existing `bone`")),
+        (_, Some(_)) => return Err(EngineError::new("only property `bone` takes `bone`")),
+        _ => {}
+    }
+    if let Some(handle) = handle {
+        handle.validate(property)?;
+    }
+    let key = o
+        .tracks
+        .iter_mut()
+        .find(|t| t.property == property && t.bone.as_deref() == bone)
+        .and_then(|t| t.keys.iter_mut().find(|k| (k.frame - frame).abs() < 1e-9))
+        .ok_or_else(|| EngineError::new("no matching animation key"))?;
+    match side {
+        HandleSide::In => key.in_handle = handle.cloned(),
+        HandleSide::Out => key.out_handle = handle.cloned(),
+    }
     Ok(())
 }
 
@@ -506,6 +634,9 @@ pub fn validate_tracks(o: &Object) -> Result<(), EngineError> {
         }
         for (i, k) in t.keys.iter().enumerate() {
             check_frame(k.frame)?;
+            for handle in [&k.in_handle, &k.out_handle].into_iter().flatten() {
+                handle.validate(t.property)?;
+            }
             if k.value.len() != t.property.width() || k.value.iter().any(|v| !v.is_finite()) {
                 return Err(EngineError::new(format!(
                     "{:?} key at frame {} has the wrong value",
@@ -554,13 +685,109 @@ mod tests {
                     frame: 0.0,
                     value: vec![0.0, 0.0, 0.0],
                     interpolation: interp,
+                    in_handle: None,
+                    out_handle: None,
                 },
                 Key {
                     frame: 10.0,
                     value: vec![10.0, 0.0, -10.0],
                     interpolation: interp,
+                    in_handle: None,
+                    out_handle: None,
                 },
             ],
+        }
+    }
+
+    #[test]
+    fn bezier_inverts_component_time_and_preserves_endpoints() {
+        let mut t = track(Interpolation::Bezier);
+        t.keys[0].out_handle = Some(CurveHandle {
+            time: vec![0.8, 0.0, 1.0],
+            value: vec![10.0, 2.0, -5.0],
+        });
+        t.keys[1].in_handle = Some(CurveHandle {
+            time: vec![0.1, 0.0, 1.0],
+            value: vec![0.0, 2.0, 5.0],
+        });
+        // At parameter .5, X time is .7625 while its value is 8.75.
+        let v = sample_track(&t, 7.625);
+        assert!((v[0] - 8.75).abs() < 1e-10);
+        assert!(sample_track(&t, 5.0)[1] > 1.0);
+        assert!((sample_track(&t, 5.0)[2] + 5.0).abs() < 1e-8);
+        for handle in [
+            CurveHandle {
+                time: vec![f64::NAN; 3],
+                value: vec![0.0; 3],
+            },
+            CurveHandle {
+                time: vec![0.3; 3],
+                value: vec![f64::INFINITY; 3],
+            },
+        ] {
+            assert!(handle.validate(Property::Translation).is_err());
+        }
+        assert_eq!(sample_track(&t, 0.0), t.keys[0].value);
+        assert_eq!(sample_track(&t, 10.0), t.keys[1].value);
+        t.keys[0].out_handle = None;
+        t.keys[1].in_handle = None;
+        let eased = track(Interpolation::Ease);
+        for frame in [0.125, 2.5, 5.0, 9.875] {
+            assert!((sample_track(&t, frame)[0] - sample_track(&eased, frame)[0]).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn bezier_overshoot_respects_optical_material_and_scale_domains() {
+        for property in [
+            Property::Opacity,
+            Property::Color,
+            Property::CameraFocus,
+            Property::CameraFov,
+            Property::LightIntensity,
+            Property::Scale,
+        ] {
+            let width = property.width();
+            let mut t = Track {
+                property,
+                bone: None,
+                keys: vec![
+                    Key {
+                        frame: 0.0,
+                        value: vec![1.0; width],
+                        interpolation: Interpolation::Bezier,
+                        in_handle: None,
+                        out_handle: Some(CurveHandle {
+                            time: vec![1.0 / 3.0; width],
+                            value: vec![-1000.0; width],
+                        }),
+                    },
+                    Key {
+                        frame: 10.0,
+                        value: vec![1.0; width],
+                        interpolation: Interpolation::Ease,
+                        in_handle: None,
+                        out_handle: None,
+                    },
+                ],
+            };
+            for offset in [-1000.0, 1000000.0] {
+                t.keys[0].out_handle.as_mut().unwrap().value.fill(offset);
+                for frame in [0.1, 2.5, 5.0, 9.9] {
+                    for value in sample_track(&t, frame) {
+                        assert!(value.is_finite());
+                        if let Some((lo, hi)) = property.range() {
+                            assert!((lo..=hi).contains(&value));
+                        }
+                        if property.is_color() {
+                            assert!((0.0..=1.0).contains(&value));
+                        }
+                        if property == Property::Scale {
+                            assert!(value.abs() >= 1e-6);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -819,6 +1046,8 @@ mod tests {
                 frame: 1.,
                 value: vec![171.],
                 interpolation: Interpolation::Linear,
+                in_handle: None,
+                out_handle: None,
             }],
         }];
         assert!(validate_tracks(&o).is_err());
