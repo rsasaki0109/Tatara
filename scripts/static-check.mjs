@@ -3,6 +3,7 @@
 // sub-path like GitHub Pages and drives it in Chromium with no server API.
 // Run `node scripts/build-static.mjs` first.
 
+import { checkCoreCache } from './core-cache-check.mjs'
 import { checkRecovery } from './recovery-check.mjs'
 import { checkProjects } from './project-check.mjs'
 import { checkBezier } from './bezier-check.mjs'
@@ -308,6 +309,7 @@ try {
   await checkBezier(page,check)
   await checkProjects(page,check)
   await checkRecovery(browser,base,check)
+  await checkCoreCache(browser,path.join(root,'web/dist-static/tatara.wasm'),check)
   check(apiHits === 0, `no request reached a server API (${apiHits})`)
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`)
 } finally {

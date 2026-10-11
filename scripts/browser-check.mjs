@@ -3,6 +3,7 @@
 // editing, history and files, then every demo scenario in capture mode.
 // Requires `npm --prefix web run build` and `cargo build --release`.
 
+import { checkCoreCache } from './core-cache-check.mjs'
 import { checkRecovery } from './recovery-check.mjs'
 import { checkProjects } from './project-check.mjs'
 import { checkBezier } from './bezier-check.mjs'
@@ -1101,6 +1102,7 @@ try {
   if (wasmBuild.status !== 0) throw new Error('browser-only recovery core did not build')
   fs.copyFileSync(path.join(root,'target/wasm32-unknown-unknown/wasm/tatara_wasm.wasm'),path.join(root,'web/dist/tatara.wasm'))
   await checkRecovery(browser, `${url}/?wasm=1`, check)
+  await checkCoreCache(browser, path.join(root,'web/dist/tatara.wasm'), check)
 
   // Every scenario must finish without errors (the MCP one falls back to HTTP).
   const cap = await browser.newPage({ viewport: { width: 1280, height: 720 } })

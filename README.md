@@ -516,7 +516,7 @@ This needs ffmpeg and a Chromium build. Set `TATARA_BROWSER_PATH` if Playwright'
 | Editor UI and WebGL presentation | JavaScript + Three.js: `web/src` |
 | Scripted workflows, recorder, smoke test | `web/src/scenarios.js`, `scripts/` |
 
-The native server and the WebAssembly build answer `/api` through the same `api::handle` router. In the browser build, `backend.js` sends the editor's `/api` requests into the module, so the UI is identical in both. Build the static site with `node scripts/build-static.mjs` (output in `web/dist-static/`), and check it with `node scripts/static-check.mjs`. The `Pages` workflow publishes it on every push to `main`.
+The native server and the WebAssembly build answer `/api` through the same `api::handle` router. In the browser build, `backend.js` sends the editor's `/api` requests into the module, so the UI is identical in both. Startup revalidates the Rust module against the server, so a returning browser does not combine a new UI with a fresh cached older core; unchanged modules can reuse their bytes through HTTP 304. Build the static site with `node scripts/build-static.mjs` (output in `web/dist-static/`), and check it with `node scripts/static-check.mjs`. The `Pages` workflow publishes it on every push to `main`.
 
 The browser is a presentation layer; geometry and authoritative edits run in Rust. The server binds to loopback; browsers and agents accessing the same local server share one scene and undo history. It is not an authenticated remote collaboration service.
 

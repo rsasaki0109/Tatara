@@ -17,7 +17,9 @@ async function bodyBytes(body) {
 }
 
 export async function installWasmBackend(url) {
-  const response = await fetch(url)
+  // Revalidate the unversioned core on startup: a new UI may need new routes.
+  // Unchanged modules can still use the HTTP cache through a 304 response.
+  const response = await fetch(url, { cache: 'no-cache' })
   if (!response.ok) throw new Error(`could not load ${url}: ${response.status}`)
   const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {})
   const x = instance.exports
