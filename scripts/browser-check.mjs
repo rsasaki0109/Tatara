@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkProposalAssets } from './proposal-assets-check.mjs'
 import { checkImageHistory } from './image-history-check.mjs'
 import { checkPackedMaterials } from './packed-material-check.mjs'
 import { checkMerge } from './merge-check.mjs'
@@ -1109,6 +1110,7 @@ try {
   await checkMerge(curves,check)
   await checkPackedMaterials(curves,check)
   await checkImageHistory(curves,check)
+  await checkProposalAssets(curves,check)
   await curves.close()
 
   // The browser-only backend shares the same UI under ?wasm, with local state.

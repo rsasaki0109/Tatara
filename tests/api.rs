@@ -1124,6 +1124,42 @@ async fn mcp_bridge_edits_the_shared_scene() {
         .unwrap()["material"];
     assert_eq!(material["roughness"], 0.2);
     assert_eq!(material["texture"]["metallic_roughness_map"], "MCP packed");
+    let replacement = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        tatara::texture::pixels_png(&tatara::image::Pixels {
+            width: 1,
+            height: 1,
+            rgb: vec![[0.0, 1.0, 0.0]],
+        }),
+    );
+    let live_before: Value = reqwest::get(format!("{base}/api/scene"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let r=call(json!({"jsonrpc":"2.0","id":136,"method":"tools/call","params":{"name":"propose_changes","arguments":{"title":"Packed image review","commands":[{"op":"add_image","name":"MCP packed","data":replacement}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let proposed: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let id = proposed["ids"][0].as_u64().unwrap();
+    let preview: Value = reqwest::get(format!("{base}/api/proposal?id={id}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        preview["scene"]["images"]["MCP packed"]["preview_url"],
+        format!("data:image/png;base64,{replacement}")
+    );
+    let live_after: Value = reqwest::get(format!("{base}/api/scene"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(live_after, live_before);
     child.kill().await.unwrap();
 }
 

@@ -845,7 +845,7 @@ export class Viewport {
             ? `/api/texture?${params({ kind: 'normal', relief: String(t.relief), ...imageVersion })}`
             : null
     // A node graph's roughness (G) and metalness (B) come as one map.
-    const ormUrl = t?.metallic_roughness_map ? this.imageUrl(t.metallic_roughness_map) : graph && (graph.output?.roughness || graph.output?.metalness) ? nodeUrl('orm') : null
+    const ormUrl = t?.metallic_roughness_map ? this.imageUrl(t.metallic_roughness_map) : graph && (graph.output?.roughness != null || graph.output?.metalness != null) ? nodeUrl('orm') : null
     m.userData.ormUrl = ormUrl
     // A baked pattern already holds the colour; an image is tinted by it.
     m.userData.bakedColor = Boolean(colorUrl) && t.pattern !== 'image'

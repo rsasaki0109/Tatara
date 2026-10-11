@@ -525,23 +525,38 @@ impl Revision {
 
 /// A replayed scene with the original assets retained for preview comparison.
 /// Native transports can render this snapshot after releasing the editor lock.
-pub struct HistoryPreviewJob {
+pub struct ScenePreviewJob {
     preview: Editor,
     original_images: std::collections::BTreeMap<String, crate::image::ImageAsset>,
+    original_world: crate::world::World,
+    original_materials: std::collections::BTreeMap<u64, engine::Material>,
+    proposal: Option<Value>,
 }
 
-pub fn history_preview_job(ed: &Editor, body: &[u8]) -> Result<HistoryPreviewJob, Response> {
+pub fn history_preview_job(ed: &Editor, body: &[u8]) -> Result<ScenePreviewJob, Response> {
     let request: Revision = parse(body)?;
     ed.ensure_revision(request.expected_revision)?;
     let step = request.step;
     let preview = ed.revise_preview(step, request.into_commands(ed)?)?;
-    Ok(HistoryPreviewJob {
-        preview,
-        original_images: ed.scene().images.clone(),
-    })
+    Ok(ScenePreviewJob::new(ed, preview, None))
 }
 
-impl HistoryPreviewJob {
+impl ScenePreviewJob {
+    fn new(ed: &Editor, preview: Editor, proposal: Option<Value>) -> Self {
+        Self {
+            preview,
+            original_images: ed.scene().images.clone(),
+            original_world: ed.scene().world.clone(),
+            original_materials: ed
+                .scene()
+                .objects
+                .iter()
+                .map(|object| (object.id, object.material.clone()))
+                .collect(),
+            proposal,
+        }
+    }
+
     pub fn run(self) -> Response {
         self.render().unwrap_or_else(|error| error)
     }
@@ -550,6 +565,9 @@ impl HistoryPreviewJob {
         let Self {
             preview,
             original_images,
+            original_world,
+            original_materials,
+            proposal,
         } = self;
         let mut scene = state(&preview, false)["scene"].take();
         for (name, asset) in &preview.scene().images {
@@ -561,12 +579,13 @@ impl HistoryPreviewJob {
                     json!(format!("data:{mime};base64,{encoded}"));
             }
         }
-        if preview
-            .scene()
-            .world
-            .image
-            .as_ref()
-            .is_some_and(|name| preview.scene().images.get(name) != original_images.get(name))
+        if preview.scene().world != original_world
+            || preview
+                .scene()
+                .world
+                .image
+                .as_ref()
+                .is_some_and(|name| preview.scene().images.get(name) != original_images.get(name))
         {
             let response = environment(&preview, "w=512")?;
             let encoded =
@@ -581,9 +600,10 @@ impl HistoryPreviewJob {
             let Some(graph) = texture.graph.as_ref() else {
                 continue;
             };
-            if !graph
-                .images()
-                .any(|name| preview.scene().images.get(name) != original_images.get(name))
+            if original_materials.get(&object.id) == Some(&object.material)
+                && !graph
+                    .images()
+                    .any(|name| preview.scene().images.get(name) != original_images.get(name))
             {
                 continue;
             }
@@ -613,7 +633,11 @@ impl HistoryPreviewJob {
             }
             scene["objects"][index]["material"]["texture"]["preview_maps"] = maps;
         }
-        Ok(Response::json(200, json!({ "scene": scene })))
+        let mut out = json!({"scene":scene});
+        if let Some(proposal) = proposal {
+            out["proposal"] = proposal;
+        }
+        Ok(Response::json(200, out))
     }
 }
 
@@ -636,6 +660,18 @@ fn preview(ed: &Editor, query: &str) -> Result<Editor, Response> {
     let id = proposal_id(query)?;
     ed.preview(id)
         .ok_or_else(|| Response::error(404, format!("no proposal {id}")))
+}
+
+/// An immutable asset-aware proposal scene for the viewport.
+pub fn proposal_preview_job(ed: &Editor, query: &str) -> Result<ScenePreviewJob, Response> {
+    let id = proposal_id(query)?;
+    let proposal = ed
+        .proposals()
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.summary());
+    let preview = preview(ed, query)?;
+    Ok(ScenePreviewJob::new(ed, preview, proposal))
 }
 
 /// A path-traced image of proposal `id`'s scene, like `/render/image`
@@ -1036,7 +1072,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
                     .changed(revision),
             )
         }
-        ("POST", "/history/preview") => history_preview_job(ed, body).map(HistoryPreviewJob::run),
+        ("POST", "/history/preview") => history_preview_job(ed, body).map(ScenePreviewJob::run),
         ("GET", "/proposals") => Ok(Response::json(200, proposals(ed))),
         ("POST", "/proposals") => {
             let req: crate::proposal::ProposalRequest = parse(body)?;
@@ -1045,19 +1081,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
             out["ids"] = json!(ids);
             Ok(Response::json(200, out))
         }
-        ("GET", "/proposal") => {
-            let p = preview(ed, query)?;
-            let id = proposal_id(query)?;
-            let summary = ed
-                .proposals()
-                .iter()
-                .find(|p| p.id == id)
-                .map(|p| p.summary());
-            Ok(Response::json(
-                200,
-                json!({ "proposal": summary, "scene": state(&p, false)["scene"] }),
-            ))
-        }
+        ("GET", "/proposal") => proposal_preview_job(ed, query).map(ScenePreviewJob::run),
         ("GET", "/proposal/render") => proposal_image_job(ed, query).map(ImageJob::run),
         ("POST", "/proposal/accept") => {
             let r = ed.accept(proposal_id(query)?)?;
@@ -2772,6 +2796,222 @@ mod tests {
             scene["images"]["Photo"]["hash"],
             json!(live.images["Photo"].hash())
         );
+    }
+
+    #[test]
+    fn proposal_asset_previews_use_the_candidate_pixels_without_committing() {
+        use base64::Engine as _;
+        let encoded = |rgb| {
+            base64::engine::general_purpose::STANDARD.encode(crate::texture::pixels_png(
+                &crate::image::Pixels {
+                    width: 1,
+                    height: 1,
+                    rgb: vec![rgb],
+                },
+            ))
+        };
+        let mut ed = Editor::new();
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[
+                    {"op":"add_image","name":"Artwork","data":encoded([1.0,0.5,0.0])},
+                    {"op":"world","image":"Artwork","background":true},
+                    {"op":"add","name":"Panel","primitive":{"kind":"cube"}},
+                    {"op":"material","id":"Panel","texture":{"pattern":"image","image":"Artwork"}}
+                ]})
+            )
+            .0,
+            200
+        );
+        let before = ed.scene().clone();
+        let (status, proposed) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Blue artwork","commands":[{"op":"add_image","name":"Artwork","data":encoded([0.0,0.0,1.0])}]}),
+        );
+        assert_eq!(status, 200);
+        let id = proposed["ids"][0].as_u64().unwrap();
+        let job = proposal_preview_job(&ed, &format!("id={id}"))
+            .unwrap_or_else(|error| panic!("{}", String::from_utf8_lossy(&error.body)));
+        let response = job.run();
+        assert_eq!(response.status, 200);
+        let preview: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(preview["proposal"]["id"], id);
+        let image = &preview["scene"]["images"]["Artwork"];
+        assert!(
+            image["preview_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+        let asset = crate::image::ImageAsset::from_bytes(
+            crate::image::decode_base64(image["preview_url"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(asset.decode().unwrap().sample(0.5, 0.5), [0.0, 0.0, 1.0]);
+        assert!(
+            preview["scene"]["world"]["preview_environment"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:application/octet-stream;base64,")
+        );
+        assert_eq!(ed.scene(), &before);
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                &format!("/proposal/accept?id={id}"),
+                Value::Null
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            ed.scene().images["Artwork"]
+                .decode()
+                .unwrap()
+                .sample(0.5, 0.5),
+            [0.0, 0.0, 1.0]
+        );
+        assert!(ed.undo().is_some());
+        assert_eq!(ed.scene().images, before.images);
+
+        // A queued renderer retains its candidate and comparison assets even
+        // if another client installs the same image before that worker runs.
+        let (status, proposed) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Queued blue artwork","commands":[{"op":"add_image","name":"Artwork","data":encoded([0.0,0.0,1.0])}]}),
+        );
+        assert_eq!(status, 200);
+        let queued_id = proposed["ids"][0].as_u64().unwrap();
+        let queued = proposal_preview_job(&ed, &format!("id={queued_id}"))
+            .unwrap_or_else(|error| panic!("{}", String::from_utf8_lossy(&error.body)));
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[
+                    {"op":"add_image","name":"Artwork","data":encoded([0.0,0.0,1.0])},
+                    {"op":"material","id":"Panel","roughness":0.2}
+                ]}),
+            )
+            .0,
+            200
+        );
+        let live = ed.scene().clone();
+        let response = queued.run();
+        assert_eq!(response.status, 200);
+        let frozen: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(frozen["proposal"]["id"], queued_id);
+        assert!(frozen["scene"]["images"]["Artwork"]["preview_url"].is_string());
+        assert!(frozen["scene"]["world"]["preview_environment"].is_string());
+        assert_eq!(
+            frozen["scene"]["objects"][0]["material"]["roughness"],
+            before.objects[0].material.roughness
+        );
+        assert_eq!(ed.scene(), &live);
+    }
+
+    #[test]
+    fn preview_jobs_bake_changed_nodes_and_world_with_unchanged_image_bytes() {
+        use base64::Engine as _;
+        let encoded = |rgb| {
+            base64::engine::general_purpose::STANDARD.encode(crate::texture::pixels_png(
+                &crate::image::Pixels {
+                    width: 1,
+                    height: 1,
+                    rgb: vec![rgb],
+                },
+            ))
+        };
+        let mut ed = Editor::new();
+        let mut recipe = json!([
+            {"op":"add_image","name":"Orange","data":encoded([1.0,0.5,0.0])},
+            {"op":"add_image","name":"Blue","data":encoded([0.0,0.0,1.0])},
+            {"op":"add","name":"Panel","primitive":{"kind":"cube"}},
+            {"op":"material","id":"Panel","texture":{"pattern":"image","image":"Orange"}},
+            {"op":"world","image":"Orange","background":true}
+        ]);
+        assert_eq!(
+            call(&mut ed, "POST", "/commands", json!({"commands":recipe})).0,
+            200
+        );
+        let before = ed.scene().clone();
+        let changes = json!([
+            {"op":"material","id":"Panel","texture":{"pattern":"nodes","relief":0.1,"graph":{"nodes":[{"id":"photo","type":"image","image":"Blue"}],"output":{"color":{"node":"photo"},"height":{"node":"photo"},"roughness":0,"metalness":0}}}},
+            {"op":"world","image":"Blue","background":true}
+        ]);
+        let (status, offered) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Use existing blue","commands":changes}),
+        );
+        assert_eq!(status, 200);
+        let id = offered["ids"][0].as_u64().unwrap();
+        let (status, candidate) = call(&mut ed, "GET", &format!("/proposal?id={id}"), Value::Null);
+        assert_eq!(status, 200);
+        let scene = &candidate["scene"];
+        assert!(scene["images"]["Blue"].get("preview_url").is_none());
+        assert!(scene["world"]["preview_environment"].is_string());
+        let maps = &scene["objects"][0]["material"]["texture"]["preview_maps"];
+        for (kind, expected) in [("color", [0.0, 0.0, 1.0]), ("orm", [1.0, 0.0, 0.0])] {
+            let asset = crate::image::ImageAsset::from_bytes(
+                crate::image::decode_base64(maps[kind].as_str().unwrap()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(asset.decode().unwrap().sample(0.5, 0.5), expected);
+        }
+        assert!(maps["normal"].is_string());
+        assert_eq!(ed.scene(), &before);
+
+        // The history route shares the same candidate-only asset handling.
+        recipe[3] = changes[0].clone();
+        recipe[4] = changes[1].clone();
+        let (status, history) = call(
+            &mut ed,
+            "POST",
+            "/history/preview",
+            json!({"step":1,"expected_revision":before.revision,"commands":recipe}),
+        );
+        assert_eq!(status, 200);
+        assert!(history["scene"]["world"]["preview_environment"].is_string());
+        assert!(
+            history["scene"]["objects"][0]["material"]["texture"]["preview_maps"]["color"]
+                .is_string()
+        );
+        assert_eq!(ed.scene(), &before);
+
+        let (status, sky) = call(
+            &mut ed,
+            "POST",
+            "/proposals",
+            json!({"title":"Sunset","commands":[{"op":"world","sky":"sunset","background":true}]}),
+        );
+        assert_eq!(status, 200);
+        let sky_id = sky["ids"][0].as_u64().unwrap();
+        let (status, sky) = call(
+            &mut ed,
+            "GET",
+            &format!("/proposal?id={sky_id}"),
+            Value::Null,
+        );
+        assert_eq!(status, 200);
+        let uri = sky["scene"]["world"]["preview_environment"]
+            .as_str()
+            .unwrap();
+        let bytes = crate::image::decode_base64(uri).unwrap();
+        let expected = environment(&ed.preview(sky_id).unwrap(), "w=512")
+            .unwrap_or_else(|error| panic!("{}", String::from_utf8_lossy(&error.body)));
+        assert_eq!(bytes, expected.body);
+        assert_eq!(ed.scene(), &before);
     }
 
     fn call(ed: &mut Editor, method: &str, path: &str, body: Value) -> (u16, Value) {
