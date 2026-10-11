@@ -121,6 +121,7 @@ const app = {
   extrudeDistance: 0.3,
   insetFraction: 0.3,
   bevelWidth: 0.1,
+  mergeAt: 'center',
   // Animation playback.
   frame: 1,
   playing: false,
@@ -636,6 +637,19 @@ const actions = {
       return r
     })
   },
+  mergeVertices() {
+    const id = app.selected
+    const vertices = [...app.sel.verts]
+    if (id == null || app.mode !== 'edit' || app.selectMode !== 'vertex' || vertices.length < 2) return toast('In vertex mode, select at least two connected vertices')
+    return run([{ op: 'merge_vertices', id, vertices, at: app.mergeAt }]).then((r) => {
+      if (app.selected === id && app.mode === 'edit') {
+        clearComponents()
+        if (app.selectMode === 'vertex') app.sel.verts = [Math.min(...vertices)]
+        syncEdit()
+      }
+      return r
+    })
+  },
   loopCut(fraction = 0.5) {
     const edge = app.sel.edges.at(-1)
     if (app.mode !== 'edit' || app.selectMode !== 'edge' || !edge) return toast('In edge mode, click an edge to cut across')
@@ -896,7 +910,7 @@ function renderModeBar() {
       ? `<div class="mode-group">${SELECT_MODES.map(([m, t]) => `<button data-select-mode="${m}" class="icon-btn ${app.selectMode === m ? 'on' : ''}" title="${t}">${icon(`sel-${m}`)}</button>`).join('')}</div>`
       : '')
   $('status-hint').textContent = edit
-    ? '1/2/3 vertex/edge/face · Shift+click add · A all · G move · Ctrl+B bevel · Ctrl+R loop cut · Tab exit'
+    ? '1/2/3 vertex/edge/face · Shift+click add · A all · G move · Ctrl+B bevel · Ctrl+R loop cut · M merge · Tab exit'
     : app.mode === 'sculpt'
       ? 'Drag on the object to sculpt · Shift smooth · Ctrl invert · [ ] radius · Esc exit'
       : 'Alt+click a face · Tab edit mode · G/R/S transform · F frame · W wireframe'
@@ -1172,6 +1186,10 @@ function renderProperties(o) {
       <div class="row">
         <label class="inline">Width <input type="text" inputmode="decimal" id="p-bevel" value="${app.bevelWidth}"></label>
         <button class="small-btn" data-action="bevel" title="Bevel selected edges, or all edges (Ctrl+B)">${icon('bevel')}${app.mode === 'edit' && app.selectMode === 'edge' && app.sel.edges.length ? 'Bevel' : 'Bevel all'}</button>
+      </div>
+      <div class="row">
+        <label class="inline">Merge at <select id="merge-at">${['center','first','last'].map(at => `<option value="${at}" ${app.mergeAt === at ? 'selected' : ''}>${at[0].toUpperCase() + at.slice(1)}</option>`).join('')}</select></label>
+        <button class="small-btn" data-action="mergeVertices" ${app.mode === 'edit' && app.selectMode === 'vertex' && app.sel.verts.length >= 2 ? '' : 'disabled'} title="Merge connected selected vertices (M)">Merge</button>
       </div>
       <div class="row"><button class="small-btn wide" data-action="loopCut" ${app.mode === 'edit' && app.selectMode === 'edge' && app.sel.edges.length ? '' : 'disabled'} title="Cut a loop across the selected edge (Ctrl+R)">${icon('loopcut')}Loop cut</button></div>
     </div>
@@ -1498,6 +1516,10 @@ $('properties').addEventListener('change', (e) => {
   if (target.id === 'p-name') return run([{ op: 'rename', id: o.id, name: target.value }]).catch(() => {})
   if (target.id === 'p-dist') {
     app.extrudeDistance = Number(target.value) || 0.3
+    return
+  }
+  if (target.id === 'merge-at') {
+    app.mergeAt = target.value
     return
   }
   if (target.id === 'p-bevel') {
@@ -1857,6 +1879,7 @@ document.addEventListener('keydown', (e) => {
   }
   if (app.mode === 'edit' && ['1', '2', '3'].includes(k)) return setSelectMode(['vertex', 'edge', 'face'][Number(k) - 1])
   if (app.mode === 'edit' && k === 'a') return selectAll()
+  if (app.mode === 'edit' && k === 'm') return actions.mergeVertices()?.catch?.(() => {})
   if (app.mode === 'sculpt' && (k === '[' || k === ']')) {
     const radius = Math.min(1, Math.max(0.02, app.brush.radius * (k === ']' ? 1.25 : 0.8)))
     app.brush = { ...app.brush, radius: Math.round(radius * 1000) / 1000 }

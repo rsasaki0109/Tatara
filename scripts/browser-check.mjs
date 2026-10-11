@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkMerge } from './merge-check.mjs'
 import { checkProperties, checkPeerProperties } from './property-check.mjs'
 import { checkDurable } from './durable-check.mjs'
 import { checkSolidify } from './solidify-check.mjs'
@@ -1101,6 +1102,7 @@ try {
   await checkProjects(curves,check)
   await checkSolidify(curves,check)
   await checkProperties(curves,check)
+  await checkMerge(curves,check)
   await curves.close()
 
   // The browser-only backend shares the same UI under ?wasm, with local state.
@@ -1125,7 +1127,9 @@ try {
     let resumed = false
     for (let i = 0; i < 1200; i++) {
       await cap.evaluate(() => window.__tatara.startTick(100))
-      st = await (await cap.waitForFunction(() => window.__tatara.tickResult, null, { polling: 5 })).jsonValue()
+      // Final renders can legitimately take over 30 seconds on a four-core cloud worker.
+      // Keep the same completion/error checks and a bounded wait for that scenario.
+      st = await (await cap.waitForFunction(() => window.__tatara.tickResult, null, { polling: 5, timeout: id === 'final' ? 120000 : 30000 })).jsonValue()
       if (st.done) {
         if (meta.restart && !resumed) {
           await cap.evaluate(()=>window.__tatara.recoveryFlush())

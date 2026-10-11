@@ -1057,6 +1057,25 @@ async fn mcp_bridge_edits_the_shared_scene() {
     assert_eq!(shell["modifiers"][0]["type"], "solidify");
     let r=call(json!({"jsonrpc":"2.0","id":126,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"set_modifier","id":"MCP shell","index":0,"modifier":{"type":"solidify","thickness":-1}}]}}})).await;
     assert_eq!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":127,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"add","name":"MCP pyramid","primitive":{"kind":"cube","size":2}},{"op":"merge_vertices","id":"MCP pyramid","vertices":[7,6,2,3],"at":"center"}]}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":128,"method":"tools/call","params":{"name":"get_scene","arguments":{"include_mesh":true}}})).await;
+    let merged_scene: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let pyramid = merged_scene["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "MCP pyramid")
+        .unwrap();
+    assert_eq!(pyramid["mesh"]["vertices"].as_array().unwrap().len(), 5);
+    assert_eq!(pyramid["mesh"]["faces"].as_array().unwrap().len(), 5);
+    let r=call(json!({"jsonrpc":"2.0","id":129,"method":"tools/call","params":{"name":"apply_commands","arguments":{"commands":[{"op":"move","id":"MCP pyramid","offset":[1,0,0]},{"op":"merge_vertices","id":"MCP pyramid","vertices":[0,99]}]}}})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":130,"method":"tools/call","params":{"name":"get_scene","arguments":{"include_mesh":true}}})).await;
+    let unchanged: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(unchanged, merged_scene);
     child.kill().await.unwrap();
 }
 

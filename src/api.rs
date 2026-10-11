@@ -1027,6 +1027,38 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn merge_vertices_is_one_undo_and_invalid_batches_keep_the_recipe() {
+        let mut ed = Editor::new();
+        assert_eq!(call(&mut ed, "POST", "/commands", json!({"commands":[{"op":"add","name":"Pyramid","primitive":{"kind":"cube","size":2}}]})).0, 200);
+        let initial = ed.scene().objects[0].mesh.clone();
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[{"op":"merge_vertices","id":"Pyramid","vertices":[7,6,2,3]}]})
+            )
+            .0,
+            200
+        );
+        let merged = ed.scene().objects[0].mesh.clone();
+        assert_eq!(merged.vertices.len(), 5);
+        assert_eq!(merged.faces.len(), 5);
+        let scene = ed.scene().clone();
+        let recipe = ed.project();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"move","id":"Pyramid","offset":[1,0,0]},{"op":"merge_vertices","id":"Pyramid","vertices":[0,99]}]})).0,422);
+        assert_eq!(*ed.scene(), scene);
+        assert_eq!(ed.project(), recipe);
+        assert_eq!(call(&mut ed, "POST", "/undo", Value::Null).0, 200);
+        assert_eq!(ed.scene().objects[0].mesh, initial);
+        assert_eq!(call(&mut ed, "POST", "/redo", Value::Null).0, 200);
+        assert_eq!(ed.scene().objects[0].mesh, merged);
+        let archive = ed.project();
+        let mut recovered = Editor::new();
+        recovered.load_project(archive).unwrap();
+        assert_eq!(recovered.scene().objects[0].mesh, merged);
+    }
 
     #[test]
     fn storage_errors_are_service_failures_and_leave_the_recipe_unchanged() {

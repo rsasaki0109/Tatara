@@ -1858,4 +1858,23 @@ export const solidifyShell = {
   ]
 }
 
-export const SCENARIOS = { propertyRebase, nativeRestart, solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const mergeVertices = {
+  title:'Shape a pyramid by merging vertices',gizmo:false,
+  camera:{azimuth:28,elevation:24,distance:8,target:[0,.2,0]},
+  setup:[{op:'add',name:'Pyramid',primitive:{kind:'cube',size:2},color:'#eb9566'}],
+  steps:[
+    {pick:'Pyramid'},{click:'[data-mode=edit]'},{click:'[data-select-mode=vertex]'},
+    {caption:'Select a connected set of vertices',hint:'Shift+click · vertex mode'},
+    {pick:'Pyramid',vertex:7},{pick:'Pyramid',vertex:6,shift:true},
+    {pick:'Pyramid',vertex:2,shift:true},{pick:'Pyramid',vertex:3,shift:true,after:600},
+    {caption:'Merge the top into one apex',hint:'Center · First · Last · M'},
+    {click:'[data-action=mergeVertices]',after:1400},
+    {caption:'One edit, one Undo',hint:'closed surface · surviving corner UVs'},
+    {click:'[data-action=undo]',after:1000},{click:'[data-action=redo]',after:1000},
+    {caption:'Keep shaping the merged vertex',hint:'vertex edits follow the merged topology'},
+    {run:[{op:'move_vertices',id:'Pyramid',vertices:[2],offset:[0,.7,0]}],after:1200},
+    {cursor:false},{wait:800}
+  ]
+}
+
+export const SCENARIOS = { mergeVertices, propertyRebase, nativeRestart, solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
