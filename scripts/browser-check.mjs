@@ -982,7 +982,9 @@ try {
   const observer=await browser.newPage({viewport:{width:1280,height:720}})
   await observer.goto(`${url}/?participant=Projection%20observer`);await observer.evaluate(()=>window.__tatara.ready)
   await until(observer, up => window.__tatara.presence().some(p=>p.camera?.ortho_height===4 && p.camera?.up?.every((v,i)=>Math.abs(v-up[i])<1e-6)), sourceUp)
-  const orthoPeer=await observer.evaluate(()=>window.__tatara.presence().find(p=>p.camera?.ortho_height===4))
+  // Opening SSE can briefly reset presence after ready. Capture the matching
+  // peer in the same synchronous poll that verifies its height and roll.
+  const orthoPeer=await (await observer.waitForFunction(up => window.__tatara.presence().find(p=>p.camera?.ortho_height===4 && p.camera?.up?.every((v,i)=>Math.abs(v-up[i])<1e-6)), sourceUp, {timeout:30000})).jsonValue()
   check(orthoPeer.camera.up.every((v,i)=>Math.abs(v-sourceUp[i])<1e-6),'shared camera presence preserves orthographic height and camera roll')
   await observer.locator('.session-peer').filter({hasText:orthoPeer.actor.name}).getByRole('button',{name:'View camera'}).click()
   await until(observer, () => window.__tatara.debug().renderCamera.orthographic && window.__tatara.debug().renderCamera.ortho_height===4)
