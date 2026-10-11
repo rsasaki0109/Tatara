@@ -1801,6 +1801,29 @@ export const browserRecovery = {
   ]
 }
 
+export const nativeRestart = {
+  title:'Continue after a server restart',nativeRestart:true,gizmo:false,
+  camera:{azimuth:28,elevation:20,distance:7,target:[0,.5,0]},
+  setup:[{op:'add',name:'Box',primitive:{kind:'cube'},color:'#eb9566'}],
+  steps:[
+    {run:[{op:'extrude',id:'Box',face:4,distance:.5}],after:500},
+    {caption:'Every accepted edit is saved on the server',hint:'scene · editable history · authors'},
+    {tab:'history'},{wait:1300},
+    {caption:'Restart the real server',hint:'no project file opened'},
+    {cursor:false},{wait:800}
+  ],
+  resume:[
+    {camera:{azimuth:28,elevation:20,distance:7,target:[0,.5,0]},ms:700},
+    {caption:'Your scene and recipe return together',hint:'saved before the edit was acknowledged'},
+    {wait:900},{tab:'history'},{click:'[data-hs-open="1"]',after:400},
+    {caption:'Keep revising the original steps',hint:'later geometry replays from the recovered recipe'},
+    {scrubNumber:'.hs-key[data-scrub*="size"]',to:1.5,ms:1800,after:400},
+    {click:'[data-hs=apply]',after:1000},
+    {caption:'Continue where you left off',hint:'Save a project copy for portable backups'},
+    {cursor:false},{wait:800}
+  ]
+}
+
 export const solidifyShell = {
   title:'Give a surface thickness',gizmo:false,
   camera:{azimuth:28,elevation:16,distance:5,target:[0,.4,0]},
@@ -1817,4 +1840,4 @@ export const solidifyShell = {
   ]
 }
 
-export const SCENARIOS = { solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const SCENARIOS = { nativeRestart, solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

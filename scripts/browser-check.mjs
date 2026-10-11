@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkDurable } from './durable-check.mjs'
 import { checkSolidify } from './solidify-check.mjs'
 // Browser smoke test against an isolated editor: real clicks and keys for
 // editing, history and files, then every demo scenario in capture mode.
@@ -61,7 +62,7 @@ const provider = createServer(async (req, res) => {
 await new Promise((resolve) => provider.listen(0, '127.0.0.1', resolve))
 const providerUrl = `http://127.0.0.1:${provider.address().port}/v1`
 const bin = path.join(root, 'target/release', process.platform === 'win32' ? 'tatara.exe' : 'tatara')
-const startEditor = () => spawn(bin, [], { env: { ...process.env, TATARA_PORT: String(port), TATARA_WEB_DIR: path.join(root, 'web/dist'), TATARA_AI_BASE_URL: providerUrl, TATARA_AI_MODEL: 'browser-mock', TATARA_AI_API_KEY: '' }, stdio: 'inherit' })
+const startEditor = () => spawn(bin, [], { env: { ...process.env, TATARA_PORT: String(port), TATARA_PROJECT: '', TATARA_WEB_DIR: path.join(root, 'web/dist'), TATARA_AI_BASE_URL: providerUrl, TATARA_AI_MODEL: 'browser-mock', TATARA_AI_API_KEY: '' }, stdio: 'inherit' })
 let server = startEditor()
 for (let i = 0; i < 100; i++) {
   try {
@@ -1103,6 +1104,7 @@ try {
   const wasmBuild = spawnSync('cargo', ['build','-p','tatara-wasm','--target','wasm32-unknown-unknown','--profile','wasm'], {cwd:root,stdio:'inherit'})
   if (wasmBuild.status !== 0) throw new Error('browser-only recovery core did not build')
   fs.copyFileSync(path.join(root,'target/wasm32-unknown-unknown/wasm/tatara_wasm.wasm'),path.join(root,'web/dist/tatara.wasm'))
+  await checkDurable(browser,bin,root,check)
   await checkRecovery(browser, `${url}/?wasm=1`, check)
   await checkCoreCache(browser, path.join(root,'web/dist/tatara.wasm'), check)
 
@@ -1112,6 +1114,7 @@ try {
   await cap.evaluate(() => window.__tatara.ready)
   for (const id of await cap.evaluate(() => window.__tatara.scenarios)) {
     const meta = await cap.evaluate(id=>window.__tatara.meta(id),id)
+    if (meta.nativeRestart) continue // verified with its own durable server above
     await cap.goto(`${url}/?capture=1${meta.browserOnly?'&wasm=1&local-recovery=1':''}`)
     await cap.evaluate(() => window.__tatara.ready)
     await cap.evaluate((id) => window.__tatara.play(id), id)

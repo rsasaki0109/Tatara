@@ -26,6 +26,7 @@ anyhow = "1.0.104"
 axum = "0.8"
 futures-util = "0.3.34"
 reqwest = { version = "0.13.5", features = ["json", "query"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 tokio = { version = "1.53.2", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 tower-http = { version = "0.7.1", features = ["fs"] }

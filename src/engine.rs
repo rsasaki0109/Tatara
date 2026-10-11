@@ -1147,6 +1147,9 @@ pub struct EngineError {
     /// True when the batch was rejected because of `expected_revision`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
+    /// A configured commit sink could not store the candidate edit.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub storage: bool,
 }
 
 impl std::fmt::Display for EngineError {
@@ -1166,6 +1169,7 @@ impl EngineError {
             message: message.into(),
             command_index: None,
             stale: false,
+            storage: false,
         }
     }
 }
@@ -1192,8 +1196,14 @@ struct Evaluated {
     mesh: Arc<Mesh>,
 }
 
+/// Stores a validated candidate before any live editor state is changed.
+pub trait CommitSink: std::fmt::Debug + Send + Sync {
+    fn persist(&self, project: &crate::project::Project, revision: u64) -> Result<(), EngineError>;
+}
+
 #[derive(Debug, Default)]
 pub struct Editor {
+    commit_sink: Option<Arc<dyn CommitSink>>,
     scene: Scene,
     /// How `scene` was made (see `Timeline`).
     timeline: Timeline,
@@ -1337,6 +1347,7 @@ impl Editor {
                 ),
                 command_index: None,
                 stale: true,
+                storage: false,
             });
         }
         Ok(())
@@ -1353,6 +1364,7 @@ impl Editor {
                 ),
                 command_index: None,
                 stale: true,
+                storage: false,
             };
             let (base, timeline) = self
                 .undo
@@ -1394,7 +1406,7 @@ impl Editor {
             source: batch.source.clone().unwrap_or_else(|| "API".into()),
             rebased_from,
         });
-        self.commit(next, timeline);
+        self.commit(next, timeline)?;
         self.evaluated = evaluated;
         self.refresh_proposals();
         Ok(ApplyResult {
@@ -1447,7 +1459,7 @@ impl Editor {
     pub fn revise(&mut self, step: usize, commands: Vec<Command>) -> Result<u64, EngineError> {
         let (scene, timeline) = self.revised(step, commands)?;
         let evaluated = self.evaluate_all(&scene)?;
-        self.commit(scene, timeline);
+        self.commit(scene, timeline)?;
         self.evaluated = evaluated;
         self.refresh_proposals();
         Ok(self.scene.revision)
@@ -1687,7 +1699,7 @@ impl Editor {
         let next = timeline.replay()?;
         validate_scene(&next)?;
         let evaluated = self.evaluate_all(&next)?;
-        self.commit(next, timeline);
+        self.commit(next, timeline)?;
         self.evaluated = evaluated;
         self.refresh_proposals();
         Ok(self.scene.revision)
@@ -1702,53 +1714,124 @@ impl Editor {
             base: Arc::new(scene.clone()),
             steps: Vec::new(),
         };
-        self.commit(scene, timeline);
+        self.commit(scene, timeline)?;
         self.evaluated = evaluated;
         self.refresh_proposals();
         Ok(self.scene.revision)
     }
 
-    fn commit(&mut self, mut next: Scene, timeline: Timeline) {
-        let previous = std::mem::take(&mut self.scene);
-        next.revision = previous.revision + 1;
+    /// Replay a checkpoint and invalidate revisions held by the previous process.
+    pub fn from_checkpoint(
+        project: crate::project::Project,
+        revision: u64,
+    ) -> Result<Self, EngineError> {
+        let next_revision = revision
+            .checked_add(1)
+            .ok_or_else(|| EngineError::new("scene revision is exhausted"))?;
+        let mut editor = Self::new();
+        editor.load_project(project)?;
+        editor.scene.revision = next_revision;
+        editor.undo.clear();
+        editor.redo.clear();
+        Ok(editor)
+    }
+
+    /// Attach storage only after bootstrapping and validating the archived project.
+    pub fn set_commit_sink(&mut self, sink: Arc<dyn CommitSink>) {
+        self.commit_sink = Some(sink);
+    }
+
+    fn next_revision(&self) -> Result<u64, EngineError> {
+        self.scene
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| EngineError::new("scene revision is exhausted"))
+    }
+
+    fn persist_candidate(&self, timeline: &Timeline, revision: u64) -> Result<(), EngineError> {
+        if let Some(sink) = &self.commit_sink {
+            let project = crate::project::Project {
+                format: crate::project::Format::Tatara,
+                version: crate::project::VERSION,
+                base: (*timeline.base).clone(),
+                steps: timeline.steps.iter().map(|step| (**step).clone()).collect(),
+            };
+            sink.persist(&project, revision).map_err(|mut e| {
+                e.storage = true;
+                e
+            })?;
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self, mut next: Scene, timeline: Timeline) -> Result<(), EngineError> {
+        next.revision = self.next_revision()?;
+        self.persist_candidate(&timeline, next.revision)?;
+        let previous = std::mem::replace(&mut self.scene, next);
         let previous_timeline = std::mem::replace(&mut self.timeline, timeline);
         self.undo.push((previous, previous_timeline));
         if self.undo.len() > HISTORY_LIMIT {
             self.undo.remove(0);
         }
         self.redo.clear();
-        self.scene = next;
+        Ok(())
     }
 
-    pub fn undo(&mut self) -> Option<u64> {
-        let (mut previous, timeline) = self.undo.pop()?;
-        previous.revision = self.scene.revision + 1;
+    pub fn try_undo(&mut self) -> Result<Option<u64>, EngineError> {
+        let Some((_, timeline)) = self.undo.last() else {
+            return Ok(None);
+        };
+        let revision = self.next_revision()?;
+        self.persist_candidate(timeline, revision)?;
+        let (mut previous, timeline) = self.undo.pop().expect("checked undo entry");
+        previous.revision = revision;
         let current = std::mem::replace(&mut self.scene, previous);
         let current_timeline = std::mem::replace(&mut self.timeline, timeline);
         self.redo.push((current, current_timeline));
         self.refresh_evaluated();
         self.refresh_proposals();
-        Some(self.scene.revision)
+        Ok(Some(revision))
     }
 
-    pub fn redo(&mut self) -> Option<u64> {
-        let (mut next, timeline) = self.redo.pop()?;
-        next.revision = self.scene.revision + 1;
+    pub fn undo(&mut self) -> Option<u64> {
+        self.try_undo().ok().flatten()
+    }
+
+    pub fn try_redo(&mut self) -> Result<Option<u64>, EngineError> {
+        let Some((_, timeline)) = self.redo.last() else {
+            return Ok(None);
+        };
+        let revision = self.next_revision()?;
+        self.persist_candidate(timeline, revision)?;
+        let (mut next, timeline) = self.redo.pop().expect("checked redo entry");
+        next.revision = revision;
         let current = std::mem::replace(&mut self.scene, next);
         let current_timeline = std::mem::replace(&mut self.timeline, timeline);
         self.undo.push((current, current_timeline));
         self.refresh_evaluated();
         self.refresh_proposals();
-        Some(self.scene.revision)
+        Ok(Some(revision))
+    }
+
+    pub fn redo(&mut self) -> Option<u64> {
+        self.try_redo().ok().flatten()
+    }
+
+    pub fn try_reset(&mut self) -> Result<(), EngineError> {
+        let revision = self.next_revision()?;
+        self.persist_candidate(&Timeline::default(), revision)?;
+        let version = self.proposals_version + 1;
+        let sink = self.commit_sink.take();
+        *self = Self::default();
+        self.commit_sink = sink;
+        self.scene.revision = revision;
+        self.proposals_version = version;
+        Ok(())
     }
 
     /// Clear scene and history (used by tests and recording).
     pub fn reset(&mut self) {
-        let revision = self.scene.revision + 1;
-        let version = self.proposals_version + 1;
-        *self = Self::default();
-        self.scene.revision = revision;
-        self.proposals_version = version;
+        let _ = self.try_reset();
     }
 }
 
@@ -3672,6 +3755,133 @@ pub fn catmull_clark(mesh: &Mesh) -> Mesh {
 
 #[cfg(test)]
 mod tests {
+
+    #[derive(Debug, Default)]
+    struct TestStorage {
+        fail: std::sync::atomic::AtomicBool,
+        saved: std::sync::Mutex<Vec<(crate::project::Project, u64)>>,
+    }
+    impl CommitSink for TestStorage {
+        fn persist(
+            &self,
+            project: &crate::project::Project,
+            revision: u64,
+        ) -> Result<(), EngineError> {
+            if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(EngineError::new("checkpoint unavailable"));
+            }
+            self.saved.lock().unwrap().push((project.clone(), revision));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn storage_failure_keeps_a_proposal_available_for_review() {
+        let mut editor = Editor::new();
+        let request: crate::proposal::ProposalRequest = serde_json::from_value(
+            serde_json::json!({"title":"Saved box","commands":[{"op":"add","primitive":{"kind":"cube"}}]})
+        ).unwrap();
+        let id = editor.propose(&request).unwrap()[0];
+        let pending = editor
+            .proposals()
+            .iter()
+            .map(|p| p.summary())
+            .collect::<Vec<_>>();
+        let version = editor.proposals_version();
+        let sink = Arc::new(TestStorage::default());
+        sink.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        editor.set_commit_sink(sink.clone());
+        assert!(editor.accept(id).unwrap_err().storage);
+        assert_eq!(
+            editor
+                .proposals()
+                .iter()
+                .map(|p| p.summary())
+                .collect::<Vec<_>>(),
+            pending
+        );
+        assert_eq!(editor.proposals_version(), version);
+        assert_eq!(editor.scene().revision, 0);
+        assert!(editor.scene().objects.is_empty());
+        sink.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        editor.accept(id).unwrap();
+        assert!(editor.proposals().is_empty());
+        assert_eq!(sink.saved.lock().unwrap()[0].0.steps.len(), 1);
+        assert_eq!(editor.try_undo().unwrap(), Some(2));
+        assert!(editor.scene().objects.is_empty());
+    }
+
+    #[test]
+    fn storage_rejection_keeps_scene_recipe_and_history_atomic() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(
+            serde_json::json!({"commands":[{"op":"add","name":"Box","primitive":{"kind":"cube"}}]}),
+        ))
+        .unwrap();
+        let sink = Arc::new(TestStorage::default());
+        sink.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        ed.set_commit_sink(sink.clone());
+        let before = ed.scene().clone();
+        let recipe = ed.project();
+        let moved =
+            batch(serde_json::json!({"commands":[{"op":"move","id":"Box","offset":[1,0,0]}]}));
+        let e = ed.apply(&moved).unwrap_err();
+        assert!(e.storage);
+        assert_eq!(*ed.scene(), before);
+        assert_eq!(ed.project(), recipe);
+        assert!(ed.can_undo());
+        assert!(!ed.can_redo());
+        assert!(ed.load_project(recipe.clone()).unwrap_err().storage);
+        assert!(ed.load(before.clone()).unwrap_err().storage);
+        assert!(
+            ed.revise(1, recipe.steps[0].commands.clone())
+                .unwrap_err()
+                .storage
+        );
+        assert_eq!(*ed.scene(), before);
+        assert_eq!(ed.project(), recipe);
+        assert_eq!(ed.evaluated(&ed.scene().objects[0]).faces.len(), 6);
+        assert!(sink.saved.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn storage_rejection_does_not_consume_undo_redo_or_reset() {
+        let mut ed = Editor::new();
+        ed.apply(&batch(
+            serde_json::json!({"commands":[{"op":"add","primitive":{"kind":"cube"}}]}),
+        ))
+        .unwrap();
+        let sink = Arc::new(TestStorage::default());
+        ed.set_commit_sink(sink.clone());
+        sink.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        let before = ed.scene().clone();
+        assert!(ed.try_undo().unwrap_err().storage);
+        assert!(ed.try_reset().unwrap_err().storage);
+        assert_eq!(*ed.scene(), before);
+        assert!(ed.can_undo());
+        sink.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(ed.try_undo().unwrap(), Some(2));
+        let empty = ed.scene().clone();
+        sink.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(ed.try_redo().unwrap_err().storage);
+        assert_eq!(*ed.scene(), empty);
+        assert!(ed.can_redo());
+        sink.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(ed.try_redo().unwrap(), Some(3));
+        assert_eq!(ed.scene().objects.len(), 1);
+        ed.try_reset().unwrap();
+        assert_eq!(ed.scene().revision, 4);
+        assert!(!ed.can_undo());
+        ed.apply(&batch(
+            serde_json::json!({"commands":[{"op":"add","primitive":{"kind":"cube"}}]}),
+        ))
+        .unwrap();
+        assert_eq!(
+            sink.saved.lock().unwrap().len(),
+            4,
+            "reset retains the configured sink"
+        );
+    }
     use super::*;
 
     /// Signed volume; positive for closed meshes with outward normals.

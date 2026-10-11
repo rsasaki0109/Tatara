@@ -80,7 +80,13 @@ impl Response {
 
 impl From<EngineError> for Response {
     fn from(e: EngineError) -> Self {
-        let status = if e.stale { 409 } else { 422 };
+        let status = if e.storage {
+            503
+        } else if e.stale {
+            409
+        } else {
+            422
+        };
         Response::json(status, json!({ "error": e.to_string(), "detail": e }))
     }
 }
@@ -948,9 +954,9 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
         }
         ("POST", "/undo") | ("POST", "/redo") => {
             let rev = if path == "/undo" {
-                ed.undo()
+                ed.try_undo()?
             } else {
-                ed.redo()
+                ed.try_redo()?
             };
             let revision =
                 rev.ok_or_else(|| Response::error(409, format!("nothing to {}", &path[1..])))?;
@@ -960,7 +966,7 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
             )
         }
         ("POST", "/reset") => {
-            ed.reset();
+            ed.try_reset()?;
             let revision = ed.scene().revision;
             Ok(
                 Response::json(200, json!({ "revision": revision, "history": history(ed) }))
@@ -1021,6 +1027,38 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn storage_errors_are_service_failures_and_leave_the_recipe_unchanged() {
+        #[derive(Debug)]
+        struct Unavailable;
+        impl crate::engine::CommitSink for Unavailable {
+            fn persist(&self, _: &crate::project::Project, _: u64) -> Result<(), EngineError> {
+                Err(EngineError::new("checkpoint unavailable"))
+            }
+        }
+        let mut ed = Editor::new();
+        call(
+            &mut ed,
+            "POST",
+            "/commands",
+            json!({"commands":[{"op":"add","primitive":{"kind":"cube"}}]}),
+        );
+        ed.set_commit_sink(std::sync::Arc::new(Unavailable));
+        let scene = ed.scene().clone();
+        let recipe = ed.project();
+        for (path, body) in [
+            ("/commands", json!({"commands":[{"op":"clear"}]})),
+            ("/undo", Value::Null),
+            ("/reset", Value::Null),
+        ] {
+            let (status, error) = call(&mut ed, "POST", path, body);
+            assert_eq!(status, 503, "{path}: {error}");
+            assert_eq!(error["detail"]["storage"], true);
+            assert_eq!(*ed.scene(), scene);
+            assert_eq!(ed.project(), recipe);
+        }
+    }
     #[test]
     fn solidify_api_keeps_the_base_and_rejects_bad_batches_atomically() {
         let mut ed = Editor::new();
