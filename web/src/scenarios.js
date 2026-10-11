@@ -1777,4 +1777,28 @@ export const projectHistory = {
   ]
 }
 
-export const SCENARIOS = { projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const browserRecovery = {
+  title:'Recover the editable recipe',browserOnly:true,gizmo:false,
+  camera:{azimuth:28,elevation:20,distance:7,target:[0,.5,0]},
+  setup:[{op:'add',name:'Box',primitive:{kind:'cube'},color:'#eb9566'}],
+  steps:[
+    {run:[{op:'extrude',id:'Box',face:4,distance:.5}],after:400},
+    {caption:'Your edits settle into a local snapshot',hint:'the scene and its editable recipe'},
+    {cursor:false},{wait:1000},
+    {caption:'Reload the browser',hint:'a real new WASM instance · no scene file opened'},
+    {wait:700}
+  ],
+  resume:[
+    {caption:'A fresh browser offers the saved session',hint:'nothing changes until you choose Restore'},
+    {wait:700},{click:'[data-recover=restore]',after:1000},
+    {camera:{azimuth:28,elevation:20,distance:7,target:[0,.5,0]},ms:700},
+    {tab:'history'},{click:'[data-hs-open="1"]',after:400},
+    {caption:'The recovered recipe remains editable',hint:'revise the first step · later geometry replays'},
+    {scrubNumber:'.hs-key[data-scrub*="size"]',to:1.5,ms:1800,after:400},
+    {click:'[data-hs=apply]',after:1000},
+    {caption:'Continue where you left off',hint:'Save a project file for a portable backup'},
+    {cursor:false},{wait:800}
+  ]
+}
+
+export const SCENARIOS = { browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

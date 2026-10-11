@@ -17,6 +17,7 @@ import path from 'node:path'
 import readline from 'node:readline'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { SCENARIOS } from '../web/src/scenarios.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(path.join(root, 'web/package.json'))
@@ -64,11 +65,11 @@ function freePort() {
   })
 }
 
-async function startServer(bin) {
+async function startServer(bin, browserOnly = false) {
   const port = await freePort()
   const child = spawn(bin, [], {
     cwd: root,
-    env: { ...process.env, TATARA_PORT: String(port), TATARA_WEB_DIR: path.join(root, 'web/dist'), TATARA_AI_BASE_URL: '' },
+    env: { ...process.env, TATARA_PORT: String(port), TATARA_WEB_DIR: path.join(root, browserOnly ? 'web/dist-static' : 'web/dist'), TATARA_AI_BASE_URL: '' },
     stdio: ['ignore', 'ignore', 'pipe'],
   })
   const url = `http://127.0.0.1:${port}`
@@ -117,16 +118,19 @@ function startMcp(bin, url) {
 }
 
 async function record(browser, bin, id) {
-  const server = await startServer(bin)
+  const server = await startServer(bin, Boolean(SCENARIOS[id]?.browserOnly))
   let mcp
   const page = await browser.newPage({ viewport: VIEW, deviceScaleFactor: 1 })
-  page.on('pageerror', (e) => console.error(`[page] ${e.message}`))
+  const pageErrors = []
+  page.on('pageerror', (e) => { pageErrors.push(e.message); console.error(`[page] ${e.message}`) })
   if (process.env.DEBUG_RECORD) page.on('console', (m) => console.log(`[console] ${m.text()}`))
   try {
-    await page.goto(`${server.url}/?capture=1`)
+    const pageUrl = `${server.url}/?capture=1${SCENARIOS[id]?.browserOnly ? '&local-recovery=1' : ''}`
+    await page.goto(pageUrl)
     await page.evaluate(() => window.__tatara.ready)
     const meta = await page.evaluate((id) => window.__tatara.meta(id), id)
     if (!meta) throw new Error(`unknown scenario ${id}`)
+    if (meta.browserOnly && !await page.isVisible('.wasm-badge')) throw new Error('browser-only scenario did not start with the WASM backend')
     if (meta.external) {
       mcp = startMcp(bin, server.url)
       await page.exposeFunction('tataraMcp', (tool, args) => mcp.call(tool, args))
@@ -138,6 +142,7 @@ async function record(browser, bin, id) {
     await page.evaluate((id) => window.__tatara.play(id), id)
     const started = Date.now()
     let n = 0
+    let resumed = false
     for (;;) {
       // Poll instead of awaiting the page's promise: with an exposed binding
       // in play, Chromium can collect a long-awaited evaluate promise.
@@ -145,10 +150,22 @@ async function record(browser, bin, id) {
       const st = await (await page.waitForFunction(() => window.__tatara.tickResult, null, { polling: 5, timeout: 300000 })).jsonValue()
       if (st.error) throw new Error(`scenario ${id} failed: ${st.error}`)
       await page.screenshot({ path: path.join(frames, `${String(++n).padStart(4, '0')}.png`) })
-      if (st.done) break
+      if (st.done) {
+        if (meta.restart && !resumed) {
+          await page.evaluate(() => window.__tatara.recoveryFlush())
+          await page.waitForFunction(() => ['saved', 'error'].includes(document.querySelector('.recovery-status')?.dataset.state))
+          if (await page.getAttribute('.recovery-status', 'data-state') !== 'saved') throw new Error('local snapshot did not complete before reload')
+          await page.reload()
+          await page.evaluate(() => window.__tatara.ready)
+          if ((await page.evaluate(() => fetch('/api/scene').then(r => r.json()))).objects.length) throw new Error('the reloaded WASM document must start empty before explicit recovery')
+          await page.evaluate((id) => window.__tatara.play(id, 1), id)
+          resumed = true
+        } else break
+      }
       if (n > fps * 60) throw new Error(`scenario ${id} ran longer than 60 s`)
     }
     log(`${id}: ${n} frames (${(n / fps).toFixed(1)} s) in ${((Date.now() - started) / 1000).toFixed(0)} s`)
+    if (pageErrors.length) throw new Error(`scenario ${id} had page errors: ${pageErrors.join('; ')}`)
 
     fs.mkdirSync(outDir, { recursive: true })
     const gif = path.join(outDir, `${id}.gif`)
@@ -176,19 +193,14 @@ async function main() {
   run('cargo', ['build', '--release', '--quiet'])
   if (!fs.existsSync(path.join(root, 'web/dist/index.html'))) run('npm', ['--prefix', 'web', 'run', 'build'])
   const bin = path.join(root, 'target/release', process.platform === 'win32' ? 'tatara.exe' : 'tatara')
+  const ids = wanted.length ? wanted : Object.keys(SCENARIOS)
+  if (ids.some(id => SCENARIOS[id]?.browserOnly)) run('node', ['scripts/build-static.mjs'])
 
   const browser = await chromium.launch({
     executablePath: findBrowser(),
     args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--font-render-hinting=none'],
   })
   try {
-    const probe = await startServer(bin)
-    const page = await browser.newPage()
-    await page.goto(probe.url)
-    const all = await page.evaluate(() => window.__tatara.scenarios)
-    await page.close()
-    probe.child.kill()
-    const ids = wanted.length ? wanted : all
     for (const id of ids) await record(browser, bin, id)
   } finally {
     await browser.close()

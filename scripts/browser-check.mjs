@@ -3,13 +3,14 @@
 // editing, history and files, then every demo scenario in capture mode.
 // Requires `npm --prefix web run build` and `cargo build --release`.
 
+import { checkRecovery } from './recovery-check.mjs'
 import { checkProjects } from './project-check.mjs'
 import { checkBezier } from './bezier-check.mjs'
 import { checkCurves } from './curve-check.mjs'
 import { checkPoles } from './pole-check.mjs'
 import { checkJointLimits } from './limits-check.mjs'
 import { motionTip } from './gltf-motion-check.mjs'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import { createServer } from 'node:http'
@@ -1095,19 +1096,38 @@ try {
   await checkProjects(curves,check)
   await curves.close()
 
+  // The browser-only backend shares the same UI under ?wasm, with local state.
+  const wasmBuild = spawnSync('cargo', ['build','-p','tatara-wasm','--target','wasm32-unknown-unknown','--profile','wasm'], {cwd:root,stdio:'inherit'})
+  if (wasmBuild.status !== 0) throw new Error('browser-only recovery core did not build')
+  fs.copyFileSync(path.join(root,'target/wasm32-unknown-unknown/wasm/tatara_wasm.wasm'),path.join(root,'web/dist/tatara.wasm'))
+  await checkRecovery(browser, `${url}/?wasm=1`, check)
+
   // Every scenario must finish without errors (the MCP one falls back to HTTP).
   const cap = await browser.newPage({ viewport: { width: 1280, height: 720 } })
   await cap.goto(`${url}/?capture=1`)
   await cap.evaluate(() => window.__tatara.ready)
   for (const id of await cap.evaluate(() => window.__tatara.scenarios)) {
-    await cap.reload()
+    const meta = await cap.evaluate(id=>window.__tatara.meta(id),id)
+    await cap.goto(`${url}/?capture=1${meta.browserOnly?'&wasm=1&local-recovery=1':''}`)
     await cap.evaluate(() => window.__tatara.ready)
     await cap.evaluate((id) => window.__tatara.play(id), id)
     let st
+    let resumed = false
     for (let i = 0; i < 1200; i++) {
       await cap.evaluate(() => window.__tatara.startTick(100))
       st = await (await cap.waitForFunction(() => window.__tatara.tickResult, null, { polling: 5 })).jsonValue()
-      if (st.done) break
+      if (st.done) {
+        if (meta.restart && !resumed) {
+          await cap.evaluate(()=>window.__tatara.recoveryFlush())
+          await cap.waitForFunction(()=>['saved','error'].includes(document.querySelector('.recovery-status')?.dataset.state))
+          if (await cap.getAttribute('.recovery-status','data-state')!=='saved') throw new Error('recovery demo snapshot did not complete')
+          await cap.reload({waitUntil:'domcontentloaded',timeout:60000})
+          await cap.evaluate(()=>window.__tatara.ready)
+          if ((await cap.evaluate(()=>fetch('/api/scene').then(r=>r.json()))).objects.length) throw new Error('recovery demo must reopen an empty WASM instance')
+          await cap.evaluate(id=>window.__tatara.play(id,1),id)
+          resumed = true
+        } else break
+      }
     }
     check(st.done && !st.error, `scenario ${id} completes${st.error ? `: ${st.error}` : ''}`)
   }
