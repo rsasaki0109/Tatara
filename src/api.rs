@@ -444,7 +444,7 @@ fn environment(ed: &Editor, query: &str) -> Result<Response, Response> {
 }
 
 /// The batches that made the scene (the last `limit`, default 100), each
-/// numbered from 1. Image data is left out: those steps can't be revised.
+/// numbered from 1. Image bytes are omitted; guarded revisions may retain them.
 pub fn history_steps(ed: &Editor, query: &str) -> Result<Value, Response> {
     let limit = number(query, "limit", Some(100.0))?;
     if !(1.0..=1000.0).contains(&limit) {
@@ -458,15 +458,15 @@ pub fn history_steps(ed: &Editor, query: &str) -> Result<Value, Response> {
         .skip(skip)
         .map(|(i, step)| {
             let mut commands = serde_json::to_value(&step.commands).expect("commands serialize");
-            let mut editable = true;
-            for c in commands.as_array_mut().into_iter().flatten() {
+            let mut images = Vec::new();
+            for (index, c) in commands.as_array_mut().into_iter().flatten().enumerate() {
                 if c["op"] == "add_image" {
                     let bytes = c["data"].as_str().map_or(0, str::len);
-                    c["data"] = json!(format!("({bytes} characters of image data)"));
-                    editable = false;
+                    images.push(json!({"command":index,"name":c["name"],"encoded_characters":bytes}));
+                    c.as_object_mut().expect("command is an object").remove("data");
                 }
             }
-            let mut item = json!({ "step": i + 1, "source": step.source, "actor": step.actor, "commands": commands, "editable": editable });
+            let mut item = json!({ "step": i + 1, "source": step.source, "actor": step.actor, "commands": commands, "editable": true, "images": images });
             if let Some(revision) = step.rebased_from {
                 item["rebased_from"] = json!(revision);
             }
@@ -483,7 +483,138 @@ struct Revision {
     #[serde(default)]
     expected_revision: Option<u64>,
     step: usize,
-    commands: Vec<crate::engine::Command>,
+    commands: Vec<Value>,
+}
+
+impl Revision {
+    /// Resolve omitted image bytes before entering the ordinary typed replay path.
+    fn into_commands(mut self, ed: &Editor) -> Result<Vec<crate::engine::Command>, Response> {
+        for (index, command) in self.commands.iter_mut().enumerate() {
+            if command["op"] != "add_image" || command.get("data").is_some() {
+                continue;
+            }
+            if self.expected_revision.is_none() {
+                return Err(Response::error(
+                    400,
+                    "retaining image data requires expected_revision from history",
+                ));
+            }
+            let original = self
+                .step
+                .checked_sub(1)
+                .and_then(|step| ed.history().0.get(step))
+                .and_then(|step| step.commands.get(index));
+            match original {
+                Some(crate::engine::Command::AddImage { name, data })
+                    if command["name"].as_str() == Some(name.as_str()) =>
+                {
+                    command["data"] = json!(data);
+                }
+                _ => {
+                    return Err(Response::error(
+                        422,
+                        "retained image must match the original name and command position; provide image data to replace it",
+                    ));
+                }
+            }
+        }
+        serde_json::from_value(Value::Array(self.commands))
+            .map_err(|e| Response::error(400, e.to_string()))
+    }
+}
+
+/// A replayed scene with the original assets retained for preview comparison.
+/// Native transports can render this snapshot after releasing the editor lock.
+pub struct HistoryPreviewJob {
+    preview: Editor,
+    original_images: std::collections::BTreeMap<String, crate::image::ImageAsset>,
+}
+
+pub fn history_preview_job(ed: &Editor, body: &[u8]) -> Result<HistoryPreviewJob, Response> {
+    let request: Revision = parse(body)?;
+    ed.ensure_revision(request.expected_revision)?;
+    let step = request.step;
+    let preview = ed.revise_preview(step, request.into_commands(ed)?)?;
+    Ok(HistoryPreviewJob {
+        preview,
+        original_images: ed.scene().images.clone(),
+    })
+}
+
+impl HistoryPreviewJob {
+    pub fn run(self) -> Response {
+        self.render().unwrap_or_else(|error| error)
+    }
+
+    fn render(self) -> Result<Response, Response> {
+        let Self {
+            preview,
+            original_images,
+        } = self;
+        let mut scene = state(&preview, false)["scene"].take();
+        for (name, asset) in &preview.scene().images {
+            if original_images.get(name) != Some(asset) {
+                let (mime, bytes) = asset.portable()?;
+                let encoded =
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes);
+                scene["images"][name]["preview_url"] =
+                    json!(format!("data:{mime};base64,{encoded}"));
+            }
+        }
+        if preview
+            .scene()
+            .world
+            .image
+            .as_ref()
+            .is_some_and(|name| preview.scene().images.get(name) != original_images.get(name))
+        {
+            let response = environment(&preview, "w=512")?;
+            let encoded =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, response.body);
+            scene["world"]["preview_environment"] =
+                json!(format!("data:application/octet-stream;base64,{encoded}"));
+        }
+        for (index, object) in preview.scene().objects.iter().enumerate() {
+            let Some(texture) = object.material.texture.as_ref() else {
+                continue;
+            };
+            let Some(graph) = texture.graph.as_ref() else {
+                continue;
+            };
+            if !graph
+                .images()
+                .any(|name| preview.scene().images.get(name) != original_images.get(name))
+            {
+                continue;
+            }
+            let baked = crate::nodes::bake_material(&object.material, &preview.scene().images, 512)
+                .ok_or_else(|| Response::error(422, "could not bake the revised image material"))?;
+            let encode = |bytes| {
+                let encoded =
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes);
+                json!(format!("data:image/png;base64,{encoded}"))
+            };
+            let mut maps = json!({"color":encode(texture::pixels_png(&baked.color))});
+            if let Some(orm) = &baked.orm {
+                maps["orm"] = encode(texture::pixels_png(orm));
+            }
+            if texture.relief > 0.0 && baked.height.is_some() && texture.normal_map.is_none() {
+                maps["normal"] = encode(texture::bake_normal_png(
+                    &Look {
+                        base: &object.material.color,
+                        texture,
+                        image: None,
+                        normal_map: None,
+                        metallic_roughness_map: None,
+                        baked: Some(&baked),
+                    },
+                    512,
+                ));
+            }
+            scene["objects"][index]["material"]["texture"]["preview_maps"] = maps;
+        }
+        Ok(Response::json(200, json!({ "scene": scene })))
+    }
 }
 
 /// Pending proposals (without their scenes) and recent decisions.
@@ -898,20 +1029,14 @@ pub fn handle(ed: &mut Editor, method: &str, path: &str, body: &[u8], ai: bool) 
         ("POST", "/history/revise") => {
             let r: Revision = parse(body)?;
             ed.ensure_revision(r.expected_revision)?;
-            let revision = ed.revise(r.step, r.commands)?;
+            let step = r.step;
+            let revision = ed.revise(step, r.into_commands(ed)?)?;
             Ok(
                 Response::json(200, json!({ "revision": revision, "history": history(ed) }))
                     .changed(revision),
             )
         }
-        ("POST", "/history/preview") => {
-            let r: Revision = parse(body)?;
-            let preview = ed.revise_preview(r.step, r.commands)?;
-            Ok(Response::json(
-                200,
-                json!({ "scene": state(&preview, false)["scene"] }),
-            ))
-        }
+        ("POST", "/history/preview") => history_preview_job(ed, body).map(HistoryPreviewJob::run),
         ("GET", "/proposals") => Ok(Response::json(200, proposals(ed))),
         ("POST", "/proposals") => {
             let req: crate::proposal::ProposalRequest = parse(body)?;
@@ -2463,6 +2588,192 @@ mod tests {
         assert_eq!(reopened.scene().images, saved.images);
     }
 
+    #[test]
+    fn image_history_retains_bytes_with_a_guard_and_replays_other_parameters() {
+        let mut ed = Editor::new();
+        let data = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            crate::image::tests::tiny_png(),
+        );
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[
+                    {"op":"add_image","name":"Logo","data":data},
+                    {"op":"add","name":"Box","primitive":{"kind":"cube"}},
+                    {"op":"material","id":"Box","texture":{"pattern":"image","image":"Logo"}}
+                ]})
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[{"op":"move","id":"Box","offset":[1,0,0]}]})
+            )
+            .0,
+            200
+        );
+        let before = ed.scene().clone();
+        let history = call(&mut ed, "GET", "/history", Value::Null).1;
+        let mut commands = history["steps"][0]["commands"].clone();
+        assert!(commands[0].get("data").is_none());
+        commands[1]["primitive"]["size"] = json!(2);
+        let request = json!({"step":1,"expected_revision":before.revision,"commands":commands});
+        assert_eq!(
+            call(&mut ed, "POST", "/history/preview", request.clone()).0,
+            200
+        );
+        assert_eq!(ed.scene(), &before);
+        assert_eq!(call(&mut ed, "POST", "/history/revise", request).0, 200);
+        assert_eq!(ed.scene().images, before.images);
+        assert_eq!(ed.scene().objects[0].transform.translation, [1.0, 0.0, 0.0]);
+        assert_eq!(ed.scene().objects[0].mesh.vertices[0], [-1.0, -1.0, -1.0]);
+        let saved = ed.scene().clone();
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/history/revise",
+                json!({"step":1,"commands":commands})
+            )
+            .0,
+            400
+        );
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/history/revise",
+                json!({"step":1,"expected_revision":before.revision,"commands":commands})
+            )
+            .0,
+            409
+        );
+        commands[0]["name"] = json!("Other");
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/history/preview",
+                json!({"step":1,"expected_revision":saved.revision,"commands":commands})
+            )
+            .0,
+            422
+        );
+        assert_eq!(ed.scene(), &saved);
+        assert!(ed.undo().is_some());
+        assert_eq!(ed.scene().objects, before.objects);
+        assert_eq!(ed.scene().images, before.images);
+    }
+
+    #[test]
+    fn image_history_replacement_previews_and_commits_atomically() {
+        let mut ed = Editor::new();
+        let data = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            crate::image::tests::tiny_png(),
+        );
+        assert_eq!(
+            call(
+                &mut ed,
+                "POST",
+                "/commands",
+                json!({"commands":[{"op":"add_image","name":"Logo","data":data}]})
+            )
+            .0,
+            200
+        );
+        let before = ed.scene().clone();
+        let png = crate::texture::pixels_png(&crate::image::Pixels {
+            width: 1,
+            height: 1,
+            rgb: vec![[0.0, 0.0, 1.0]],
+        });
+        let replacement = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, png);
+        let request = json!({"step":1,"expected_revision":before.revision,"commands":[{"op":"add_image","name":"Logo","data":replacement}]});
+        let preview = call(&mut ed, "POST", "/history/preview", request.clone());
+        assert_eq!(preview.0, 200);
+        assert_eq!(
+            preview.1["scene"]["images"]["Logo"]["preview_url"],
+            format!("data:image/png;base64,{replacement}")
+        );
+        assert_eq!(ed.scene(), &before);
+        assert_eq!(call(&mut ed, "POST", "/history/revise", request).0, 200);
+        assert_eq!(ed.scene().images["Logo"].width, 1);
+        let saved = ed.scene().clone();
+        assert_eq!(call(&mut ed,"POST","/history/revise",json!({"step":1,"expected_revision":saved.revision,"commands":[{"op":"add_image","name":"Logo","data":"invalid"}]})).0,422);
+        assert_eq!(ed.scene(), &saved);
+        assert!(ed.undo().is_some());
+        assert_eq!(ed.scene().images, before.images);
+    }
+
+    #[test]
+    fn image_history_preview_assets_are_an_immutable_world_and_node_snapshot() {
+        use base64::Engine as _;
+        let encoded = |rgb| {
+            base64::engine::general_purpose::STANDARD.encode(crate::texture::pixels_png(
+                &crate::image::Pixels {
+                    width: 1,
+                    height: 1,
+                    rgb: vec![rgb],
+                },
+            ))
+        };
+        let mut ed = Editor::new();
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"add_image","name":"Photo","data":encoded([0.0,1.0,0.0])}]})).0,200);
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[
+            {"op":"world","image":"Photo","background":true},
+            {"op":"add","name":"Box","primitive":{"kind":"cube"}},
+            {"op":"material","id":"Box","texture":{"pattern":"nodes","graph":{"nodes":[{"id":"photo","type":"image","image":"Photo"}],"output":{"color":{"node":"photo"},"roughness":0.4,"metalness":0.8,"height":{"node":"photo"}}},"relief":0.1}}
+        ]})).0,200);
+        let request = json!({"step":1,"expected_revision":ed.scene().revision,"commands":[{"op":"add_image","name":"Photo","data":encoded([0.0,0.0,1.0])}]});
+        let job = history_preview_job(&ed, &serde_json::to_vec(&request).unwrap())
+            .unwrap_or_else(|error| panic!("{}", String::from_utf8_lossy(&error.body)));
+        assert_eq!(call(&mut ed,"POST","/commands",json!({"commands":[{"op":"add_image","name":"Photo","data":encoded([1.0,0.0,0.0])}]})).0,200);
+        let live = ed.scene().clone();
+        let response = job.run();
+        assert_eq!(response.status, 200);
+        let scene: Value = serde_json::from_slice::<Value>(&response.body).unwrap()["scene"].take();
+        let environment = scene["world"]["preview_environment"]
+            .as_str()
+            .unwrap()
+            .split(',')
+            .nth(1)
+            .unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(environment)
+            .unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 1);
+        assert_eq!(f32::from_le_bytes(bytes[40..44].try_into().unwrap()), 1.0);
+        let maps = &scene["objects"][0]["material"]["texture"]["preview_maps"];
+        for kind in ["color", "normal", "orm"] {
+            assert!(
+                maps[kind]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("data:image/png;base64,")
+            );
+        }
+        let color = crate::image::ImageAsset::from_bytes(
+            crate::image::decode_base64(maps["color"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap()
+        .decode()
+        .unwrap();
+        assert_eq!(color.sample(0.5, 0.5), [0.0, 0.0, 1.0]);
+        assert_eq!(ed.scene(), &live);
+        assert_ne!(
+            scene["images"]["Photo"]["hash"],
+            json!(live.images["Photo"].hash())
+        );
+    }
+
     fn call(ed: &mut Editor, method: &str, path: &str, body: Value) -> (u16, Value) {
         let body = if body.is_null() {
             Vec::new()
@@ -2675,12 +2986,13 @@ mod tests {
         );
         assert_eq!(h["steps"][0]["source"], "UI");
         assert_eq!(h["steps"][1]["source"], "API");
-        assert_eq!(h["steps"][1]["editable"], false);
+        assert_eq!(h["steps"][1]["editable"], true);
+        assert!(h["steps"][1]["commands"][0].get("data").is_none());
         assert!(
-            h["steps"][1]["commands"][0]["data"]
-                .as_str()
+            h["steps"][1]["images"][0]["encoded_characters"]
+                .as_u64()
                 .unwrap()
-                .contains("image data")
+                > 0
         );
         assert_eq!(h["steps"][2]["step"], 3);
         let (_, last) = call(&mut ed, "GET", "/history?limit=1", Value::Null);

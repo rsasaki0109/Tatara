@@ -2035,6 +2035,7 @@ input[type='range'] {
 
 .hs-field input[type='number'],
 .hs-field input[type='text'],
+.hs-field input[type='file'],
 .hs-field textarea {
   width: 100%;
   min-width: 0;

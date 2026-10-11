@@ -1,0 +1,51 @@
+// Image-containing recipes stay editable without sending retained bytes back.
+export async function checkImageHistory(page, check) {
+  const send = (path, body) => page.evaluate(async ({path,body})=>{
+    const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    return {status:response.status,data:await response.json()}
+  },{path,body})
+  const scene=()=>page.evaluate(()=>fetch('/api/scene').then(r=>r.json()))
+  const wait=async predicate=>{for(let i=0;i<600;i++){if(await predicate())return;await page.waitForTimeout(50)}throw new Error('image history did not settle')}
+  const png=async (size,color)=>page.evaluate(({size,color})=>{
+    const c=document.createElement('canvas');c.width=c.height=size;const g=c.getContext('2d');g.fillStyle=color;g.fillRect(0,0,size,size);return c.toDataURL('image/png').split(',')[1]
+  },{size,color})
+  const data=await png(2,'#ff8800')
+  const setup=await send('commands',{commands:[{op:'clear'},{op:'add_image',name:'History image',data},{op:'add',name:'History box',primitive:{kind:'cube',size:1}},{op:'material',id:'History box',texture:{pattern:'image',image:'History image'}},{op:'world',image:'History image',background:true}]})
+  if(setup.status!==200)throw new Error(JSON.stringify(setup))
+  const history=await page.evaluate(()=>fetch('/api/history?limit=1').then(r=>r.json()))
+  const step=history.steps[0]
+  check(step.editable && !('data' in step.commands[1]) && step.images[0].command===1,'image-containing history is editable without exposing encoded image bytes')
+  await page.evaluate(()=>window.__tatara.refresh(false));await page.click('.tabs [data-tab=history]')
+  const row=page.locator(`#history [data-step="${step.step}"]`)
+  await row.locator('.hs-head').click()
+  check(await row.locator('[data-hs=apply]').isEnabled() && await row.locator('[data-hs-image]').count()===1 && await row.locator('textarea').count()===0,'the history editor offers image replacement and hides binary text')
+  const before=await scene()
+  await row.locator(`input[data-path='[2,"primitive","size"]']`).fill('2')
+  await wait(async()=> (await page.textContent('.view-label')).includes(`History · step ${step.step} replayed`))
+  check(JSON.stringify(await scene())===JSON.stringify(before),'a guarded image-containing preview leaves the live scene unchanged')
+  await row.locator('[data-hs=apply]').click()
+  await wait(async()=> (await scene()).objects[0].mesh.vertices[0][0]===-1)
+  const resized=await scene()
+  check(resized.images['History image'].hash===before.images['History image'].hash,'changing geometry in an image-containing step preserves its original image')
+  await wait(async()=> !(await row.getAttribute('class')).split(' ').includes('open'))
+  await row.locator('.hs-head').click()
+  const replacement=await png(1,'#0044ff')
+  await row.locator('[data-hs-image]').setInputFiles({name:'blue.png',mimeType:'image/png',buffer:Buffer.from(replacement,'base64')})
+  await wait(async()=> (await row.textContent()).includes('Replacement image ready.'))
+  await wait(()=>page.evaluate(()=>window.__tatara.debug().imageMaps.some(m=>m.preview && m.width===1)))
+  await wait(()=>page.evaluate(()=>{const rgb=window.__tatara.debug().worldRadiance;return rgb && rgb[2]>0.99 && rgb[0]<0.01}))
+  check(JSON.stringify(await scene())===JSON.stringify(resized),'the replacement image and environment preview their new pixels without committing them')
+  await row.locator('[data-hs=apply]').click()
+  await wait(async()=> (await scene()).images['History image'].width===1)
+  check((await scene()).objects[0].material.texture.image==='History image' && (await scene()).objects[0].mesh.vertices[0][0]===-1,'image replacement replays dependent materials and preserves other revised parameters')
+  await page.click('[data-action=undo]');await wait(async()=> (await scene()).images['History image'].width===2)
+  const restored=await scene()
+  check(restored.images['History image'].hash===before.images['History image'].hash,'one Undo restores the original image bytes')
+  const stale=await send('history/revise',{step:step.step,expected_revision:resized.revision,commands:step.commands})
+  check(stale.status===409 && JSON.stringify(await scene())===JSON.stringify(restored),'a retained image cannot be replayed against a stale history revision')
+  await row.locator('.hs-head').click()
+  await row.locator('[data-hs-image]').setInputFiles({name:'broken.png',mimeType:'image/png',buffer:Buffer.from('not an image')})
+  await wait(async()=> (await row.locator('.hs-error').textContent()).length>0)
+  check(JSON.stringify(await scene())===JSON.stringify(restored),'an invalid replacement reports a history preview error without altering the scene')
+  await row.locator('[data-hs=cancel]').click();await page.click('.tabs [data-tab=properties]')
+}

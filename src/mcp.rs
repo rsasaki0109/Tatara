@@ -160,7 +160,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "get_history",
-            "description": "Read how the scene was made: the batches applied so far, oldest first, each numbered (`step`) with its source (UI, agent, chat, proposal, ...), actor, commands and optional `rebased_from` for an edit combined with newer changes. Use it to find the step that set a value you want to change, then revise_step it.",
+            "description": "Read how the scene was made: the batches applied so far, oldest first, each numbered (`step`) with its source (UI, agent, chat, proposal, ...), actor, commands and optional `rebased_from` for an edit combined with newer changes. Image bytes are omitted; image-containing steps remain editable. Use it to find the step that set a value you want to change, then revise_step it.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Only the last this many steps (default 100)" } },
@@ -169,7 +169,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "revise_step",
-            "description": "Change an earlier step and replay everything after it, like editing a parametric history: e.g. rebuild the table taller and anything later placed on it ends up on the new top. Give the step number from get_history and its new `commands` (the whole batch). One undo step; refused, with the step that breaks, if a later step no longer applies.",
+            "description": "Change an earlier step and replay everything after it, like editing a parametric history: e.g. rebuild the table taller and anything later placed on it ends up on the new top. Give the step number from get_history and its new `commands` (the whole batch). Omit add_image.data to retain the original bytes at the same command position and name; this requires expected_revision from get_history. Supply data to replace an image. One undo step; refused, with the step that breaks, if a later step no longer applies.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

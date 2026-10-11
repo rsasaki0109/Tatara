@@ -39,7 +39,7 @@ export function createApi(clock) {
     chat: (prompt, mode = 'proposal') => request('POST', '/chat', { prompt, mode }),
     history: () => request('GET', '/history?limit=200'),
     schema: () => request('GET', '/schema'),
-    previewRevision: (step, commands) => request('POST', '/history/preview', { step, commands }),
+    previewRevision: (step, commands, expected_revision) => request('POST', '/history/preview', { step, commands, expected_revision }),
     revise: (step, commands, expected_revision) => request('POST', '/history/revise', { step, commands, expected_revision }),
     proposals: () => request('GET', '/proposals'),
     propose: (proposal) => request('POST', '/proposals', proposal),

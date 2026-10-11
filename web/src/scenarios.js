@@ -1896,4 +1896,27 @@ export const packedMaterials = {
   ]
 }
 
-export const SCENARIOS = { packedMaterials, mergeVertices, propertyRebase, nativeRestart, solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }
+export const imageHistory = {
+  title:'Keep the image, revise the recipe',width:960,gizmo:false,
+  setup:[
+    {op:'add_image',name:'Artwork',data:'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'},
+    {op:'add',name:'Panel',primitive:{kind:'cube',size:1.2},translation:[0,1,0],scale:[2,1.2,.04],color:'#ffffff',roughness:.6},
+    {op:'material',id:'Panel',texture:{pattern:'image',image:'Artwork',fit:true}}
+  ],
+  camera:{azimuth:10,elevation:10,distance:5.4,target:[0,1,0]},
+  steps:[
+    {caption:'Revise a step that includes an image',hint:'image bytes stay in the recipe'},
+    {tab:'history'},{click:'[data-hs-open="1"]',after:300},
+    {scrubNumber:'.hs-key[data-scrub*="size"]',to:1.6,ms:1400,after:500},
+    {click:'[data-hs=apply]',after:900},
+    {caption:'Replace the picture, preview the replay',hint:'your live scene stays unchanged until Apply'},
+    {click:'[data-hs-open="1"]',after:300},
+    {upload:'[data-hs-image="0"]',paint:'sunset',name:'Sunset.png',after:1700},
+    {caption:'Approve the replay as one Undo',hint:'later commands and image references stay connected'},
+    {click:'[data-hs=apply]',after:1100},
+    {click:'[data-action=undo]',after:1000},{click:'[data-action=redo]',after:1200},
+    {cursor:false},{wait:700}
+  ]
+}
+
+export const SCENARIOS = { imageHistory, packedMaterials, mergeVertices, propertyRebase, nativeRestart, solidifyShell, browserRecovery, projectHistory, bezierHandles, jointLimits, poleTarget, animationCurves, motionExport, targetIk, constrainedAnimation, hero, modeling, agent, mcp, modifiers, editing, vision, animate, materials, sculpt, inspect, furnish, boolean, textures, surfaces, wrap, dyntopo, nodes, uv, render, rig, ik, final, world, proposals, history, constraints, collaborate, chatReview, distance, alignment, keepLayout, rebase, spotlight, orthographicCamera, opticalAnimation, faceHistory, orientation, concurrentCreation, sceneCamera, sceneLight }

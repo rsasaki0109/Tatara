@@ -1098,6 +1098,32 @@ async fn mcp_bridge_edits_the_shared_scene() {
     assert_eq!(material["texture"]["metallic_roughness_map"], "MCP packed");
     assert_eq!(material["roughness"], 0.4);
     assert_eq!(material["metalness"], 0.8);
+    let r=call(json!({"jsonrpc":"2.0","id":133,"method":"tools/call","params":{"name":"get_history","arguments":{"limit":1000}}})).await;
+    let history: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let step = history["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["commands"][0]["op"] == "add_image" && s["commands"][0]["name"] == "MCP packed")
+        .unwrap();
+    assert_eq!(step["editable"], true);
+    let mut commands = step["commands"].clone();
+    assert!(commands[0].get("data").is_none());
+    commands[1]["roughness"] = json!(0.2);
+    let r=call(json!({"jsonrpc":"2.0","id":134,"method":"tools/call","params":{"name":"revise_step","arguments":{"step":step["step"],"expected_revision":history["revision"],"commands":commands}}})).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r=call(json!({"jsonrpc":"2.0","id":135,"method":"tools/call","params":{"name":"get_scene","arguments":{}}})).await;
+    let revised: Value =
+        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let material = &revised["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "MCP pyramid")
+        .unwrap()["material"];
+    assert_eq!(material["roughness"], 0.2);
+    assert_eq!(material["texture"]["metallic_roughness_map"], "MCP packed");
     child.kill().await.unwrap();
 }
 
