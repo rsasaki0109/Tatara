@@ -4959,6 +4959,51 @@ mod history_tests {
     }
 
     #[test]
+    fn replacing_a_history_image_replays_dependents_and_rejects_broken_references() {
+        use base64::Engine as _;
+        let encoded = |bytes: Vec<u8>| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let mut ed = Editor::new();
+        apply(
+            &mut ed,
+            "UI",
+            json!([{"op":"add_image","name":"Logo","data":encoded(crate::image::tests::tiny_png())}]),
+        );
+        apply(
+            &mut ed,
+            "UI",
+            json!([
+                {"op":"add","name":"Box","primitive":{"kind":"cube"}},
+                {"op":"material","id":"Box","texture":{"pattern":"image","image":"Logo"}},
+                {"op":"move","id":"Box","offset":[2,0,0]}
+            ]),
+        );
+        let pixels = crate::image::Pixels {
+            width: 1,
+            height: 1,
+            rgb: vec![[0.0, 1.0, 0.0]],
+        };
+        let data = encoded(crate::texture::pixels_png(&pixels));
+        ed.revise(
+            1,
+            commands(json!([{"op":"add_image","name":"Logo","data":data}])),
+        )
+        .unwrap();
+        assert_eq!(ed.scene().images["Logo"].width, 1);
+        assert_eq!(object(&ed, "Box").transform.translation, [2.0, 0.0, 0.0]);
+        let before = ed.scene().clone();
+        let history = ed.history().0.to_vec();
+        assert!(
+            ed.revise(
+                1,
+                commands(json!([{"op":"add_image","name":"Other","data":data}]))
+            )
+            .is_err()
+        );
+        assert_eq!(ed.scene(), &before);
+        assert_eq!(ed.history().0, history);
+    }
+
+    #[test]
     fn changing_an_early_step_replays_the_rest() {
         let mut ed = dining();
         let (steps, loaded) = ed.history();

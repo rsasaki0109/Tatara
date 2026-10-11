@@ -15,8 +15,8 @@ export class HistoryPanel {
    * shows a replayed scene (null: the scene again); `onApplied()` follows a
    * committed revision; `onError(message)` reports one that failed.
    */
-  constructor(el, { api, summarize, onPreview, onApplied, onError }) {
-    Object.assign(this, { el, api, summarize, onPreview, onApplied, onError })
+  constructor(el, { api, summarize, onPreview, onApplied, onError, track = promise => promise }) {
+    Object.assign(this, { el, api, summarize, onPreview, onApplied, onError, track })
     this.steps = []
     this.open = null
     this.draft = null
@@ -25,7 +25,7 @@ export class HistoryPanel {
     this.asking = null
     el.addEventListener('click', (e) => this.click(e))
     el.addEventListener('input', (e) => this.edit(e))
-    el.addEventListener('change', (e) => this.edit(e))
+    el.addEventListener('change', (e) => e.target.dataset.hsImage != null ? this.replaceImage(e) : this.edit(e))
     el.addEventListener('pointerdown', (e) => this.scrub(e))
   }
 
@@ -85,6 +85,7 @@ export class HistoryPanel {
     const out = []
     for (const [key, v] of Object.entries(value)) {
       if (key === 'op' && path.length === 1) continue
+      if (key === 'data' && path.length === 1 && value.op === 'add_image') continue
       const p = JSON.stringify([...path, key]).replace(/"/g, '&quot;')
       const name = `<span class="hs-key" ${typeof v === 'number' ? `data-scrub="${p}" title="Drag to change"` : ''}>${escapeHtml(key)}</span>`
       if (typeof v === 'number') out.push(`<label class="hs-field">${name}<input type="number" step="any" data-path="${p}" value="${fmt(v)}"></label>`)
@@ -100,14 +101,40 @@ export class HistoryPanel {
         out.push(`<label class="hs-field json">${name}<textarea rows="2" data-json="${p}" spellcheck="false">${escapeHtml(JSON.stringify(v))}</textarea></label>`)
       }
     }
+    if (path.length === 1 && value.op === 'add_image') {
+      out.push(`<p class="muted small">${value.data ? 'Replacement image ready.' : 'Original image retained. Keep its name to preserve the bytes.'}</p><label class="hs-field"><span class="hs-key">Replace image</span><input type="file" accept="image/png,image/jpeg,.hdr" data-hs-image="${path[0]}"></label>`)
+    }
     return out.join('')
+  }
+
+  async replaceImage(e) {
+    const file = e.target.files?.[0]
+    if (!file || !this.draft) return
+    const draft = this.draft
+    const index = Number(e.target.dataset.hsImage)
+    const limit = /\.hdr$/i.test(file.name) ? 32 << 20 : 8 << 20
+    if (file.size > limit) return this.error(`Image exceeds the ${limit >> 20} MiB limit`)
+    try {
+      const data = await this.track(new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result)
+        reader.onerror = () => reject(new Error('Could not read the image'))
+        reader.readAsDataURL(file)
+      }))
+      if (this.draft !== draft) return
+      draft[index].data = data
+      this.draw()
+      this.preview()
+    } catch (error) {
+      if (this.draft === draft) this.error(error.message)
+    }
   }
 
   /** Buttons for the values a command could set but doesn't. */
   unset(command, i) {
     const variant = this.known?.variants.get(command.op)
     if (!variant) return ''
-    const missing = Object.entries(variant.properties ?? {}).filter(([k, p]) => k !== 'op' && command[k] == null && this.blank(k, p) !== undefined)
+    const missing = Object.entries(variant.properties ?? {}).filter(([k, p]) => k !== 'op' && !(command.op === 'add_image' && k === 'data') && command[k] == null && this.blank(k, p) !== undefined)
     if (!missing.length) return ''
     return `<div class="hs-unset">${missing.map(([k, p]) => `<button class="chip" data-hs-add="${escapeHtml(JSON.stringify([i, k]))}" title="${escapeHtml(p.description ?? '')}">+ ${escapeHtml(k)}</button>`).join('')}</div>`
   }
@@ -218,7 +245,7 @@ export class HistoryPanel {
     // One request at a time; the latest draft wins.
     if (this.asking) return void (this.again = true)
     const step = this.open
-    this.asking = this.api.previewRevision(step, this.draft)
+    this.asking = this.api.previewRevision(step, this.draft, this.baseRevision)
     try {
       const r = await this.asking
       if (this.open !== step) return

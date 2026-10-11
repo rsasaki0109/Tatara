@@ -525,6 +525,11 @@ export class DemoRunner {
   async upload(s) {
     const el = document.querySelector(s.upload)
     if (!el) throw new Error(`demo: nothing matches ${s.upload}`)
+    if (el.getClientRects().length) {
+      el.scrollIntoView({ block: 'nearest' })
+      const rect = el.getBoundingClientRect()
+      await this.moveTo(rect.left + rect.width / 2, rect.top + rect.height / 2)
+    }
     const canvas = paint(s.paint)
     const blob = await this.clock.track(new Promise((resolve) => canvas.toBlob(resolve, 'image/png')))
     const files = new DataTransfer()

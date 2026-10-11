@@ -720,7 +720,8 @@ export class Viewport {
     } else if (!same) {
       this.setTransform(g, tf)
     }
-    if (JSON.stringify(pose(prev, this.currentFrame).material) !== JSON.stringify(posed.material)) {
+    const imageKey = this.materialImageKey(posed.material)
+    if (node.imageKey !== imageKey || JSON.stringify(pose(prev, this.currentFrame).material) !== JSON.stringify(posed.material)) {
       if (animate && !animated) {
         const m = node.mesh.material
         const from = this.materialState(m)
@@ -734,6 +735,7 @@ export class Viewport {
         })
       } else this.setMaterial(node, posed.material)
     }
+    node.imageKey = imageKey
   }
 
   /** Start positions when only vertex positions changed (moves, undo of moves). */
@@ -825,6 +827,7 @@ export class Viewport {
     // anything it depends on changes.
     const graph = t?.pattern === 'nodes' ? t.graph : null
     const nodeUrl = (kind) => {
+      if (t.preview_maps?.[kind]) return t.preview_maps[kind]
       const v = hashString(JSON.stringify([mat.color, mat.roughness, mat.metalness, t, graph?.nodes.filter((n) => n.type === 'image').map((n) => this.images[n.image]?.hash)]))
       return `/api/nodes?${new URLSearchParams({ object: m.userData.objectId, kind, size: '512', v })}`
     }
@@ -856,7 +859,14 @@ export class Viewport {
   }
 
   imageUrl(name) {
+    if (this.images[name]?.preview_url) return this.images[name].preview_url
     return `/api/image?${new URLSearchParams({ name, v: this.images[name]?.hash ?? '' })}`
+  }
+
+  materialImageKey(material) {
+    const t = material.texture
+    const names = [t?.image,t?.normal_map,t?.metallic_roughness_map,...(t?.graph?.nodes.filter(n=>n.type==='image').map(n=>n.image) ?? [])].filter(Boolean)
+    return JSON.stringify(names.map(name=>[name,this.images[name]?.hash,Boolean(this.images[name]?.preview_url)]))
   }
 
   syncRepeat(m) {
@@ -925,7 +935,7 @@ export class Viewport {
       return
     }
     const ask = this.clock.track(
-      fetch('/api/environment?w=512')
+      fetch(w.preview_environment ?? '/api/environment?w=512')
         .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.statusText))))
         .catch(() => null),
     )
@@ -1022,8 +1032,9 @@ export class Viewport {
           })
           .then(async (blob) => {
             const img = new Image()
-            img.src = URL.createObjectURL(blob)
-            await img.decode()
+            const objectUrl = URL.createObjectURL(blob)
+            img.src = objectUrl
+            try { await img.decode() } finally { URL.revokeObjectURL(objectUrl) }
             return img
           })
           .catch((e) => (left > 1 ? attempt(left - 1) : Promise.reject(e)))
@@ -1032,6 +1043,9 @@ export class Viewport {
           .catch(() => {
             this.textureImages.delete(url)
             return null
+          })
+          .finally(() => {
+            if (url.startsWith('data:') && this.textureImages.get(url) === image) this.textureImages.delete(url)
           }),
       )
       this.textureImages.set(url, image)

@@ -182,6 +182,22 @@ async fn core(
     body: axum::body::Bytes,
 ) -> Response {
     let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    if method == axum::http::Method::POST && uri.path() == "/history/preview" {
+        let shared = s.clone();
+        let job = tokio::task::spawn_blocking(move || {
+            let ed = shared.editor.blocking_lock();
+            crate::api::history_preview_job(&ed, &body)
+        })
+        .await;
+        let response = match job {
+            Ok(Ok(job)) => tokio::task::spawn_blocking(move || job.run())
+                .await
+                .unwrap_or_else(|error| crate::api::Response::error(500, error.to_string())),
+            Ok(Err(error)) => error,
+            Err(error) => crate::api::Response::error(500, error.to_string()),
+        };
+        return reply(response);
+    }
     // Renders gather the scene under the lock, then run on a worker thread
     // without it, so edits and other requests are not held up.
     if method == axum::http::Method::GET

@@ -243,6 +243,7 @@ async function showProposal(id) {
 // History: the recipe of steps; a revised step previews the replayed scene,
 // with what it changes outlined.
 const historyPanel = new HistoryPanel($('history'), {
+  track: promise => clock.track(promise),
   api,
   summarize: (commands) => summarize(commands),
   onPreview: (scene, step) => {
@@ -2170,10 +2171,12 @@ window.__tatara = {
   spotAttenuationProbe: (...args) => viewport.spotAttenuationProbe(...args),
   debug: () => ({ sceneLightValues: [...viewport.nodes.values()].filter(n=>n.light).map(n=>({kind:n.lightKind,angle:n.light.angle,penumbra:n.light.penumbra,distance:n.light.distance,target:n.light.target?.position.toArray(),intensity:n.light.intensity,color:n.light.color.getHexString()})), sceneLights: [...viewport.nodes.values()].filter(n=>n.light?.visible).length, sceneCamera: viewport.sceneCameraId ?? null, renderCamera: { eye: viewport.camera.position.toArray(), up: viewport.camera.up.toArray(), fov: viewport.camera.fov ?? 36, orthographic:Boolean(viewport.camera.isOrthographicCamera), ortho_height:viewport.effectiveOrthoHeight() }, pending: clock.pending, timers: clock.timers.length, now: clock.now(), anims: [...animator.items.keys()], textured: [...viewport.nodes.values()].filter((n) => n.mesh.material.map?.image).length,
     normalMapped: [...viewport.nodes.values()].filter((n) => n.mesh.material.normalMap?.image).length,
+    imageMaps: [...viewport.nodes.values()].filter(n=>n.mesh.material.map?.image).map(n=>({width:n.mesh.material.map.image.width,height:n.mesh.material.map.image.height,preview:Boolean(n.mesh.material.userData.mapUrl?.startsWith('data:'))})),
     packedMaterials: [...viewport.nodes.values()].filter(n=>n.mesh.material.roughnessMap?.image).map(n=>({id:n.id,roughness:n.mesh.material.roughness,metalness:n.mesh.material.metalness,colorSpace:n.mesh.material.roughnessMap.colorSpace,packed:Boolean(n.mesh.material.userData.ormUrl),triplanar:'TRIPLANAR' in n.mesh.material.defines})),
     pathSamples: preview.active ? preview.samples : null,
     finalSamples: finalRender.open ? finalRender.samples : null,
     world: viewport.worldMap?.source ?? null,
+    worldRadiance: viewport.worldMap ? Array.from(viewport.worldMap.texels.slice(0,3)) : null,
     proposals: proposalTray.pending.length,
     previewing: app.previewing,
     worldBackground: Boolean(viewport.scene.background),
